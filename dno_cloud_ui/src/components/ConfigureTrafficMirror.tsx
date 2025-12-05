@@ -1,25 +1,92 @@
-import { useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useEffect } from "react";
+import { Card,CardContent,CardDescription,CardHeader,CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Network, Play } from "lucide-react";
+import { Table,TableBody,TableCell,TableHead,TableHeader,TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 export function ConfigureTrafficMirror() {
+  const [regions, setRegions] = useState<string[]>([]);
+  const [vpcs, setVpcs] = useState<any[]>([]);
+  const [subnets, setSubnets] = useState<any[]>([]);
+  const [instances, setInstances] = useState<any[]>([]);
+
   const [selectedRegion, setSelectedRegion] = useState("");
   const [selectedVPC, setSelectedVPC] = useState("");
   const [selectedSource, setSelectedSource] = useState("");
   const [selectedTarget, setSelectedTarget] = useState("");
+
   const { toast } = useToast();
 
+  const apiFetch = (path: string) =>
+    fetch(`/api${path}`).then((res) => res.json());
+
+  useEffect(() => {
+    apiFetch("/regions")
+      .then((data) => setRegions(data))
+      .catch((err) => console.error("Region fetch error:", err));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedRegion) return;
+
+    setVpcs([]);
+    setSubnets([]);
+    setInstances([]);
+    setSelectedVPC("");
+    setSelectedSource("");
+
+    apiFetch(`/vpcs?region=${selectedRegion}`)
+      .then((data) => setVpcs(data))
+      .catch((err) => console.error("VPC fetch error:", err));
+  }, [selectedRegion]);
+
+  useEffect(() => {
+    if (!selectedRegion || !selectedVPC) return;
+
+    setSubnets([]);
+    setInstances([]);
+    setSelectedSource("");
+
+    apiFetch(`/subnets?region=${selectedRegion}&vpc_id=${selectedVPC}`)
+      .then((data) => setSubnets(data))
+      .catch((err) => console.error("Subnet fetch error:", err));
+  }, [selectedRegion, selectedVPC]);
+
+  useEffect(() => {
+    if (!selectedRegion || subnets.length === 0) return;
+
+    setInstances([]);
+    setSelectedSource("");
+
+    const loadInstances = async () => {
+      let allInstances: any[] = [];
+
+      for (const subnet of subnets) {
+        try {
+          const data = await apiFetch(
+            `/instances_in_subnet?region=${selectedRegion}&subnet_id=${subnet.SubnetId}`
+          );
+          allInstances = [...allInstances, ...data];
+        } catch (error) {
+          console.error("Instance fetch error:", error);
+        }
+      }
+
+      setInstances(allInstances);
+    };
+
+    loadInstances();
+  }, [selectedRegion, subnets]);
+
   const handleCreateMirrorSession = () => {
-    if (!selectedRegion || !selectedVPC || !selectedSource || !selectedTarget) {
+    if (!selectedRegion || !selectedVPC || !selectedSource) {
       toast({
         title: "Missing configuration",
-        description: "Please select region, VPC, source, and target instances",
+        description: "Please select region, VPC, and source instance",
         variant: "destructive",
       });
       return;
@@ -27,12 +94,11 @@ export function ConfigureTrafficMirror() {
 
     toast({
       title: "Traffic mirror session created",
-      description: `Successfully created mirror session from ${selectedSource} to ${selectedTarget}`,
+      description: `Source: ${selectedSource}`,
     });
   };
 
-  // Mock active sessions data
-  const activeSessions = [
+    const activeSessions = [
     {
       id: "tms-001",
       region: "us-east-1",
@@ -56,7 +122,7 @@ export function ConfigureTrafficMirror() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-y-auto max-h-screen p-2">
       <Card className="border-border bg-card/50 backdrop-blur-sm">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -70,43 +136,58 @@ export function ConfigureTrafficMirror() {
         <CardContent className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="mirror-region">Select Region</Label>
+              <Label>Select Region</Label>
               <Select value={selectedRegion} onValueChange={setSelectedRegion}>
-                <SelectTrigger id="mirror-region">
-                  <SelectValue placeholder="Choose a region" />
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose region" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="us-east-1">US East (N. Virginia)</SelectItem>
-                  <SelectItem value="us-west-2">US West (Oregon)</SelectItem>
-                  <SelectItem value="eu-west-1">EU West (Ireland)</SelectItem>
+                  {regions.map((region) => (
+                    <SelectItem key={region} value={region}>
+                      {region}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="mirror-vpc">Select VPC</Label>
-              <Select value={selectedVPC} onValueChange={setSelectedVPC}>
-                <SelectTrigger id="mirror-vpc">
-                  <SelectValue placeholder="Choose a VPC" />
+              <Label>Select VPC</Label>
+              <Select
+                value={selectedVPC}
+                onValueChange={setSelectedVPC}
+                disabled={!selectedRegion}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose VPC" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="vpc-001">Production VPC (vpc-001)</SelectItem>
-                  <SelectItem value="vpc-002">Development VPC (vpc-002)</SelectItem>
+                  {vpcs.map((vpc) => (
+                    <SelectItem key={vpc.VpcId} value={vpc.VpcId}>
+                      {vpc.Name || vpc.VpcId}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="source">Source Instance</Label>
-            <Select value={selectedSource} onValueChange={setSelectedSource}>
-              <SelectTrigger id="source">
+            <Label>Source Instance</Label>
+            <Select
+              value={selectedSource}
+              onValueChange={setSelectedSource}
+              disabled={instances.length === 0}
+            >
+              <SelectTrigger>
                 <SelectValue placeholder="Choose source instance" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="i-001">Web Server 1 (i-001)</SelectItem>
-                <SelectItem value="i-002">Web Server 2 (i-002)</SelectItem>
-                <SelectItem value="i-003">Database Server (i-003)</SelectItem>
+                {instances.map((inst) => (
+                  <SelectItem key={inst.InstanceId} value={inst.InstanceId}>
+                    {inst.Name || inst.InstanceId}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -134,7 +215,6 @@ export function ConfigureTrafficMirror() {
           </Button>
         </CardContent>
       </Card>
-
       <Card className="border-border bg-card/50 backdrop-blur-sm">
         <CardHeader>
           <CardTitle>Active Traffic Mirror Sessions</CardTitle>
