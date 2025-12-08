@@ -10,7 +10,6 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
   return (
     <div className="min-h-screen bg-background overflow-auto">
       <div className="container mx-auto px-6 py-12 max-w-7xl">
-        {/* Hero Section */}
         <div className="text-center mb-16">
           <h1 className="text-4xl font-bold mb-4">
             Why AWS Cloud Visibility Matters
@@ -21,7 +20,6 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
           </p>
         </div>
 
-        {/* The Problem Section */}
         <div className="mb-16">
           <h2 className="text-3xl font-bold mb-8 text-center">The Challenge</h2>
           <div className="grid md:grid-cols-2 gap-8">
@@ -79,7 +77,7 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
                   <Eye className="h-6 w-6 text-primary" />
                   <CardTitle className="text-xl">Complete Visibility</CardTitle>
                 </div>
-                <CardDescription>With Aviz Cloud Node</CardDescription>
+                <CardDescription>With Virtual Aviz Cloud Node</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="flex items-start gap-3">
@@ -123,32 +121,29 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
           </div>
         </div>
 
-        {/* Architecture Diagram */}
         <div className="mb-16">
-          <h2 className="text-3xl font-bold mb-8 text-center">How Aviz Cloud Node Works</h2>
+          <h2 className="text-3xl font-bold mb-8 text-center">How Virtual Aviz Cloud Node Works</h2>
           <Card>
             <CardContent className="p-8">
               <div className="grid md:grid-cols-3 gap-8">
-                {/* Step 1 */}
                 <div className="text-center space-y-4">
                   <div className="mx-auto w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
                     <Network className="h-8 w-8 text-primary" />
                   </div>
                   <h3 className="text-xl font-semibold">1. Traffic Mirroring</h3>
                   <p className="text-sm text-muted-foreground">
-                    Deploy Aviz Cloud Node in your VPC and configure traffic mirroring 
+                    Deploy Virtual Aviz Cloud Node in your VPC and configure traffic mirroring 
                     from your EC2 instances to the ACN target
                   </p>
                   <div className="bg-muted/50 rounded-lg p-4 text-left">
                     <p className="text-xs font-mono">
                       AWS VPC → Traffic Mirror<br/>
                       Source: EC2 Instances<br/>
-                      Target: Aviz Cloud Node
+                      Target: Virtual Aviz Cloud Node
                     </p>
                   </div>
                 </div>
 
-                {/* Step 2 */}
                 <div className="text-center space-y-4">
                   <div className="mx-auto w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
                     <Zap className="h-8 w-8 text-primary" />
@@ -168,7 +163,6 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
                   </div>
                 </div>
 
-                {/* Step 3 */}
                 <div className="text-center space-y-4">
                   <div className="mx-auto w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center">
                     <TrendingUp className="h-8 w-8 text-primary" />
@@ -189,7 +183,6 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
                 </div>
               </div>
 
-              {/* Flow Arrows */}
               <div className="flex justify-center items-center gap-4 mt-8 text-muted-foreground">
                 <div className="flex-1 h-px bg-border"></div>
                 <span className="text-sm">Continuous Monitoring Flow</span>
@@ -199,7 +192,6 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
           </Card>
         </div>
 
-        {/* Key Benefits */}
         <div className="mb-16">
           <h2 className="text-3xl font-bold mb-8 text-center">Key Benefits</h2>
           <div className="grid md:grid-cols-4 gap-6">
@@ -253,7 +245,6 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
           </div>
         </div>
 
-        {/* CTA Section */}
         <div className="text-center">
           <Card className="border-primary/50 bg-primary/5">
             <CardContent className="py-12">
@@ -263,7 +254,7 @@ export function AvizOnboarding({ onGetStarted }: AvizOnboardingProps) {
                 into your AWS workloads with predictive cost analysis and one-click deployment.
               </p>
               <Button size="lg" onClick={onGetStarted} className="text-lg px-8">
-                Configure Aviz Cloud Node
+                Configure Virtual Aviz Cloud Node
               </Button>
             </CardContent>
           </Card>

@@ -106,7 +106,7 @@ export function ConfigureTrafficMirror() {
       source: "i-001",
       sourceName: "Web Server 1",
       target: "i-aviz-001",
-      targetName: "Aviz Cloud Node 1",
+      targetName: "Virtual Aviz Cloud Node 1",
       status: "Active",
     },
     {
@@ -116,7 +116,7 @@ export function ConfigureTrafficMirror() {
       source: "i-002",
       sourceName: "Web Server 2",
       target: "i-aviz-001",
-      targetName: "Aviz Cloud Node 1",
+      targetName: "Virtual Aviz Cloud Node 1",
       status: "Active",
     },
   ];
@@ -130,7 +130,7 @@ export function ConfigureTrafficMirror() {
             Configure Traffic Mirror Session
           </CardTitle>
           <CardDescription>
-            Configure AWS Traffic Mirror to send traffic to Aviz Cloud Node
+            Configure AWS Traffic Mirror to send traffic to Virtual Aviz Cloud Node
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -193,17 +193,17 @@ export function ConfigureTrafficMirror() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="target">Target Instance (Aviz Cloud Node)</Label>
+            <Label htmlFor="target">Target Instance (Virtual Aviz Cloud Node)</Label>
             <Select value={selectedTarget} onValueChange={setSelectedTarget}>
               <SelectTrigger id="target">
                 <SelectValue placeholder="Choose target instance" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="aviz-001">
-                  Aviz Cloud Node 1 (i-aviz-001)
+                  Virtual Aviz Cloud Node 1 (i-aviz-001)
                 </SelectItem>
                 <SelectItem value="aviz-002">
-                  Aviz Cloud Node 2 (i-aviz-002)
+                  Virtual Aviz Cloud Node 2 (i-aviz-002)
                 </SelectItem>
               </SelectContent>
             </Select>

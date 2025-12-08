@@ -69,7 +69,7 @@ export function CloudSidebar({
 
         <div className="p-4 border-b border-sidebar-border shrink-0">
           <h2 className="text-lg font-semibold bg-gradient-primary bg-clip-text text-transparent">
-            Aviz Cloud Node
+            Virtual Aviz Cloud Node
           </h2>
         </div>
 

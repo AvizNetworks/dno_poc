@@ -24,7 +24,7 @@ export function AWSDashboard() {
           <div className="mb-6 shrink-0">
             <h1 className="text-3xl font-bold mb-2">AWS Infrastructure</h1>
             <p className="text-muted-foreground">
-              View and manage your AWS resources, configure traffic mirroring, and deploy Aviz Cloud Nodes
+              View and manage your AWS resources, configure traffic mirroring, and deploy Virtual Aviz Cloud Nodes
             </p>
           </div>
 

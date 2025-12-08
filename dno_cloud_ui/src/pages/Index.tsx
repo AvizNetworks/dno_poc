@@ -37,7 +37,7 @@ const Index = () => {
             <div className="flex items-center justify-center h-screen bg-gradient-mesh">
               <div className="text-center space-y-4 max-w-2xl px-6">
                 <h1 className="text-5xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-                  Aviz Cloud Node
+                  Virtual Aviz Cloud Node
                 </h1>
                 <p className="text-xl text-muted-foreground">
                   Enterprise-grade cloud visibility and traffic analysis platform

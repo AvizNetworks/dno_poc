@@ -23,7 +23,7 @@ export function DeployAvizNode() {
     }
 
     toast({
-      title: "Deploying Aviz Cloud Node",
+      title: "Deploying Virtual Aviz Cloud Node",
       description: "Starting deployment process...",
     });
   };
