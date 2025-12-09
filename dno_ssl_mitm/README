@@ -1,0 +1,4 @@
+compile:
+gcc -g -O2 ssl_mitm_working.c  -o ssl_mitm_working -lssl -lcrypto -lpcap -lpthread -lm
+
+./run.sh
