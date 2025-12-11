@@ -23,7 +23,7 @@ export function DeployAvizNode() {
     }
 
     toast({
-      title: "Deploying Virtual Aviz Cloud Node",
+      title: "Deploying Virtual Aviz Service Node",
       description: "Starting deployment process...",
     });
   };
@@ -31,7 +31,7 @@ export function DeployAvizNode() {
   const deployedNodes = [
     {
       id: "i-aviz-001",
-      name: "Virtual Aviz Cloud Node 1",
+      name: "Virtual Aviz Service Node 1",
       region: "us-east-1",
       vpc: "vpc-001",
       ip: "10.0.1.20",
@@ -39,7 +39,7 @@ export function DeployAvizNode() {
     },
     {
       id: "i-aviz-002",
-      name: "Virtual Aviz Cloud Node 2",
+      name: "Virtual Aviz Service Node 2",
       region: "us-west-2",
       vpc: "vpc-002",
       ip: "10.1.2.30",
@@ -53,10 +53,10 @@ export function DeployAvizNode() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Server className="h-5 w-5 text-accent" />
-            Deploy Virtual Aviz Cloud Node
+            Deploy Virtual Aviz Service Node
           </CardTitle>
           <CardDescription>
-            Deploy Virtual Aviz Cloud Node EC2 instance to receive mirrored traffic
+            Deploy Virtual Aviz Service Node EC2 instance to receive mirrored traffic
           </CardDescription>
         </CardHeader>
 
@@ -131,16 +131,16 @@ export function DeployAvizNode() {
 
           <Button onClick={handleDeployAvizNode} className="w-full">
             <Download className="h-4 w-4 mr-2" />
-            Deploy Virtual Aviz Cloud Node
+            Deploy Virtual Aviz Service Node
           </Button>
         </CardContent>
       </Card>
 
       <Card className="border-border bg-card/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle>Deployed Virtual Aviz Cloud Nodes</CardTitle>
+          <CardTitle>Deployed Virtual Aviz Service Nodes</CardTitle>
           <CardDescription>
-            List of all deployed Virtual Aviz Cloud Nodes across regions
+            List of all deployed Virtual Aviz Service Nodes across regions
           </CardDescription>
         </CardHeader>
 

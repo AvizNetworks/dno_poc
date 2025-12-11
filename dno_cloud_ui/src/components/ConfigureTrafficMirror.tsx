@@ -1,125 +1,277 @@
-import { useState, useEffect } from "react";
-import { Card,CardContent,CardDescription,CardHeader,CardTitle } from "@/components/ui/card";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import {Card,CardContent,CardDescription,CardHeader,CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Network, Play } from "lucide-react";
+import { Network, Play, RefreshCw, Trash2 } from "lucide-react";
 import { Table,TableBody,TableCell,TableHead,TableHeader,TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent } from "./ui/tooltip";
+import { TooltipTrigger } from "@radix-ui/react-tooltip";
+
+type Instance = { InstanceId: string; Name?: string | null };
+type VPC = { VpcId: string; Name?: string; CidrBlock?: string };
+type Subnet = { SubnetId: string; CidrBlock: string; Name?: string };
+type Session = {
+  sessionId: string;
+  filterId: string;
+  filterDescription?: string;
+  sourceInstanceId?: string;
+  sourceEni?: string;
+  targetId?: string;
+  sessionNumber?: number;
+  rules?: any[];
+};
 
 export function ConfigureTrafficMirror() {
-  const [regions, setRegions] = useState<string[]>([]);
-  const [vpcs, setVpcs] = useState<any[]>([]);
-  const [subnets, setSubnets] = useState<any[]>([]);
-  const [instances, setInstances] = useState<any[]>([]);
+  const { toast } = useToast();
 
   const [selectedRegion, setSelectedRegion] = useState("");
   const [selectedVPC, setSelectedVPC] = useState("");
   const [selectedSource, setSelectedSource] = useState("");
   const [selectedTarget, setSelectedTarget] = useState("");
 
-  const { toast } = useToast();
+  const [regions, setRegions] = useState<string[]>([]);
+  const [networkData, setNetworkData] = useState<{
+    vpcs: VPC[];
+    subnets: Subnet[];
+    instances: Instance[];
+  }>({ vpcs: [], subnets: [], instances: [] });
 
-  const apiFetch = (path: string) =>
-    fetch(`/api${path}`).then((res) => res.json());
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+
+  const [creating, setCreating] = useState(false);
+
+  const apiFetch = useCallback(
+    async (path: string, opts?: RequestInit) => {
+      const res = await fetch(`/api${path}`, opts);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || res.statusText);
+      }
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) return res.json();
+      return null;
+    },
+    []
+  );
 
   useEffect(() => {
     apiFetch("/regions")
-      .then((data) => setRegions(data))
-      .catch((err) => console.error("Region fetch error:", err));
-  }, []);
+      .then((data) => setRegions(data || []))
+      .catch((err) =>
+        toast({
+          title: "Region load error",
+          description: String(err),
+          variant: "destructive",
+        })
+      );
+  }, [apiFetch, toast]);
 
-  useEffect(() => {
-    if (!selectedRegion) return;
-
-    setVpcs([]);
-    setSubnets([]);
-    setInstances([]);
+  const resetNetworkSelections = () => {
+    setNetworkData({ vpcs: [], subnets: [], instances: [] });
     setSelectedVPC("");
     setSelectedSource("");
+    setSelectedTarget("");
+  };
 
-    apiFetch(`/vpcs?region=${selectedRegion}`)
-      .then((data) => setVpcs(data))
+  useEffect(() => {
+    if (!selectedRegion) {
+      resetNetworkSelections();
+      return;
+    }
+    resetNetworkSelections();
+
+    apiFetch(`/vpcs?region=${encodeURIComponent(selectedRegion)}`)
+      .then((data) =>
+        setNetworkData((prev) => ({ ...prev, vpcs: data || [] }))
+      )
       .catch((err) => console.error("VPC fetch error:", err));
-  }, [selectedRegion]);
+  }, [selectedRegion, apiFetch]);
 
   useEffect(() => {
     if (!selectedRegion || !selectedVPC) return;
-
-    setSubnets([]);
-    setInstances([]);
+    setNetworkData((prev) => ({ ...prev, subnets: [], instances: [] }));
     setSelectedSource("");
+    setSelectedTarget("");
 
-    apiFetch(`/subnets?region=${selectedRegion}&vpc_id=${selectedVPC}`)
-      .then((data) => setSubnets(data))
+    apiFetch(
+      `/subnets?region=${encodeURIComponent(
+        selectedRegion
+      )}&vpc_id=${encodeURIComponent(selectedVPC)}`
+    )
+      .then((data) =>
+        setNetworkData((prev) => ({ ...prev, subnets: data || [] }))
+      )
       .catch((err) => console.error("Subnet fetch error:", err));
-  }, [selectedRegion, selectedVPC]);
+  }, [selectedRegion, selectedVPC, apiFetch]);
 
   useEffect(() => {
+    const { subnets } = networkData;
     if (!selectedRegion || subnets.length === 0) return;
-
-    setInstances([]);
+    setNetworkData((prev) => ({ ...prev, instances: [] }));
     setSelectedSource("");
+    setSelectedTarget("");
 
+    let mounted = true;
     const loadInstances = async () => {
-      let allInstances: any[] = [];
-
+      let allInstances: Instance[] = [];
       for (const subnet of subnets) {
         try {
           const data = await apiFetch(
-            `/instances_in_subnet?region=${selectedRegion}&subnet_id=${subnet.SubnetId}`
+            `/instances_in_subnet?region=${encodeURIComponent(
+              selectedRegion
+            )}&subnet_id=${encodeURIComponent(subnet.SubnetId)}`
           );
-          allInstances = [...allInstances, ...data];
-        } catch (error) {
-          console.error("Instance fetch error:", error);
+          allInstances = [...allInstances, ...(data || [])];
+        } catch (err) {
+          console.error("Instance fetch error:", err);
         }
       }
-
-      setInstances(allInstances);
+      if (mounted) setNetworkData((prev) => ({ ...prev, instances: allInstances }));
     };
 
     loadInstances();
-  }, [selectedRegion, subnets]);
+    return () => {
+      mounted = false;
+    };
+  }, [selectedRegion, networkData.subnets, apiFetch]);
 
-  const handleCreateMirrorSession = () => {
-    if (!selectedRegion || !selectedVPC || !selectedSource) {
+  const loadSessions = useCallback(async () => {
+    if (!selectedRegion) return;
+    setSessionsLoading(true);
+    setSessionsError(null);
+    try {
+      const data = await apiFetch(
+        `/filters?region=${encodeURIComponent(selectedRegion)}`
+      );
+      const flattened: Session[] = [];
+      (data || []).forEach((filter: any) => {
+        (filter.Sessions || []).forEach((s: any) => {
+          flattened.push({
+            filterId: filter.FilterId,
+            filterDescription: filter.Description,
+            sessionId: s.SessionId,
+            sourceInstanceId: s.SourceInstanceId,
+            sourceEni: s.SourceEni,
+            targetId: s.TargetId,
+            sessionNumber: s.SessionNumber,
+            rules: filter.Rules || [],
+          });
+        });
+      });
+      setSessions(flattened);
+    } catch (err: any) {
+      setSessionsError(String(err));
+      toast({
+        title: "Failed to load sessions",
+        description: String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, [selectedRegion, apiFetch, toast]);
+
+  useEffect(() => {
+    loadSessions();
+  }, [selectedRegion, loadSessions]);
+
+  const instanceMap = useMemo(() => {
+    const map = new Map<string, string>();
+    networkData.instances.forEach((i) => map.set(i.InstanceId, i.Name || i.InstanceId));
+    return map;
+  }, [networkData.instances]);
+
+  const resolveInstanceName = (id?: string) => (id ? instanceMap.get(id) || id : "");
+
+  const pickVpcCidr = useMemo(() => {
+    const vpc = networkData.vpcs.find((v) => v.VpcId === selectedVPC);
+    if (vpc?.CidrBlock) return vpc.CidrBlock;
+    if (networkData.subnets.length > 0 && networkData.subnets[0].CidrBlock)
+      return networkData.subnets[0].CidrBlock;
+    return "0.0.0.0/0";
+  }, [selectedVPC, networkData]);
+
+  const handleCreateMirrorSession = async () => {
+    if (!selectedRegion || !selectedVPC || !selectedSource || !selectedTarget) {
       toast({
         title: "Missing configuration",
-        description: "Please select region, VPC, and source instance",
+        description: "Please select region, VPC, source and target instance",
         variant: "destructive",
       });
       return;
     }
 
-    toast({
-      title: "Traffic mirror session created",
-      description: `Source: ${selectedSource}`,
-    });
+    if (pickVpcCidr === "0.0.0.0/0") {
+      toast({
+        title: "Using fallback CIDR",
+        description: "Couldn't determine VPC CIDR; using 0.0.0.0/0.",
+      });
+    }
+
+    setCreating(true);
+    try {
+      const data = await apiFetch("/mirror", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          region: selectedRegion,
+          vpc_cidr: pickVpcCidr,
+          source_instance_id: selectedSource,
+          target_instance_id: selectedTarget,
+        }),
+      });
+
+      toast({
+        title: "Mirror session created",
+        description: `Session #${data.session_number} created.`,
+      });
+      await loadSessions();
+    } catch (err: any) {
+      toast({
+        title: "Error creating mirror session",
+        description: err?.message || String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setCreating(false);
+    }
   };
 
-    const activeSessions = [
-    {
-      id: "tms-001",
-      region: "us-east-1",
-      vpc: "vpc-001",
-      source: "i-001",
-      sourceName: "Web Server 1",
-      target: "i-aviz-001",
-      targetName: "Virtual Aviz Cloud Node 1",
-      status: "Active",
-    },
-    {
-      id: "tms-002",
-      region: "us-east-1",
-      vpc: "vpc-001",
-      source: "i-002",
-      sourceName: "Web Server 2",
-      target: "i-aviz-001",
-      targetName: "Virtual Aviz Cloud Node 1",
-      status: "Active",
-    },
-  ];
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!selectedRegion) {
+      toast({ title: "Region not selected", description: "", variant: "destructive" });
+      return;
+    }
+
+    if (!confirm(`Delete session ${sessionId}?`)) return;
+
+    try {
+      await apiFetch(
+        `/filters/${encodeURIComponent(sessionId)}?region=${encodeURIComponent(
+          selectedRegion
+        )}`,
+        { method: "DELETE" }
+      );
+      toast({
+        title: "Session deleted",
+        description: `Session ${sessionId} deleted successfully.`,
+      });
+      await loadSessions();
+    } catch (err: any) {
+      toast({
+        title: "Error deleting session",
+        description: err?.message || String(err),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const targetOptions = networkData.instances.filter((i) => i.InstanceId !== selectedSource);
 
   return (
     <div className="space-y-6 overflow-y-auto max-h-screen p-2">
@@ -130,7 +282,7 @@ export function ConfigureTrafficMirror() {
             Configure Traffic Mirror Session
           </CardTitle>
           <CardDescription>
-            Configure AWS Traffic Mirror to send traffic to Virtual Aviz Cloud Node
+            Configure AWS Traffic Mirror to send traffic to Virtual Aviz Service Node
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -142,9 +294,9 @@ export function ConfigureTrafficMirror() {
                   <SelectValue placeholder="Choose region" />
                 </SelectTrigger>
                 <SelectContent>
-                  {regions.map((region) => (
-                    <SelectItem key={region} value={region}>
-                      {region}
+                  {regions.map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {r}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -162,7 +314,7 @@ export function ConfigureTrafficMirror() {
                   <SelectValue placeholder="Choose VPC" />
                 </SelectTrigger>
                 <SelectContent>
-                  {vpcs.map((vpc) => (
+                  {networkData.vpcs.map((vpc) => (
                     <SelectItem key={vpc.VpcId} value={vpc.VpcId}>
                       {vpc.Name || vpc.VpcId}
                     </SelectItem>
@@ -176,16 +328,19 @@ export function ConfigureTrafficMirror() {
             <Label>Source Instance</Label>
             <Select
               value={selectedSource}
-              onValueChange={setSelectedSource}
-              disabled={instances.length === 0}
+              onValueChange={(val) => {
+                setSelectedSource(val);
+                if (val === selectedTarget) setSelectedTarget("");
+              }}
+              disabled={networkData.instances.length === 0}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Choose source instance" />
               </SelectTrigger>
               <SelectContent>
-                {instances.map((inst) => (
-                  <SelectItem key={inst.InstanceId} value={inst.InstanceId}>
-                    {inst.Name || inst.InstanceId}
+                {networkData.instances.map((i) => (
+                  <SelectItem key={i.InstanceId} value={i.InstanceId}>
+                    {i.Name || i.InstanceId}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -193,70 +348,121 @@ export function ConfigureTrafficMirror() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="target">Target Instance (Virtual Aviz Cloud Node)</Label>
-            <Select value={selectedTarget} onValueChange={setSelectedTarget}>
-              <SelectTrigger id="target">
+            <Label>Target Instance (Virtual Aviz Service Node)</Label>
+            <Select
+              value={selectedTarget}
+              onValueChange={setSelectedTarget}
+              disabled={targetOptions.length === 0}
+            >
+              <SelectTrigger>
                 <SelectValue placeholder="Choose target instance" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="aviz-001">
-                  Virtual Aviz Cloud Node 1 (i-aviz-001)
-                </SelectItem>
-                <SelectItem value="aviz-002">
-                  Virtual Aviz Cloud Node 2 (i-aviz-002)
-                </SelectItem>
+                {targetOptions.map((i) => (
+                  <SelectItem key={i.InstanceId} value={i.InstanceId}>
+                    {i.Name || i.InstanceId}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
 
-          <Button onClick={handleCreateMirrorSession} className="w-full">
+          <Button
+            onClick={handleCreateMirrorSession}
+            className="w-full"
+            disabled={
+              creating ||
+              !selectedRegion ||
+              !selectedVPC ||
+              !selectedSource ||
+              !selectedTarget
+            }
+          >
             <Play className="h-4 w-4 mr-2" />
-            Create Mirror Session
+            {creating ? "Creating..." : "Create Mirror Session"}
           </Button>
         </CardContent>
       </Card>
+
       <Card className="border-border bg-card/50 backdrop-blur-sm">
         <CardHeader>
-          <CardTitle>Active Traffic Mirror Sessions</CardTitle>
-          <CardDescription>List of all configured traffic mirror sessions</CardDescription>
+          <div className="flex items-center justify-between w-full">
+            <div>
+              <CardTitle>Active Traffic Mirror Sessions</CardTitle>
+              <CardDescription>List of all configured traffic mirror sessions</CardDescription>
+            </div>
+            <Button
+              onClick={loadSessions}
+              size="sm"
+              disabled={!selectedRegion || sessionsLoading}
+              className="ml-4"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Session ID</TableHead>
-                <TableHead>Region</TableHead>
-                <TableHead>VPC</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Target</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {activeSessions.map((session) => (
-                <TableRow key={session.id}>
-                  <TableCell className="font-mono text-sm">{session.id}</TableCell>
-                  <TableCell>{session.region}</TableCell>
-                  <TableCell className="font-mono text-sm">{session.vpc}</TableCell>
-                  <TableCell>
-                    <div>
-                      <div className="font-medium">{session.sourceName}</div>
-                      <div className="text-xs text-muted-foreground font-mono">{session.source}</div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div>
-                      <div className="font-medium">{session.targetName}</div>
-                      <div className="text-xs text-muted-foreground font-mono">{session.target}</div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge className="bg-success text-background">{session.status}</Badge>
-                  </TableCell>
+          {sessionsLoading ? (
+            <div className="p-4">Loading sessions…</div>
+          ) : sessionsError ? (
+            <div className="p-4 text-destructive">Error: {sessionsError}</div>
+          ) : sessions.length === 0 ? (
+            <div className="p-4 text-muted-foreground">No sessions found.</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Session ID</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Target</TableHead>
+                  <TableHead>Session #</TableHead>
+                  <TableHead>Filter</TableHead>
+                  <TableHead>Status</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {sessions.map((s) => (
+                  <TableRow key={s.sessionId}>
+                    <TableCell className="font-mono text-sm">{s.sessionId}</TableCell>
+                    <TableCell>
+                      <div>
+                        <div className="font-medium">
+                          {resolveInstanceName(s.sourceInstanceId) || s.sourceInstanceId}
+                        </div>
+                        <div className="text-xs text-muted-foreground font-mono">
+                          {s.sourceEni || s.sourceInstanceId}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium">{s.targetId}</div>
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">{s.sessionNumber}</TableCell>
+                    <TableCell className="font-mono text-sm">{s.filterId}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Badge className="bg-success text-background">Active</Badge>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="p-1"
+                              onClick={() => handleDeleteSession(s.sessionId)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Delete session</TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -21,6 +21,14 @@ interface Instance {
   PrivateIpAddress?: string;
   PublicIpAddress?: string;
   State: string;
+  LaunchTime?: string | null;
+  Uptime?: string;
+}
+
+interface SubnetStatus {
+  running: number;
+  stopped: number;
+  total: number;
 }
 
 export function TopologyView() {
@@ -28,63 +36,92 @@ export function TopologyView() {
   const [vpcs, setVpcs] = useState<Record<string, VPC[]>>({});
   const [subnets, setSubnets] = useState<Record<string, Subnet[]>>({});
   const [instances, setInstances] = useState<Record<string, Instance[]>>({});
-
+  const [subnetStatus, setSubnetStatus] = useState<Record<string, SubnetStatus>>({});
   const [expandedRegion, setExpandedRegion] = useState<string | null>(null);
   const [expandedVPC, setExpandedVPC] = useState<string | null>(null);
   const [expandedSubnet, setExpandedSubnet] = useState<string | null>(null);
-
-  const [loading, setLoading] = useState<Record<string, boolean>>({
-    regions: true,
-  });
+  const [loading, setLoading] = useState<Record<string, boolean>>({ initial: true });
 
   const apiFetch = (path: string) => fetch(`/api${path}`).then((res) => res.json());
 
   useEffect(() => {
-    setLoading((prev) => ({ ...prev, regions: true }));
-    apiFetch("/regions")
-      .then(setRegions)
-      .catch((err) => console.error("Failed to fetch regions:", err))
-      .finally(() => setLoading((prev) => ({ ...prev, regions: false })));
+    async function preloadTopology() {
+      setLoading((prev) => ({ ...prev, initial: true }));
+      try {
+        const regionsList = await apiFetch("/regions");
+        setRegions(regionsList);
+
+        const allVPCs: Record<string, VPC[]> = {};
+        const allSubnets: Record<string, Subnet[]> = {};
+
+        await Promise.all(
+          regionsList.map(async (region) => {
+            const regionVPCs = await apiFetch(`/vpcs?region=${region}`);
+            allVPCs[region] = regionVPCs;
+
+            await Promise.all(
+              regionVPCs.map(async (vpc) => {
+                const vpcSubnets = await apiFetch(`/subnets?region=${region}&vpc_id=${vpc.VpcId}`);
+                allSubnets[vpc.VpcId] = vpcSubnets;
+
+                await Promise.all(
+                  vpcSubnets.map(async (subnet) => {
+                    const instData: any[] = await apiFetch(`/instances_in_subnet?region=${region}&subnet_id=${subnet.SubnetId}`);
+                    const instDetails = await Promise.all(instData.map(inst => fetchInstanceDetails(region, inst.InstanceId)));
+
+                    setInstances((prev) => ({ ...prev, [subnet.SubnetId]: instDetails }));
+
+                    const running = instDetails.filter(i => i.State === "running").length;
+                    const stopped = instDetails.filter(i => i.State === "stopped").length;
+                    const total = instDetails.length;
+                    setSubnetStatus((prev) => ({ ...prev, [subnet.SubnetId]: { running, stopped, total } }));
+                  })
+                );
+              })
+            );
+          })
+        );
+
+        setVpcs(allVPCs);
+        setSubnets(allSubnets);
+      } catch (err) {
+        console.error("Failed to load topology:", err);
+      } finally {
+        setLoading((prev) => ({ ...prev, initial: false }));
+      }
+    }
+
+    preloadTopology();
   }, []);
 
-  const toggleRegion = async (region: string) => {
-    setExpandedRegion(expandedRegion === region ? null : region);
-    if (!vpcs[region] && !loading[`region-${region}`]) {
-      setLoading((prev) => ({ ...prev, [`region-${region}`]: true }));
-      try {
-        const data = await apiFetch(`/vpcs?region=${region}`);
-        setVpcs((prev) => ({ ...prev, [region]: data }));
-      } finally {
-        setLoading((prev) => ({ ...prev, [`region-${region}`]: false }));
-      }
-    }
-  };
-
-  const toggleVPC = async (vpcId: string, region: string) => {
-    setExpandedVPC(expandedVPC === vpcId ? null : vpcId);
-    if (!subnets[vpcId] && !loading[`vpc-${vpcId}`]) {
-      setLoading((prev) => ({ ...prev, [`vpc-${vpcId}`]: true }));
-      try {
-        const data = await apiFetch(`/subnets?region=${region}&vpc_id=${vpcId}`);
-        setSubnets((prev) => ({ ...prev, [vpcId]: data }));
-      } finally {
-        setLoading((prev) => ({ ...prev, [`vpc-${vpcId}`]: false }));
-      }
-    }
-  };
-
   const fetchInstanceDetails = async (region: string, instanceId: string) => {
+    const formatUptime = (seconds: number) => {
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor((seconds % 86400) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      return `${minutes}m`;
+    };
+
     try {
-      const data = await apiFetch(
-        `/instance_details?region=${region}&instance_id=${instanceId}`
-      );
+      const data = await apiFetch(`/instance_details?region=${region}&instance_id=${instanceId}`);
       const nameTag = data.Tags?.find((t: any) => t.Key === "Name");
+      const launchTime = data.LaunchTime ? new Date(data.LaunchTime) : null;
+      let uptime = "N/A";
+
+      if (launchTime && data.State?.Name === "running") {
+        const diffSec = Math.floor((new Date().getTime() - launchTime.getTime()) / 1000);
+        uptime = formatUptime(diffSec);
+      }
 
       return {
-        Name: nameTag ? nameTag.Value : instanceId,
+        Name: nameTag?.Value ?? instanceId,
         PrivateIpAddress: data.PrivateIpAddress ?? "-",
         PublicIpAddress: data.PublicIpAddress ?? "-",
         State: data.State?.Name?.toLowerCase() ?? "unknown",
+        LaunchTime: data.LaunchTime ?? null,
+        Uptime: uptime,
       };
     } catch {
       return {
@@ -92,48 +129,43 @@ export function TopologyView() {
         PrivateIpAddress: "-",
         PublicIpAddress: "-",
         State: "unknown",
+        LaunchTime: null,
+        Uptime: "N/A",
       };
     }
   };
 
-  const toggleSubnet = async (subnetId: string, region: string) => {
+  const toggleSubnet = (subnetId: string) => {
     setExpandedSubnet(expandedSubnet === subnetId ? null : subnetId);
-
-    if (!instances[subnetId] && !loading[`subnet-${subnetId}`]) {
-      setLoading((prev) => ({ ...prev, [`subnet-${subnetId}`]: true }));
-
-      const data: any[] = await apiFetch(
-        `/instances_in_subnet?region=${region}&subnet_id=${subnetId}`
-      );
-
-      setInstances((prev) => ({
-        ...prev,
-        [subnetId]: data.map((inst) => ({
-          InstanceId: inst.InstanceId,
-          Name: null,
-          PrivateIpAddress: "-",
-          PublicIpAddress: "-",
-          State: "loading",
-        })),
-      }));
-
-      const detailed = await Promise.all(
-        data.map((inst) => fetchInstanceDetails(region, inst.InstanceId))
-      );
-
-      setInstances((prev) => ({
-        ...prev,
-        [subnetId]: data.map((inst, idx) => ({
-          InstanceId: inst.InstanceId,
-          ...detailed[idx],
-        })),
-      }));
-
-      setLoading((prev) => ({ ...prev, [`subnet-${subnetId}`]: false }));
-    }
   };
 
-  const isLoading = (key: string) => !!loading[key];
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setInstances((prev) => {
+        const updated = { ...prev };
+        for (const subnetId of Object.keys(updated)) {
+          updated[subnetId] = updated[subnetId].map((inst) => {
+            if (!inst.LaunchTime || inst.State !== "running") return inst;
+            const diffMs = new Date().getTime() - new Date(inst.LaunchTime).getTime();
+            const hours = Math.floor(diffMs / (1000 * 60 * 60));
+            const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+            return { ...inst, Uptime: `${hours}h ${mins}m` };
+          });
+        }
+        return updated;
+      });
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const getStateBadgeColor = (state: string) => {
+    switch (state) {
+      case "running": return "bg-green-600 text-white";
+      case "stopped": return "bg-gray-600 text-white";
+      case "stopping": return "bg-orange-600 text-white";
+      default: return "bg-muted text-muted-foreground";
+    }
+  };
 
   const Skeleton = () => <div className="h-3 w-24 bg-muted rounded animate-pulse" />;
 
@@ -143,176 +175,93 @@ export function TopologyView() {
         <Card className="w-full border-border bg-card/50 backdrop-blur-sm">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Network className="h-5 w-5 text-primary" />
-              Network Topology
+              <Network className="h-5 w-5 text-primary" /> Network Topology
             </CardTitle>
           </CardHeader>
 
           <CardContent className="space-y-3">
-
-            {loading.regions && (
+            {loading.initial && (
               <div className="flex items-center gap-2 p-4">
                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                <span className="text-sm text-muted-foreground">
-                  Loading Regions...
-                </span>
+                <span className="text-sm text-muted-foreground">Loading VPC Topology...</span>
               </div>
             )}
 
             {regions.map((region) => (
               <div key={region} className="border border-border rounded-lg w-full">
-                <div onClick={() => toggleRegion(region)} className="flex items-center gap-3 p-4 cursor-pointer hover:bg-muted/50 transition-colors">
-                  {expandedRegion === region ? (
-                    <ChevronDown className="h-5 w-5 text-primary" />
-                  ) : (
-                    <ChevronRight className="h-5 w-5 text-muted-foreground" />
-                  )}
-
+                <div
+                  onClick={() => setExpandedRegion(expandedRegion === region ? null : region)}
+                  className="flex items-center gap-3 p-4 cursor-pointer hover:bg-muted/50 transition-colors"
+                >
+                  {expandedRegion === region ? <ChevronDown className="h-5 w-5 text-primary" /> : <ChevronRight className="h-5 w-5 text-muted-foreground" />}
                   <Globe className="h-5 w-5 text-secondary" />
                   <span className="font-semibold truncate">{region}</span>
-
-                  {isLoading(`region-${region}`) ? (
-                    <Loader2 className="h-4 w-4 ml-auto animate-spin text-primary" />
-                  ) : (
-                    <Badge variant="outline" className="ml-auto">
-                      {vpcs[region]?.length ?? 0} VPCs
-                    </Badge>
-                  )}
+                  <Badge variant="outline" className="ml-auto">{vpcs[region]?.length ?? 0} VPCs</Badge>
                 </div>
 
                 {expandedRegion === region && (
                   <div className="pl-8 pr-4 pb-4 space-y-2">
-                    {isLoading(`region-${region}`) && (
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                        <span>Loading VPCs...</span>
-                      </div>
-                    )}
-
                     {vpcs[region]?.map((vpc) => (
                       <div key={vpc.VpcId} className="border border-border rounded-lg">
-                    
-                        <div onClick={() => toggleVPC(vpc.VpcId, region)} className="flex items-center gap-3 p-3 cursor-pointer hover:bg-muted/50 transition-colors">
-                          {expandedVPC === vpc.VpcId ? (
-                            <ChevronDown className="h-4 w-4 text-primary" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                          )}
-
+                        <div
+                          onClick={() => setExpandedVPC(expandedVPC === vpc.VpcId ? null : vpc.VpcId)}
+                          className="flex items-center gap-3 p-3 cursor-pointer hover:bg-muted/50 transition-colors"
+                        >
+                          {expandedVPC === vpc.VpcId ? <ChevronDown className="h-4 w-4 text-primary" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                           <Network className="h-4 w-4 text-accent" />
-
                           <div className="flex-1 truncate">
-                            <div className="font-medium truncate">
-                              {vpc.Name ?? vpc.VpcId}
-                            </div>
-                            <div className="text-xs text-muted-foreground truncate">
-                              {vpc.VpcId}
-                            </div>
+                            <div className="font-medium truncate">{vpc.Name ?? vpc.VpcId}</div>
+                            <div className="text-xs text-muted-foreground truncate">{vpc.VpcId}</div>
                           </div>
-
-                          {isLoading(`vpc-${vpc.VpcId}`) ? (
-                            <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                          ) : (
-                            <Badge variant="outline">
-                              {subnets[vpc.VpcId]?.length ?? 0} Subnets
-                            </Badge>
-                          )}
+                          <Badge variant="outline">{subnets[vpc.VpcId]?.length ?? 0} Subnets</Badge>
                         </div>
 
-                        {/* VPC EXPANDED */}
                         {expandedVPC === vpc.VpcId && (
                           <div className="pl-8 pr-3 pb-3 space-y-2">
-                            {isLoading(`vpc-${vpc.VpcId}`) && (
-                              <div className="flex items-center gap-2">
-                                <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                                <span>Loading Subnets...</span>
-                              </div>
-                            )}
-
                             {subnets[vpc.VpcId]?.map((subnet) => (
-                              <div
-                                key={subnet.SubnetId}
-                                className="border border-border rounded-lg"
-                              >
+                              <div key={subnet.SubnetId} className="border border-border rounded-lg">
                                 <div
-                                  onClick={() =>
-                                    toggleSubnet(subnet.SubnetId, region)
-                                  }
+                                  onClick={() => toggleSubnet(subnet.SubnetId)}
                                   className="flex items-center gap-3 p-3 cursor-pointer hover:bg-muted/50 transition-colors"
                                 >
-                                  {expandedSubnet === subnet.SubnetId ? (
-                                    <ChevronDown className="h-4 w-4 text-primary" />
-                                  ) : (
-                                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                                  )}
-
+                                  {expandedSubnet === subnet.SubnetId ? <ChevronDown className="h-4 w-4 text-primary" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                                   <Database className="h-4 w-4 text-primary" />
-
                                   <div className="flex-1 truncate">
-                                    <div className="font-medium text-sm truncate">
-                                      {subnet.Name ?? subnet.SubnetId}
-                                    </div>
+                                    <div className="font-medium text-sm truncate">{subnet.Name ?? subnet.SubnetId}</div>
                                     <div className="text-xs text-muted-foreground truncate">
-                                      {subnet.SubnetId} • {subnet.CidrBlock}
+                                      {subnet.SubnetId} • {subnet.CidrBlock} • Total: {subnetStatus[subnet.SubnetId]?.total ?? 0} • {subnetStatus[subnet.SubnetId]?.running ?? 0} running • {subnetStatus[subnet.SubnetId]?.stopped ?? 0} stopped 
                                     </div>
                                   </div>
-
-                                  <Badge variant="default" className="text-xs">
-                                    {subnet.AvailableIpAddressCount} IPs
-                                  </Badge>
+                                  <Badge variant="default" className="text-xs">{subnet.AvailableIpAddressCount} IPs</Badge>
                                 </div>
-                                
+
                                 {expandedSubnet === subnet.SubnetId && (
                                   <div className="pl-8 pr-3 pb-3 space-y-2">
-                                    {isLoading(
-                                      `subnet-${subnet.SubnetId}`
-                                    ) && (
+                                    {loading[`subnet-${subnet.SubnetId}`] && (
                                       <div className="flex items-center gap-2">
                                         <Loader2 className="h-4 w-4 animate-spin text-primary" />
                                         <span>Loading Instances...</span>
                                       </div>
                                     )}
 
-                                    {instances[subnet.SubnetId]?.map(
-                                      (inst) => (
-                                        <div
-                                          key={inst.InstanceId}
-                                          className="flex items-center gap-3 p-2 border rounded hover:bg-muted/30 transition-colors"
-                                        >
-                                          <Server className="h-4 w-4 text-success" />
-
-                                          <div className="flex-1 truncate">
-                                            <div className="text-sm font-medium truncate">
-                                              {inst.State === "loading" ? (
-                                                <Skeleton />
-                                              ) : (
-                                                inst.Name
-                                              )}
-                                            </div>
-
-                                            <div className="text-xs text-muted-foreground truncate">
-                                              {inst.InstanceId} •{" "}
-                                              {inst.PrivateIpAddress} •{" "}
-                                              {inst.PublicIpAddress}
-                                            </div>
+                                    {instances[subnet.SubnetId]?.map((inst) => (
+                                      <div key={inst.InstanceId} className="flex items-center gap-3 p-2 border rounded hover:bg-muted/30 transition-colors">
+                                        <Server className="h-4 w-4 text-success" />
+                                        <div className="flex-1 truncate">
+                                          <div className="text-sm font-medium truncate">{inst.State === "loading" ? <Skeleton /> : inst.Name}</div>
+                                          <div className="text-xs text-muted-foreground truncate">
+                                            {inst.InstanceId} • {inst.PrivateIpAddress} • {inst.PublicIpAddress}
+                                            {inst.LaunchTime && (
+                                              <>
+                                                {" • "} <span className="text-xs text-muted-foreground">Launched: {new Date(inst.LaunchTime).toLocaleString()}</span>
+                                                {" • "} <span className="text-xs text-blue-600">Uptime: {inst.Uptime}</span>
+                                              </>
+                                            )}
                                           </div>
-
-                                          {inst.State === "loading" ? (
-                                            <Skeleton />
-                                          ) : (
-                                            <Badge
-                                              className={
-                                                inst.State === "running"
-                                                  ? "bg-green-600 text-white"
-                                                  : "bg-muted text-muted-foreground"
-                                              }
-                                            >
-                                              {inst.State}
-                                            </Badge>
-                                          )}
                                         </div>
-                                      )
-                                    )}
+                                        {inst.State === "loading" ? <Skeleton /> : <Badge className={getStateBadgeColor(inst.State)}>{inst.State}</Badge>}
+                                      </div>
+                                    ))}
                                   </div>
                                 )}
                               </div>

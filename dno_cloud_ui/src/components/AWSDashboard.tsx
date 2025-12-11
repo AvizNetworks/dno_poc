@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TopologyView } from "./TopologyView";
 import { TableView } from "./TableView";
@@ -6,25 +6,56 @@ import { DeployAvizNode } from "./DeployAvizNode";
 import { ConfigureTrafficMirror } from "./ConfigureTrafficMirror";
 import { Network, Table, Settings } from "lucide-react";
 
-export function AWSDashboard() {
-  const [activeView, setActiveView] = useState("topology");
+interface ConfigTabsProps {
+  activeView: string;
+  setActiveView: (value: string) => void;
+}
+
+const ConfigTabs: React.FC<ConfigTabsProps> = ({ activeView, setActiveView }) => {
   const [configView, setConfigView] = useState("deploy");
 
-  const mockRegions = ["us-east-1", "us-west-2", "eu-west-1"];
-  const mockVPCs = [
-    { id: "vpc-001", name: "Production VPC", cidr: "10.0.0.0/16" },
-    { id: "vpc-002", name: "Development VPC", cidr: "10.1.0.0/16" },
-  ];
+  return (
+    <Tabs
+      value={configView}
+      onValueChange={setConfigView}
+      className="flex flex-col flex-1 min-h-0"
+    >
+      <TabsList className="grid w-full max-w-md grid-cols-2 mb-4">
+        <TabsTrigger value="deploy">Deploy vASN</TabsTrigger>
+        <TabsTrigger value="mirror">Traffic Mirror</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="deploy" className="flex-1 overflow-auto min-h-0">
+        <DeployAvizNode />
+      </TabsContent>
+
+      <TabsContent value="mirror" className="flex-1 overflow-auto min-h-0">
+        <ConfigureTrafficMirror />
+      </TabsContent>
+    </Tabs>
+  );
+};
+
+export const AWSDashboard: React.FC = React.memo(() => {
+  const [activeView, setActiveView] = useState("topology");
+
+  const mockRegions = useMemo(() => ["us-east-1", "us-west-2", "eu-west-1"], []);
+  const mockVPCs = useMemo(
+    () => [
+      { id: "vpc-001", name: "Production VPC", cidr: "10.0.0.0/16" },
+      { id: "vpc-002", name: "Development VPC", cidr: "10.1.0.0/16" },
+    ],
+    []
+  );
 
   return (
     <div className="flex-1 overflow-hidden">
       <div className="bg-gradient-mesh h-full">
         <div className="p-6 h-full flex flex-col min-h-0">
-
           <div className="mb-6 shrink-0">
             <h1 className="text-3xl font-bold mb-2">AWS Infrastructure</h1>
             <p className="text-muted-foreground">
-              View and manage your AWS resources, configure traffic mirroring, and deploy Virtual Aviz Cloud Nodes
+              View and manage your AWS resources, configure traffic mirroring, and deploy Virtual Aviz Service Nodes
             </p>
           </div>
 
@@ -54,28 +85,11 @@ export function AWSDashboard() {
             </TabsContent>
 
             <TabsContent value="config" className="flex-1 overflow-auto min-h-0">
-              <Tabs
-                value={configView}
-                onValueChange={setConfigView}
-                className="flex flex-col flex-1 min-h-0"
-              >
-                <TabsList className="grid w-full max-w-md grid-cols-2 mb-4">
-                  <TabsTrigger value="deploy">Deploy vACN</TabsTrigger>
-                  <TabsTrigger value="mirror">Traffic Mirror</TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="deploy" className="flex-1 overflow-auto min-h-0">
-                  <DeployAvizNode />
-                </TabsContent>
-
-                <TabsContent value="mirror" className="flex-1 overflow-auto min-h-0">
-                  <ConfigureTrafficMirror />
-                </TabsContent>
-              </Tabs>
+              <ConfigTabs activeView={activeView} setActiveView={setActiveView} />
             </TabsContent>
           </Tabs>
         </div>
       </div>
     </div>
   );
-}
+});
