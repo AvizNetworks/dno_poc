@@ -19,6 +19,8 @@
 #include <openssl/engine.h>
 #include <stdint.h>
 #include <linux/netfilter_ipv4.h>
+#include <fcntl.h>
+
 
 // Global SSL contexts
 SSL_CTX* server_ctx = NULL;
@@ -271,6 +273,7 @@ void handle_client(int client_sock, pcap_dumper_t* dumper) {
     // Transparent proxy: treat every connection as direct TLS
     // Step 1: Extract original destination IP/port using SO_ORIGINAL_DST
     struct sockaddr_in orig_dst;
+    uint8_t printonce=0;
     debug_print(" in. %s:%d\n", __func__,__LINE__);
  uint32_t orig_dst_ip_uint32=0; 
     socklen_t orig_dst_len = sizeof(orig_dst);
@@ -281,7 +284,7 @@ void handle_client(int client_sock, pcap_dumper_t* dumper) {
     }
 
     // Only accept connections from 11.11.11.0/24
-    uint32_t orig_dst_ip_uint32 = ntohl(orig_dst.sin_addr.s_addr);
+    orig_dst_ip_uint32 = ntohl(orig_dst.sin_addr.s_addr);
     if ((orig_dst_ip_uint32 & 0xFFFFFF00) != 0x0B0B0B00)
     { // 0x0B = 11
         debug_print("Rejected connection from %s\n", inet_ntoa(orig_dst.sin_addr));
@@ -355,11 +358,19 @@ void handle_client(int client_sock, pcap_dumper_t* dumper) {
         return;
     }
 
+    // Set server_sock to non-blocking mode
+    int flags = fcntl(server_sock, F_GETFL, 0);
+    if (flags != -1) {
+        fcntl(server_sock, F_SETFL, flags | O_NONBLOCK);
+    }
     // Step 7: Relay traffic bidirectionally
     char buffer[8192];
     int bytes;
     fd_set readfds;
     while (1) {
+        struct sockaddr_in client_addr_info, server_addr_info;
+        socklen_t client_addr_len = sizeof(client_addr_info);
+        socklen_t server_addr_len = sizeof(server_addr_info);
         FD_ZERO(&readfds);
         FD_SET(client_sock, &readfds);
         FD_SET(server_sock, &readfds);
@@ -370,19 +381,74 @@ void handle_client(int client_sock, pcap_dumper_t* dumper) {
             break;
         }
 
+        // getsockname(client_sock, (struct sockaddr *)&client_addr_info, &client_addr_len);
+        getsockname(server_sock, (struct sockaddr *)&server_addr_info, &server_addr_len);
+        debug_print("[C]%d<-------------------------------------------------------->[S]%d\n", ntohs(orig_dst.sin_port), ntohs(server_addr_info.sin_port));
+
         if (FD_ISSET(client_sock, &readfds)) {
             bytes = SSL_read(client_ssl, buffer, sizeof(buffer));
-            if (bytes <= 0) break;
-            debug_print("Decrypted HTTPS %d bytes: %.*s\n", bytes, bytes, buffer);
-            SSL_write(server_ssl, buffer, bytes);
+            if (bytes > 0) {
+                // debug_print("Decrypted HTTPS %d bytes: %.*s\n", bytes, bytes, buffer);
+                struct timeval tv;
+                gettimeofday(&tv, NULL);
+                // Convert timeval to human-readable date and time
+                char timebuf[64];
+                struct tm* tm_info = localtime(&tv.tv_sec);
+                strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", tm_info);
+                printf("[%s.%06ld] [C->S] Decrypted HTTPS %d bytes\n", timebuf, tv.tv_usec, bytes);
+                if(printonce == 0){
+                    printf("Data extracted:\n");
+                    fwrite(buffer, 1, bytes, stdout);
+                    printf("\n");
+                    printonce=1;
+                }
+                SSL_write(server_ssl, buffer, bytes);
+            } else if (bytes == 0) {
+                // Connection closed
+                break;
+            } else {
+                int err = SSL_get_error(client_ssl, bytes);
+                if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                    // Non-blocking: no data available, continue loop
+                    continue;
+                } else {
+                    fprintf(stderr, "SSL_read (client) error: %d\n", err);
+                    ERR_print_errors_fp(stderr);
+                    break;
+                }
+            }
         }
         if (FD_ISSET(server_sock, &readfds)) {
+            printf("Received data from the server..... about to read\n");
             bytes = SSL_read(server_ssl, buffer, sizeof(buffer));
-            if (bytes <= 0) break;
-            debug_print("Server response %d bytes: %.*s\n", bytes, bytes, buffer);
-            //spoofing source IP ?
-            SSL_write(client_ssl, buffer, bytes);
-            write_to_pcap(dumper, buffer, bytes);
+            printf("read some bytes from SSL_read bytes:%d\n",bytes);
+
+                if (bytes > 0) {
+                    // debug_print("Server response %d bytes: %.*s\n", bytes, bytes, buffer);
+                    struct timeval tv;
+                    gettimeofday(&tv, NULL);
+                    // Convert timeval to human-readable date and time
+                    char timebuf[64];
+                    struct tm* tm_info = localtime(&tv.tv_sec);
+                    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", tm_info);
+                    printf("[%s.%06ld] [S->C] Decrypted HTTPS %d bytes\n", timebuf, tv.tv_usec, bytes);
+                    // debug_print("Server response %d bytes\n", bytes);
+                    SSL_write(client_ssl, buffer, bytes);
+                    // write_to_pcap(dumper, buffer, bytes);
+                } else if (bytes == 0) {
+                    // Connection closed
+                    break;
+                } else {
+                    int err = SSL_get_error(server_ssl, bytes);
+                    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                        // Non-blocking: no data available, continue loop
+                        continue;
+                    } else {
+                        fprintf(stderr, "SSL_read error: %d\n", err);
+                        ERR_print_errors_fp(stderr);
+                        break;
+                    }
+                }
         }
     }
 
@@ -413,13 +479,13 @@ int start_proxy(pcap_dumper_t* dumper) {
         return -1;
     }
 
-    if (listen(sockfd, 5) < 0) {
+    if (listen(sockfd,20) < 0) {
         perror("Listen failed");
         close(sockfd);
         return -1;
     }
 
-    fprintf(stdout, "Proxy listening on %s:%d\n", argv[1], 8080);
+    fprintf(stdout, "Proxy listening on %d\n", 8080);
 
     while (1) {
         struct sockaddr_in client_addr;
@@ -429,6 +495,8 @@ int start_proxy(pcap_dumper_t* dumper) {
             perror("Accept failed");
             continue;
         }
+        printf("Got one socket connection  !\n");
+
 
         // Handle each client connection in a new process
         if (fork() == 0) {
