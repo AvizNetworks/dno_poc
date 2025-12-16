@@ -3,16 +3,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import boto3
 from typing import List, Optional
+import paramiko
+import json
+import os
+from datetime import datetime
+
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://10.4.5.169:8080"], 
+    allow_origins=["http://10.4.5.243:8080"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+PEM_FILE_PATH = "asn-aws.pem"
+DEPLOYED_NODES_FILE = "deployed_nodes.json"
 
 class DeployInstanceRequest(BaseModel):
     region: str
@@ -22,10 +30,12 @@ class DeployInstanceRequest(BaseModel):
     key_name: Optional[str] = None
     subnet_id: Optional[str] = None  
 
+
 class MirrorRequest(BaseModel):
     region: str
     source_instance_id: str
     target_instance_id: str
+    target_eni: Optional[str] = None
     protocol: Optional[int] = 1  
     directions: Optional[List[str]] = ["ingress", "egress"]
 
@@ -33,11 +43,124 @@ class InstanceActionRequest(BaseModel):
     region: str
     instance_ids: List[str] 
 
+class ASNDeployRequest(BaseModel):
+    region: str
+    vpc_id: str
+    instance_id: str
+
+class ASNStopRequest(BaseModel):
+    instance_id: str
+
+def load_deployed_nodes():
+    if os.path.exists(DEPLOYED_NODES_FILE):
+        with open(DEPLOYED_NODES_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+def save_deployed_nodes(nodes):
+    with open(DEPLOYED_NODES_FILE, 'w') as f:
+        json.dump(nodes, f, indent=2)
+
+def ssh_command(hostname, username, pem_path, command):
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    try:
+        private_key = paramiko.RSAKey.from_private_key_file(pem_path)
+        ssh.connect(hostname, username=username, pkey=private_key, timeout=30)
+        
+        stdin, stdout, stderr = ssh.exec_command(command)
+        output = stdout.read().decode()
+        error = stderr.read().decode()
+        
+        return {
+            'success': True,
+            'output': output,
+            'error': error
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+    finally:
+        ssh.close()
+
 @app.get("/regions", response_model=List[str])
 def list_regions():
     ec2 = boto3.client("ec2", region_name="us-east-1")
     regions = ec2.describe_regions()["Regions"]
     return [r["RegionName"] for r in regions]
+
+@app.get("/topology", response_model=dict)
+def get_bulk_topology(region: str):
+    ec2 = boto3.client("ec2", region_name=region)
+    
+    vpcs_response = ec2.describe_vpcs()
+    subnets_response = ec2.describe_subnets()
+    instances_response = ec2.describe_instances()
+    
+    vpcs_data = {}
+    for vpc in vpcs_response["Vpcs"]:
+        vpc_id = vpc["VpcId"]
+        name = next((tag["Value"] for tag in vpc.get("Tags", []) if tag["Key"] == "Name"), None)
+        vpcs_data[vpc_id] = {
+            "VpcId": vpc_id,
+            "Name": name,
+            "Subnets": {}
+        }
+    
+    for subnet in subnets_response["Subnets"]:
+        vpc_id = subnet["VpcId"]
+        subnet_id = subnet["SubnetId"]
+        name = next((tag["Value"] for tag in subnet.get("Tags", []) if tag["Key"] == "Name"), None)
+        
+        if vpc_id in vpcs_data:
+            vpcs_data[vpc_id]["Subnets"][subnet_id] = {
+                "SubnetId": subnet_id,
+                "Name": name,
+                "CidrBlock": subnet.get("CidrBlock"),
+                "AvailableIpAddressCount": subnet.get("AvailableIpAddressCount"),
+                "Instances": [],
+                "InstanceCounts": {
+                    "total": 0,
+                    "running": 0,
+                    "stopped": 0
+                }
+            }
+    
+    for reservation in instances_response["Reservations"]:
+        for instance in reservation["Instances"]:
+            subnet_id = instance.get("SubnetId")
+            vpc_id = instance.get("VpcId")
+            
+            if vpc_id in vpcs_data and subnet_id in vpcs_data[vpc_id]["Subnets"]:
+                name = next((tag["Value"] for tag in instance.get("Tags", []) if tag["Key"] == "Name"), None)
+                state = instance.get("State", {}).get("Name", "unknown").lower()
+                launch_time = instance.get("LaunchTime")
+                
+                instance_data = {
+                    "InstanceId": instance["InstanceId"],
+                    "Name": name or instance["InstanceId"],
+                    "PrivateIpAddress": instance.get("PrivateIpAddress", "-"),
+                    "PublicIpAddress": instance.get("PublicIpAddress", "-"),
+                    "State": state,
+                    "LaunchTime": launch_time.isoformat() if launch_time else None
+                }
+                
+                vpcs_data[vpc_id]["Subnets"][subnet_id]["Instances"].append(instance_data)
+                
+                counts = vpcs_data[vpc_id]["Subnets"][subnet_id]["InstanceCounts"]
+                counts["total"] += 1
+                if state == "running":
+                    counts["running"] += 1
+                elif state == "stopped":
+                    counts["stopped"] += 1
+    
+    return {
+        "Region": region,
+        "VPCs": list(vpcs_data.values())
+    }
 
 @app.get("/vpcs", response_model=List[dict])
 def list_vpcs(region: str):
@@ -51,7 +174,22 @@ def list_vpcs(region: str):
             if tag["Key"] == "Name":
                 name = tag["Value"]
                 break
-        result.append({"VpcId": vpc_id, "Name": name})
+        
+        cidr = v.get("CidrBlock")
+
+        cidr_blocks = [
+            assoc["CidrBlock"]
+            for assoc in v.get("CidrBlockAssociationSet", [])
+            if assoc["CidrBlockState"]["State"] == "associated"
+        ]
+
+        result.append({
+            "VpcId": vpc_id,
+            "Name": name,
+            "CidrBlock": cidr,                 
+            "CidrBlocks": cidr_blocks          
+        })
+
     return result
 
 @app.get("/instances", response_model=List[dict])
@@ -140,11 +278,16 @@ def instances_in_subnet(region: str, subnet_id: str):
                     break
             private_ip = instance.get("PrivateIpAddress")
             public_ip = instance.get("PublicIpAddress")
+            state = instance.get("State", {}).get("Name")
+            launch_time = instance.get("LaunchTime")
+            
             result.append({
                 "InstanceId": instance_id,
                 "Name": name,
                 "PrivateIpAddress": private_ip,
-                "PublicIpAddress": public_ip
+                "PublicIpAddress": public_ip,
+                "State": state,
+                "LaunchTime": launch_time.isoformat() if launch_time else None
             })
     return result
 
@@ -311,13 +454,25 @@ def setup_mirroring(req: MirrorRequest):
                 if not primary_eni:
                     primary_eni = enis[0]
 
-                private_ip = instance["PrivateIpAddress"]
-                return primary_eni["NetworkInterfaceId"], private_ip
+                return (
+                    primary_eni["NetworkInterfaceId"],
+                    instance["PrivateIpAddress"],
+                    primary_eni["VpcId"]
+                )
             except Exception as e:
                 raise HTTPException(500, f"Error retrieving ENI for {instance_id}: {e}")
 
-        source_eni, source_ip = get_primary_eni(req.source_instance_id)
-        target_eni, _ = get_primary_eni(req.target_instance_id)
+        source_eni, source_ip, vpc_id = get_primary_eni(req.source_instance_id)
+
+        if req.target_eni:
+            target_eni = req.target_eni
+            print(f"Using user-selected target ENI: {target_eni}")
+        else:
+            target_eni, _, _ = get_primary_eni(req.target_instance_id)
+            print(f"Using primary ENI as target: {target_eni}")
+        
+        vpc_resp = ec2.describe_vpcs(VpcIds=[vpc_id])
+        vpc_cidr = vpc_resp["Vpcs"][0]["CidrBlock"] 
 
         filter_resp = ec2.create_traffic_mirror_filter(
             TagSpecifications=[{
@@ -336,8 +491,8 @@ def setup_mirroring(req: MirrorRequest):
                     RuleNumber=rule_number,
                     RuleAction="accept",
                     Protocol=req.protocol,
-                    SourceCidrBlock="0.0.0.0/0",
-                    DestinationCidrBlock=f"{source_ip}/32"
+                    SourceCidrBlock=vpc_cidr,
+                    DestinationCidrBlock=vpc_cidr
                 )
             elif direction.lower() == "egress":
                 ec2.create_traffic_mirror_filter_rule(
@@ -346,8 +501,8 @@ def setup_mirroring(req: MirrorRequest):
                     RuleNumber=rule_number,
                     RuleAction="accept",
                     Protocol=req.protocol,
-                    SourceCidrBlock=f"{source_ip}/32",
-                    DestinationCidrBlock="0.0.0.0/0"
+                    SourceCidrBlock=vpc_cidr,
+                    DestinationCidrBlock=vpc_cidr
                 )
             rule_number += 1
 
@@ -374,6 +529,7 @@ def setup_mirroring(req: MirrorRequest):
         existing_sessions = ec2.describe_traffic_mirror_sessions(
             Filters=[{"Name": "network-interface-id", "Values": [source_eni]}]
         )["TrafficMirrorSessions"]
+
         session_numbers = [s["SessionNumber"] for s in existing_sessions]
         session_number = max(session_numbers, default=0) + 1
         if session_number > 32766:
@@ -393,6 +549,8 @@ def setup_mirroring(req: MirrorRequest):
         return {
             "status": "success",
             "region": req.region,
+            "vpc_id": vpc_id,
+            "vpc_cidr": vpc_cidr,
             "source_instance_id": req.source_instance_id,
             "target_instance_id": req.target_instance_id,
             "source_ip": source_ip,
@@ -410,7 +568,6 @@ def setup_mirroring(req: MirrorRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/filters")
 def list_mirror_filters(region: str):
@@ -487,39 +644,195 @@ def delete_mirror_session(session_id: str, region: str):
     try:
         ec2 = boto3.client("ec2", region_name=region)
 
-        response = ec2.describe_traffic_mirror_sessions(TrafficMirrorSessionIds=[session_id])
-        sessions = response.get("TrafficMirrorSessions", [])
-        
+        resp = ec2.describe_traffic_mirror_sessions(TrafficMirrorSessionIds=[session_id])
+        sessions = resp.get("TrafficMirrorSessions", [])
+
         if not sessions:
-            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-        
+            raise HTTPException(404, f"Session {session_id} not found")
+
         session = sessions[0]
-        target_id = session.get("TrafficMirrorTargetId")
-        filter_id = session.get("TrafficMirrorFilterId")
-        
+        target_id = session["TrafficMirrorTargetId"]
+        filter_id = session["TrafficMirrorFilterId"]
+
         ec2.delete_traffic_mirror_session(TrafficMirrorSessionId=session_id)
 
-        target_in_use = False
-        filter_in_use = False
+        import time
+        time.sleep(2) 
 
-        if target_id:
-            all_sessions = ec2.describe_traffic_mirror_sessions().get("TrafficMirrorSessions", [])
-            target_in_use = any(s.get("TrafficMirrorTargetId") == target_id for s in all_sessions)
-            if not target_in_use:
-                ec2.delete_traffic_mirror_target(TrafficMirrorTargetId=target_id)
-      
-        if filter_id:
-            all_sessions = ec2.describe_traffic_mirror_sessions().get("TrafficMirrorSessions", [])
-            filter_in_use = any(s.get("TrafficMirrorFilterId") == filter_id for s in all_sessions)
-            if not filter_in_use:
-                ec2.delete_traffic_mirror_filter(TrafficMirrorFilterId=filter_id)
+        all_sessions = ec2.describe_traffic_mirror_sessions().get("TrafficMirrorSessions", [])
+
+        target_in_use = any(s["TrafficMirrorTargetId"] == target_id for s in all_sessions)
+
+        if not target_in_use:
+            ec2.delete_traffic_mirror_target(TrafficMirrorTargetId=target_id)
+
+        filter_in_use = any(s["TrafficMirrorFilterId"] == filter_id for s in all_sessions)
+
+        if not filter_in_use:
+            ec2.delete_traffic_mirror_filter(TrafficMirrorFilterId=filter_id)
+
+            rules = ec2.describe_traffic_mirror_filter_rules(
+                Filters=[{"Name": "traffic-mirror-filter-id", "Values": [filter_id]}]
+            ).get("TrafficMirrorFilterRules", [])
+
+            for r in rules:
+                ec2.delete_traffic_mirror_filter_rule(
+                    TrafficMirrorFilterRuleId=r["TrafficMirrorFilterRuleId"]
+                )
+
+        return {
+            "session_deleted": True,
+            "target_deleted": not target_in_use,
+            "filter_deleted": not filter_in_use
+        }
+
+    except Exception as e:
+        print("Delete error:", e)
+        raise HTTPException(500, str(e))
+
+@app.post("/asn/deploy")
+def deploy_asn(req: ASNDeployRequest):
+    try:
+        ec2 = boto3.client("ec2", region_name=req.region)
+        response = ec2.describe_instances(InstanceIds=[req.instance_id])
+        
+        if not response["Reservations"] or not response["Reservations"][0]["Instances"]:
+            raise HTTPException(404, detail="Instance not found")
+        
+        instance = response["Reservations"][0]["Instances"][0]
+        public_ip = instance.get("PublicIpAddress")
+        private_ip = instance.get("PrivateIpAddress")
+        
+        if not public_ip:
+            raise HTTPException(400, detail="Instance has no public IP address")
+        
+        ip_dashed = public_ip.replace(".", "-")
+        if req.region == "us-east-1":
+            hostname = f"ec2-{ip_dashed}.compute-1.amazonaws.com"
+        else:
+            hostname = f"ec2-{ip_dashed}.{req.region}.compute.amazonaws.com"
+        
+        print(f"Connecting to {hostname}...")
+        result = ssh_command(
+            hostname=hostname,
+            username='ubuntu',
+            pem_path=PEM_FILE_PATH,
+            command='sudo systemctl start asn-core && sudo systemctl status asn-core'
+        )
+        
+        if not result['success']:
+            raise HTTPException(500, detail=f"SSH connection failed: {result['error']}")
+        
+        if 'active (running)' not in result['output'] and 'Active: active' not in result['output']:
+            raise HTTPException(500, detail=f"ASN service failed to start. Output: {result['output']}")
+        
+        name = next((tag["Value"] for tag in instance.get("Tags", []) if tag["Key"] == "Name"), None)
+        
+        deployed_node = {
+            "id": req.instance_id,
+            "name": name or f"Virtual Aviz Service Node ({req.instance_id})",
+            "region": req.region,
+            "vpc": req.vpc_id,
+            "ip": private_ip,
+            "publicIp": public_ip,
+            "status": "Running",
+            "deployedAt": datetime.now().isoformat(),
+            "hostname": hostname
+        }
+        
+        nodes = load_deployed_nodes()
+        
+        existing_index = next((i for i, n in enumerate(nodes) if n["id"] == req.instance_id), None)
+        if existing_index is not None:
+            nodes[existing_index] = deployed_node
+        else:
+            nodes.append(deployed_node)
+        
+        save_deployed_nodes(nodes)
         
         return {
-            "message": f"Traffic Mirror Session {session_id} deleted successfully.",
-            "target_deleted": not target_in_use if target_id else None,
-            "filter_deleted": not filter_in_use if filter_id else None
+            "success": True,
+            "message": "ASN deployed and started successfully",
+            "node": deployed_node,
+            "output": result['output']
         }
     
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"ERROR deleting session {session_id}:", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in /asn/deploy: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, detail=str(e))
+
+@app.post("/asn/stop")
+def stop_asn(req: ASNStopRequest):
+    try:
+        nodes = load_deployed_nodes()
+        node = next((n for n in nodes if n["id"] == req.instance_id), None)
+        
+        if not node:
+            raise HTTPException(404, detail="Node not found in deployed list")
+        
+        print(f"Stopping ASN on {node['hostname']}...")
+        result = ssh_command(
+            hostname=node['hostname'],
+            username='ubuntu',
+            pem_path=PEM_FILE_PATH,
+            command='sudo systemctl stop asn-core && sudo systemctl status asn-core'
+        )
+        
+        if not result['success']:
+            raise HTTPException(500, detail=f"SSH connection failed: {result['error']}")
+        
+        for n in nodes:
+            if n["id"] == req.instance_id:
+                n["status"] = "Stopped"
+                break
+        
+        save_deployed_nodes(nodes)
+        
+        return {
+            "success": True,
+            "message": "ASN stopped successfully",
+            "output": result['output']
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in /asn/stop: {str(e)}")
+        raise HTTPException(500, detail=str(e))
+
+@app.post("/asn/delete")
+def delete_asn(instance_id: str):
+    try:
+        nodes = load_deployed_nodes()
+        
+        node = next((n for n in nodes if n["id"] == instance_id), None)
+        if not node:
+            raise HTTPException(404, detail="Node not found in deployed list")
+        
+        nodes = [n for n in nodes if n["id"] != instance_id]
+        
+        save_deployed_nodes(nodes)
+        
+        return {
+            "success": True,
+            "message": f"Node {instance_id} removed from deployed list"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in /asn/delete: {str(e)}")
+        raise HTTPException(500, detail=str(e))
+
+@app.get("/asn/deployed")
+def get_deployed_nodes():
+    try:
+        nodes = load_deployed_nodes()
+        return nodes
+    except Exception as e:
+        print(f"Error in /asn/deployed: {str(e)}")
+        raise HTTPException(500, detail=str(e))

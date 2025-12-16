@@ -31,6 +31,8 @@ export function ConfigureTrafficMirror() {
   const [selectedVPC, setSelectedVPC] = useState("");
   const [selectedSource, setSelectedSource] = useState("");
   const [selectedTarget, setSelectedTarget] = useState("");
+  const [targetEnis, setTargetEnis] = useState<{ id: string; name: string }[]>([]);
+  const [selectedTargetEni, setSelectedTargetEni] = useState("");
 
   const [regions, setRegions] = useState<string[]>([]);
   const [networkData, setNetworkData] = useState<{
@@ -140,6 +142,39 @@ export function ConfigureTrafficMirror() {
     };
   }, [selectedRegion, networkData.subnets, apiFetch]);
 
+  useEffect(() => {
+    if (!selectedRegion || !selectedTarget) {
+      setTargetEnis([]);
+      setSelectedTargetEni("");
+      return;
+    }
+
+    const loadEnis = async () => {
+      try {
+        const data = await apiFetch(
+          `/instance_details?region=${encodeURIComponent(selectedRegion)}&instance_id=${encodeURIComponent(selectedTarget)}`
+        );
+        const enis = (data?.NetworkInterfaces || []).map((eni: any) => ({
+          id: eni.NetworkInterfaceId,
+          name: eni.Description || "(No Name)"
+        }));
+        setTargetEnis(enis);
+        if (enis.length > 0) setSelectedTargetEni(enis[0].id);
+      } catch (err) {
+        toast({
+          title: "Failed to load ENIs",
+          description: String(err),
+          variant: "destructive"
+        });
+        setTargetEnis([]);
+        setSelectedTargetEni("");
+      }
+    };
+
+    loadEnis();
+  }, [selectedRegion, selectedTarget, apiFetch, toast]);
+
+
   const loadSessions = useCallback(async () => {
     if (!selectedRegion) return;
     setSessionsLoading(true);
@@ -220,9 +255,9 @@ export function ConfigureTrafficMirror() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           region: selectedRegion,
-          vpc_cidr: pickVpcCidr,
           source_instance_id: selectedSource,
           target_instance_id: selectedTarget,
+          target_eni: selectedTargetEni || undefined,
         }),
       });
 
@@ -361,6 +396,26 @@ export function ConfigureTrafficMirror() {
                 {targetOptions.map((i) => (
                   <SelectItem key={i.InstanceId} value={i.InstanceId}>
                     {i.Name || i.InstanceId}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Target ENI</Label>
+            <Select
+              value={selectedTargetEni}
+              onValueChange={setSelectedTargetEni}
+              disabled={targetEnis.length === 0}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Choose target ENI" />
+              </SelectTrigger>
+              <SelectContent>
+                {targetEnis.map((eni) => (
+                  <SelectItem key={eni.id} value={eni.id}>
+                    {eni.name} ({eni.id})
                   </SelectItem>
                 ))}
               </SelectContent>

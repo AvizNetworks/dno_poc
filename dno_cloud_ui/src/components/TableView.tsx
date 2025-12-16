@@ -270,7 +270,6 @@ export function TableView() {
                         {statusCounts[status]}
                       </span>
 
-                      {/* Hover / Active underline */}
                       <span
                         className={`
                           absolute -bottom-1 left-0 w-full h-1 rounded-full
@@ -354,7 +353,6 @@ export function TableView() {
             </CardContent>
           </Card>
 
-          {/* Stop Instance Dialog */}
           <Dialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
             <DialogContent>
               <DialogHeader>
