@@ -17,6 +17,8 @@
 
 #include "tap.h"
 #include "worker.h"
+#include "afpacket.h"
+#include "cli.h"
 #include "../include/common.h"
 
 /* Program version */
@@ -25,6 +27,8 @@
 /* Global contexts for signal handler */
 static struct tap_ctx g_tap_ctx;
 static struct worker_ctx g_worker_ctx;
+static struct afpacket_ctx g_afpacket_ctx;
+static enum capture_mode g_capture_mode = CAPTURE_MODE_EBPF;
 static volatile bool g_running = true;
 
 /* Statistics interval in seconds */
@@ -35,24 +39,29 @@ static volatile bool g_running = true;
  */
 static void print_usage(const char *prog)
 {
-    printf("vasn_tap - High Performance eBPF Packet Tap v%s\n\n", VERSION);
+    printf("vasn_tap - High Performance Packet Tap v%s\n\n", VERSION);
     printf("Usage: %s [OPTIONS]\n\n", prog);
     printf("Required:\n");
     printf("  -i, --input <iface>     Input interface for packet capture (e.g., eth0)\n\n");
     printf("Optional:\n");
+    printf("  -m, --mode <mode>       Capture mode: 'ebpf' (default) or 'afpacket'\n");
+    printf("                          ebpf:     TC BPF + perf buffer (requires kernel 5.x+)\n");
+    printf("                          afpacket: AF_PACKET TPACKET_V3 + FANOUT_HASH\n");
+    printf("                                    (portable, multi-worker, kernel 3.2+)\n");
     printf("  -o, --output <iface>    Output interface for packet forwarding\n");
     printf("                          If not specified, packets are dropped (benchmark mode)\n");
     printf("  -w, --workers <count>   Number of worker threads (default: num CPUs)\n");
+    printf("                          Note: in ebpf mode, forced to 1 (perf buffer limitation)\n");
     printf("  -v, --verbose           Enable verbose logging\n");
     printf("  -s, --stats             Print periodic statistics\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nExamples:\n");
-    printf("  # Clone packets from eth0, drop in userspace (benchmark mode)\n");
-    printf("  sudo %s -i eth0\n\n", prog);
-    printf("  # Clone packets from eth0, forward to eth1\n");
-    printf("  sudo %s -i eth0 -o eth1\n\n", prog);
-    printf("  # Clone with 4 workers and verbose output\n");
-    printf("  sudo %s -i eth0 -o eth1 -w 4 -v\n", prog);
+    printf("  # AF_PACKET mode: 4 workers, capture from eth0, forward to eth1\n");
+    printf("  sudo %s -m afpacket -i eth0 -o eth1 -w 4 -s\n\n", prog);
+    printf("  # eBPF mode (default): capture from eth0, forward to eth1\n");
+    printf("  sudo %s -i eth0 -o eth1 -s\n\n", prog);
+    printf("  # AF_PACKET benchmark mode (drop, no output)\n");
+    printf("  sudo %s -m afpacket -i eth0 -w 4 -s\n", prog);
 }
 
 /* Signal counter for force exit */
@@ -95,28 +104,28 @@ static void setup_signals(void)
 static struct worker_stats g_prev_stats = {0};
 static time_t g_prev_stats_time = 0;
 
+/* (stats printing moved to print_stats_generic / collect_and_print_stats below) */
+
 /*
- * Print statistics - shows per-interval rates, not cumulative averages
+ * Print statistics - generic version that works with both modes
+ * Uses worker_stats which is shared by both backends
  */
-static void print_stats(struct worker_ctx *ctx, double elapsed_sec)
+static void print_stats_generic(struct worker_stats *stats, double elapsed_sec)
 {
-    struct worker_stats stats;
     double pps_rx, pps_tx, mbps_rx, mbps_tx;
     double interval_sec;
     uint64_t delta_pkts_rx, delta_pkts_tx, delta_bytes_rx, delta_bytes_tx;
     time_t now = time(NULL);
-
-    workers_get_stats(ctx, &stats);
 
     /* Calculate interval since last stats */
     interval_sec = (g_prev_stats_time > 0) ? (double)(now - g_prev_stats_time) : elapsed_sec;
     if (interval_sec < 1.0) interval_sec = 1.0;
 
     /* Calculate deltas for per-interval rates */
-    delta_pkts_rx = stats.packets_received - g_prev_stats.packets_received;
-    delta_pkts_tx = stats.packets_sent - g_prev_stats.packets_sent;
-    delta_bytes_rx = stats.bytes_received - g_prev_stats.bytes_received;
-    delta_bytes_tx = stats.bytes_sent - g_prev_stats.bytes_sent;
+    delta_pkts_rx = stats->packets_received - g_prev_stats.packets_received;
+    delta_pkts_tx = stats->packets_sent - g_prev_stats.packets_sent;
+    delta_bytes_rx = stats->bytes_received - g_prev_stats.bytes_received;
+    delta_bytes_tx = stats->bytes_sent - g_prev_stats.bytes_sent;
 
     /* Calculate per-interval rates */
     pps_rx = (double)delta_pkts_rx / interval_sec;
@@ -126,77 +135,53 @@ static void print_stats(struct worker_ctx *ctx, double elapsed_sec)
 
     printf("\n--- Statistics (%.1fs elapsed) ---\n", elapsed_sec);
     printf("RX: %lu total (%.0f pps, %.2f Mbps)\n",
-           (unsigned long)stats.packets_received, pps_rx, mbps_rx);
+           (unsigned long)stats->packets_received, pps_rx, mbps_rx);
     printf("TX: %lu total (%.0f pps, %.2f Mbps)\n",
-           (unsigned long)stats.packets_sent, pps_tx, mbps_tx);
-    printf("Dropped: %lu total\n", (unsigned long)stats.packets_dropped);
+           (unsigned long)stats->packets_sent, pps_tx, mbps_tx);
+    printf("Dropped: %lu total\n", (unsigned long)stats->packets_dropped);
     printf("----------------------------------\n");
 
     /* Save current stats for next interval */
-    g_prev_stats = stats;
+    g_prev_stats = *stats;
     g_prev_stats_time = now;
 }
 
-static struct option long_options[] = {
-    {"input",   required_argument, 0, 'i'},
-    {"output",  required_argument, 0, 'o'},
-    {"workers", required_argument, 0, 'w'},
-    {"verbose", no_argument,       0, 'v'},
-    {"stats",   no_argument,       0, 's'},
-    {"help",    no_argument,       0, 'h'},
-    {0, 0, 0, 0}
-};
+/*
+ * Collect and print stats for the active capture mode
+ */
+static void collect_and_print_stats(double elapsed_sec)
+{
+    struct worker_stats stats;
+
+    if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+        afpacket_get_stats(&g_afpacket_ctx, &stats);
+    } else {
+        workers_get_stats(&g_worker_ctx, &stats);
+    }
+
+    print_stats_generic(&stats, elapsed_sec);
+}
 
 int main(int argc, char **argv)
 {
-    char input_iface[64] = {0};
-    char output_iface[64] = {0};
-    struct worker_config wconfig = {0};
-    bool show_stats = false;
+    struct cli_args args;
     time_t start_time, last_stats_time;
-    int opt;
     int err;
+    int ret;
 
-    /* Parse command line arguments */
-    while ((opt = getopt_long(argc, argv, "i:o:w:vsh", long_options, NULL)) != -1) {
-        switch (opt) {
-        case 'i':
-            strncpy(input_iface, optarg, sizeof(input_iface) - 1);
-            break;
-        case 'o':
-            strncpy(output_iface, optarg, sizeof(output_iface) - 1);
-            strncpy(wconfig.output_ifname, optarg, sizeof(wconfig.output_ifname) - 1);
-            wconfig.output_ifindex = if_nametoindex(optarg);
-            break;
-        case 'w':
-            wconfig.num_workers = atoi(optarg);
-            if (wconfig.num_workers <= 0 || wconfig.num_workers > MAX_CPUS) {
-                fprintf(stderr, "Invalid worker count: %s (must be 1-%d)\n",
-                        optarg, MAX_CPUS);
-                return 1;
-            }
-            break;
-        case 'v':
-            wconfig.verbose = true;
-            break;
-        case 's':
-            show_stats = true;
-            break;
-        case 'h':
-            print_usage(argv[0]);
-            return 0;
-        default:
-            print_usage(argv[0]);
-            return 1;
-        }
+    /* Parse command line arguments using extracted parser */
+    ret = parse_args(argc, argv, &args);
+    if (ret == 1) {
+        /* --help requested */
+        print_usage(argv[0]);
+        return 0;
     }
-
-    /* Validate required arguments */
-    if (input_iface[0] == '\0') {
-        fprintf(stderr, "Error: Input interface (-i) is required\n\n");
+    if (ret < 0) {
         print_usage(argv[0]);
         return 1;
     }
+
+    g_capture_mode = args.mode;
 
     /* Check for root privileges */
     if (geteuid() != 0) {
@@ -208,43 +193,82 @@ int main(int argc, char **argv)
     setup_signals();
 
     printf("=== vasn_tap v%s ===\n", VERSION);
-    printf("Input interface:  %s\n", input_iface);
-    printf("Output interface: %s\n", output_iface[0] ? output_iface : "(drop mode)");
-    printf("Worker threads:   %d\n", wconfig.num_workers > 0 ? wconfig.num_workers : get_nprocs());
+    printf("Capture mode:     %s\n", g_capture_mode == CAPTURE_MODE_AFPACKET ? "afpacket" : "ebpf");
+    printf("Input interface:  %s\n", args.input_iface);
+    printf("Output interface: %s\n", args.output_iface[0] ? args.output_iface : "(drop mode)");
+    printf("Worker threads:   %d\n", args.num_workers > 0 ? args.num_workers : get_nprocs());
     printf("\n");
 
-    /* Initialize tap context */
-    err = tap_init(&g_tap_ctx, input_iface);
-    if (err) {
-        fprintf(stderr, "Failed to initialize tap: %s\n", strerror(-err));
-        return 1;
-    }
+    /*
+     * Initialize and start based on capture mode
+     */
+    if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+        /* --- AF_PACKET mode --- */
+        struct afpacket_config aconfig = {0};
+        snprintf(aconfig.input_ifname, sizeof(aconfig.input_ifname), "%s", args.input_iface);
+        aconfig.input_ifindex = if_nametoindex(args.input_iface);
+        if (aconfig.input_ifindex == 0) {
+            fprintf(stderr, "Error: Input interface %s not found\n", args.input_iface);
+            return 1;
+        }
+        if (args.output_iface[0]) {
+            snprintf(aconfig.output_ifname, sizeof(aconfig.output_ifname), "%s", args.output_iface);
+            aconfig.output_ifindex = if_nametoindex(args.output_iface);
+        }
+        aconfig.num_workers = args.num_workers;
+        aconfig.verbose = args.verbose;
 
-    /* Initialize workers */
-    err = workers_init(&g_worker_ctx, g_tap_ctx.obj, &wconfig);
-    if (err) {
-        fprintf(stderr, "Failed to initialize workers: %s\n", strerror(-err));
-        tap_cleanup(&g_tap_ctx);
-        return 1;
-    }
+        err = afpacket_init(&g_afpacket_ctx, &aconfig);
+        if (err) {
+            fprintf(stderr, "Failed to initialize AF_PACKET: %s\n", strerror(-err));
+            return 1;
+        }
 
-    /* Attach eBPF programs */
-    err = tap_attach(&g_tap_ctx);
-    if (err) {
-        fprintf(stderr, "Failed to attach eBPF programs: %s\n", strerror(-err));
-        workers_cleanup(&g_worker_ctx);
-        tap_cleanup(&g_tap_ctx);
-        return 1;
-    }
+        err = afpacket_start(&g_afpacket_ctx);
+        if (err) {
+            fprintf(stderr, "Failed to start AF_PACKET workers: %s\n", strerror(-err));
+            afpacket_cleanup(&g_afpacket_ctx);
+            return 1;
+        }
+    } else {
+        /* --- eBPF mode --- */
+        struct worker_config wconfig = {0};
+        wconfig.num_workers = args.num_workers;
+        wconfig.verbose = args.verbose;
+        if (args.output_iface[0]) {
+            snprintf(wconfig.output_ifname, sizeof(wconfig.output_ifname), "%s", args.output_iface);
+            wconfig.output_ifindex = if_nametoindex(args.output_iface);
+        }
 
-    /* Start workers */
-    err = workers_start(&g_worker_ctx);
-    if (err) {
-        fprintf(stderr, "Failed to start workers: %s\n", strerror(-err));
-        tap_detach(&g_tap_ctx);
-        workers_cleanup(&g_worker_ctx);
-        tap_cleanup(&g_tap_ctx);
-        return 1;
+        err = tap_init(&g_tap_ctx, args.input_iface);
+        if (err) {
+            fprintf(stderr, "Failed to initialize tap: %s\n", strerror(-err));
+            return 1;
+        }
+
+        err = workers_init(&g_worker_ctx, g_tap_ctx.obj, &wconfig);
+        if (err) {
+            fprintf(stderr, "Failed to initialize workers: %s\n", strerror(-err));
+            tap_cleanup(&g_tap_ctx);
+            return 1;
+        }
+
+        err = tap_attach(&g_tap_ctx);
+        if (err) {
+            fprintf(stderr, "Failed to attach eBPF programs: %s\n", strerror(-err));
+            workers_cleanup(&g_worker_ctx);
+            tap_cleanup(&g_tap_ctx);
+            return 1;
+        }
+
+        err = workers_start(&g_worker_ctx);
+        if (err) {
+            fprintf(stderr, "Failed to start workers: %s\n", strerror(-err));
+            tap_detach(&g_tap_ctx);
+            workers_cleanup(&g_worker_ctx);
+            tap_cleanup(&g_tap_ctx);
+            return 1;
+        }
     }
 
     printf("\nPacket tap running. Press Ctrl+C to stop.\n");
@@ -256,27 +280,37 @@ int main(int argc, char **argv)
     while (g_running) {
         sleep(1);
 
-        if (show_stats) {
+        if (args.show_stats) {
             time_t now = time(NULL);
             if (now - last_stats_time >= STATS_INTERVAL_SEC) {
-                print_stats(&g_worker_ctx, (double)(now - start_time));
+                collect_and_print_stats((double)(now - start_time));
                 last_stats_time = now;
             }
         }
     }
 
     /* Print final statistics */
-    if (show_stats) {
+    if (args.show_stats) {
         time_t now = time(NULL);
-        print_stats(&g_worker_ctx, (double)(now - start_time));
+        collect_and_print_stats((double)(now - start_time));
+
+        /* Print per-worker breakdown for AF_PACKET (useful for fanout verification) */
+        if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+            afpacket_print_per_worker_stats(&g_afpacket_ctx);
+        }
     }
 
-    /* Cleanup */
+    /* Cleanup based on mode */
     printf("Cleaning up...\n");
-    workers_stop(&g_worker_ctx);
-    tap_detach(&g_tap_ctx);
-    workers_cleanup(&g_worker_ctx);
-    tap_cleanup(&g_tap_ctx);
+    if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+        afpacket_stop(&g_afpacket_ctx);
+        afpacket_cleanup(&g_afpacket_ctx);
+    } else {
+        workers_stop(&g_worker_ctx);
+        tap_detach(&g_tap_ctx);
+        workers_cleanup(&g_worker_ctx);
+        tap_cleanup(&g_tap_ctx);
+    }
 
     printf("Done.\n");
     return 0;

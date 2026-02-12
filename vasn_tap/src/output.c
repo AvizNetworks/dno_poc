@@ -48,6 +48,18 @@ int output_open(const char *ifname)
         }
     }
 
+    /* Increase send buffer to reduce drops under burst traffic.
+     * Default SO_SNDBUF is ~212KB which overflows quickly when
+     * multiple workers push packets concurrently with MSG_DONTWAIT.
+     * 4MB gives enough headroom for bursty forwarding. */
+    {
+        int sndbuf = 4 * 1024 * 1024;  /* 4 MB */
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+            fprintf(stderr, "Warning: Failed to set SO_SNDBUF to %d: %s\n",
+                    sndbuf, strerror(errno));
+        }
+    }
+
     /* Bind to interface */
     sll.sll_family = AF_PACKET;
     sll.sll_protocol = htons(ETH_P_ALL);

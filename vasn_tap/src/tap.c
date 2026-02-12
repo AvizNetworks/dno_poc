@@ -133,7 +133,7 @@ int tap_init(struct tap_ctx *ctx, const char *ifname)
     }
 
     memset(ctx, 0, sizeof(*ctx));
-    strncpy(ctx->ifname, ifname, sizeof(ctx->ifname) - 1);
+    snprintf(ctx->ifname, sizeof(ctx->ifname), "%s", ifname);
 
     /* Get interface index */
     ctx->ifindex = if_nametoindex(ifname);

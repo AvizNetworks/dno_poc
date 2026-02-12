@@ -1,0 +1,395 @@
+# vasn_tap Testing Guide
+
+This document covers the testing strategy, all test suites, and how to add new tests to vasn_tap.
+
+## Testing Overview
+
+vasn_tap uses a **two-tier testing strategy**:
+
+| Tier | Framework | Root? | What it tests |
+|------|-----------|-------|---------------|
+| **Unit tests** | [CMocka](https://cmocka.org/) (C) | No | Individual functions in isolation: CLI parsing, config validation, stats logic, output error paths |
+| **Integration tests** | Bash + network namespaces | Yes | End-to-end packet flow: capture, forward, drop, shutdown, multi-worker, both modes |
+
+## Quick Start
+
+```bash
+# Run unit tests (no root required)
+make test
+
+# Run integration tests (requires root, generates HTML report)
+sudo bash tests/integration/run_all.sh
+```
+
+---
+
+## Unit Tests
+
+### Building and Running
+
+```bash
+# Build and run all unit tests
+make test
+
+# Build a specific test (without running)
+make build/test_cli
+
+# Run a specific test binary directly
+./build/test_cli
+```
+
+### Test Suites
+
+#### test_cli.c -- CLI Argument Parsing (18 tests)
+
+Tests the `parse_args()` function extracted into `src/cli.c`. This function was extracted from `main.c` specifically to enable unit testing. It resets `optind = 1` before each call so that `getopt_long()` works correctly across multiple test invocations.
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_parse_mode_ebpf` | `-m ebpf` sets `mode` to `CAPTURE_MODE_EBPF` |
+| `test_parse_mode_afpacket` | `-m afpacket` sets `mode` to `CAPTURE_MODE_AFPACKET` |
+| `test_parse_mode_invalid` | `-m xdp` (invalid) returns `-1` |
+| `test_parse_mode_default_is_ebpf` | Omitting `-m` defaults to `CAPTURE_MODE_EBPF` |
+| `test_parse_input_interface` | `-i ens34` populates `input_iface` |
+| `test_parse_output_interface` | `-i eth0 -o eth1` populates both interfaces |
+| `test_parse_missing_input` | Missing `-i` returns `-1` (required argument) |
+| `test_parse_workers_valid` | `-w 4` sets `num_workers` to 4 |
+| `test_parse_workers_one` | `-w 1` accepted as minimum |
+| `test_parse_workers_zero` | `-w 0` returns `-1` (invalid) |
+| `test_parse_workers_negative` | `-w -1` returns `-1` (invalid) |
+| `test_parse_workers_too_many` | `-w 999` returns `-1` (exceeds MAX_CPUS=128) |
+| `test_parse_workers_default_zero` | Default `num_workers` is 0 (meaning auto-detect) |
+| `test_parse_verbose` | `-v` sets `verbose = true` |
+| `test_parse_stats` | `-s` sets `show_stats = true` |
+| `test_parse_help` | `-h` returns `1` and sets `help = true` |
+| `test_parse_full_commandline` | All options combined: `-m afpacket -i eth0 -o eth1 -w 8 -v -s` |
+| `test_parse_null_args` | `args == NULL` returns `-1` (does not crash) |
+
+#### test_stats.c -- Stats Accumulation and Reset (10 tests)
+
+Tests the stats aggregation functions for both the AF_PACKET and eBPF backends.
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_afpacket_get_stats_single_worker` | Sums stats from 1 worker correctly |
+| `test_afpacket_get_stats_multi_worker` | Sums stats across 4 workers: 100+200+300+400 = 1000 |
+| `test_afpacket_get_stats_null_ctx` | `NULL` context returns zero stats, no crash |
+| `test_afpacket_get_stats_null_total` | `NULL` total pointer does not crash |
+| `test_afpacket_get_stats_null_workers` | `NULL` workers array with num_workers=4 returns zero |
+| `test_afpacket_reset_stats` | Reset clears all per-worker atomic counters to 0 |
+| `test_afpacket_reset_stats_null` | `NULL` context does not crash |
+| `test_workers_get_stats_multi` | eBPF `workers_get_stats()` sums 3 workers |
+| `test_workers_get_stats_null` | `NULL` context returns zero stats |
+| `test_workers_reset_stats` | eBPF `workers_reset_stats()` clears all counters |
+
+#### test_config.c -- Config Validation (5 tests)
+
+Tests parameter validation in init functions.
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_afpacket_init_null_ctx` | `afpacket_init(NULL, &config)` returns `-EINVAL` |
+| `test_afpacket_init_null_config` | `afpacket_init(&ctx, NULL)` returns `-EINVAL` |
+| `test_workers_init_null_ctx` | `workers_init(NULL, NULL, &config)` returns `-EINVAL` |
+| `test_workers_init_null_config` | `workers_init(&ctx, NULL, NULL)` returns `-EINVAL` |
+| `test_capture_mode_values` | `CAPTURE_MODE_EBPF == 0`, `CAPTURE_MODE_AFPACKET == 1` |
+
+#### test_output.c -- Output Module Error Paths (8 tests)
+
+Tests the `output_open()`, `output_send()`, and `output_close()` functions.
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_output_send_negative_fd` | `output_send(-1, data, len)` returns `-EINVAL` |
+| `test_output_send_null_data` | `output_send(fd, NULL, len)` returns `-EINVAL` |
+| `test_output_send_zero_len` | `output_send(fd, data, 0)` returns `-EINVAL` |
+| `test_output_open_null` | `output_open(NULL)` returns negative FD |
+| `test_output_open_empty` | `output_open("")` returns negative FD |
+| `test_output_open_nonexistent` | Non-existent interface name returns negative FD |
+| `test_output_close_negative_fd` | `output_close(-1)` does not crash |
+| `test_output_close_invalid_fd` | `output_close(9999)` does not crash |
+
+### How to Add a New Unit Test
+
+**Step 1:** Create a new test file in `tests/unit/`:
+
+```c
+/* tests/unit/test_mymodule.c */
+#define _GNU_SOURCE
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <setjmp.h>
+#include <cmocka.h>
+#include <string.h>
+
+/* Include the module header you're testing */
+#include "../../src/mymodule.h"
+
+static void test_myfunction_basic(void **state)
+{
+    (void)state;
+    /* Arrange */
+    int input = 42;
+
+    /* Act */
+    int result = myfunction(input);
+
+    /* Assert */
+    assert_int_equal(result, 84);
+}
+
+static void test_myfunction_null(void **state)
+{
+    (void)state;
+    assert_int_equal(myfunction_with_ptr(NULL), -EINVAL);
+}
+
+int main(void)
+{
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_myfunction_basic),
+        cmocka_unit_test(test_myfunction_null),
+    };
+
+    return cmocka_run_group_tests(tests, NULL, NULL);
+}
+```
+
+**Step 2:** Add a build target in the `Makefile`:
+
+```makefile
+$(BUILD_DIR)/test_mymodule: $(TEST_UNIT_DIR)/test_mymodule.c $(BUILD_DIR)/mymodule.o
+	@echo "Building test_mymodule..."
+	$(CC) $(CFLAGS) -o $@ $< $(BUILD_DIR)/mymodule.o $(TEST_LDFLAGS)
+```
+
+**Step 3:** Add it to the `test` target's dependency list and `for` loop:
+
+```makefile
+test: ... $(BUILD_DIR)/test_mymodule
+	@PASS=0; FAIL=0; \
+	for t in ... $(BUILD_DIR)/test_mymodule; do \
+```
+
+**Step 4:** Build and run:
+
+```bash
+make test
+```
+
+### Design Note: Why parse_args() Was Extracted
+
+Originally, CLI parsing lived inside `main()` in `main.c`. This made it impossible to unit-test argument parsing without running the entire program. By extracting it into `src/cli.c`:
+
+- Each test can call `parse_args()` directly with a synthetic `argv[]`
+- `optind = 1` is reset before each call so `getopt_long()` works across multiple tests
+- `opterr = 0` suppresses getopt's error output during tests
+- The function returns structured data (`struct cli_args`) instead of setting globals
+
+---
+
+## Integration Tests
+
+### How to Run
+
+```bash
+# Run full suite (sets up namespaces, runs all tests, generates HTML report)
+sudo bash tests/integration/run_all.sh
+```
+
+The HTML report is generated at `test_report.html` in the project root.
+
+### Test Topology
+
+The integration tests create an isolated network topology using Linux network namespaces and veth pairs:
+
+```
+  [ns_src]                      [default ns]                      [ns_dst]
+  10.0.1.1/24                                                     10.0.2.1/24
+
+  +--------------+         +------------------+          +--------------+
+  | veth_src_ns  |--veth-->| veth_src_host    |          | veth_dst_ns  |
+  +--------------+         |                  |          +--------------+
+                           |    vasn_tap      |                ^
+                           |  -i veth_src_host|                |
+                           |  -o veth_dst_host|          +-----+--------+
+                           |                  |--veth-->| veth_dst_host |
+                           +------------------+          +--------------+
+
+  Traffic flow: ns_src --ping--> veth_src_host --vasn_tap--> veth_dst_host --> ns_dst
+```
+
+- `setup_namespaces.sh` creates this topology before tests
+- `teardown_namespaces.sh` destroys it after tests
+
+### Test Matrix
+
+All tests except multiworker run in **both** capture modes:
+
+| Test | AF_PACKET | eBPF | Description |
+|------|:---------:|:----:|-------------|
+| `test_basic_forward.sh` | Yes | Yes | Send 20 ICMP pings, verify they are captured and forwarded to destination |
+| `test_drop_mode.sh` | Yes | Yes | Capture packets with no output interface, verify RX > 0, TX = 0, Dropped > 0 |
+| `test_graceful_shutdown.sh` | Yes | Yes | Send SIGINT during active traffic, verify clean "Cleaning up" and "Done" messages |
+| `test_multiworker.sh` | Yes | No* | Test with 1, 2, and 4 workers, verify RX/TX for each |
+| `test_fanout_distribution.sh` | Yes | No* | Use iperf3 with 8 parallel TCP flows and `/proc/net/packet` to verify PACKET_FANOUT_HASH distributes packets across 4 worker sockets (requires iperf3; skips gracefully if not installed) |
+
+*eBPF mode is forced to 1 worker, so multi-worker and fanout testing only apply to AF_PACKET.
+
+This gives **8 test results** in the HTML report: 3 afpacket + 3 ebpf + 1 multiworker + 1 fanout distribution.
+
+### Understanding Packet Counts
+
+A common question is: "I sent 20 pings, why does RX show ~49?"
+
+AF_PACKET in promiscuous mode captures **every raw frame** on the interface in both directions:
+- 20 ICMP echo requests (ns_src -> host)
+- 20 ICMP echo replies (host -> ns_src)
+- ~9 ARP packets (MAC address resolution)
+- = ~49 total raw frames
+
+The HTML report includes explanatory notes on each test card clarifying this. In eBPF mode, the count depends on the TC hook direction and kernel behavior.
+
+### HTML Report
+
+After running the integration tests, `test_report.html` is generated in the project root. It includes:
+
+- **Summary bar**: Total tests, passed, failed, duration
+- **Topology diagram**: ASCII art showing the test network layout
+- **Per-test cards** (click to expand): Configuration, traffic sent, results (raw frames captured, frames forwarded, frames dropped, received at destination), duration, and explanatory notes
+- **Error details**: Automatically expanded for failed tests
+
+### How to Add a New Integration Test
+
+**Step 1:** Create a new script in `tests/integration/`:
+
+```bash
+#!/bin/bash
+# tests/integration/test_mytest.sh
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VASN_TAP="$PROJECT_DIR/vasn_tap"
+MODE="${1:-afpacket}"    # Accept mode as argument
+START_TIME=$(date +%s)
+
+# Source helpers for JSON result writing
+source "$SCRIPT_DIR/test_helpers.sh"
+
+echo "=== Test: mytest (mode=$MODE) ==="
+
+RESULT="FAIL"
+ERROR_MSG=""
+
+# ... your test logic here ...
+# Start vasn_tap, send traffic, check results
+
+DURATION=$(($(date +%s) - START_TIME))
+
+# Determine pass/fail
+if [ "${RX_COUNT:-0}" -gt 0 ]; then
+    RESULT="PASS"
+else
+    ERROR_MSG="Expected RX > 0, got ${RX_COUNT:-0}"
+fi
+
+# Write JSON result for HTML report
+JSON=$(build_result_json \
+    "test_name"         "My Test ($MODE)" \
+    "description"       "Description of what this test verifies" \
+    "result"            "$RESULT" \
+    "mode"              "$MODE" \
+    "workers"           "2" \
+    "input_iface"       "veth_src_host" \
+    "output_iface"      "veth_dst_host" \
+    "traffic_type"      "ICMP ping" \
+    "traffic_count"     "20" \
+    "traffic_src"       "ns_src (10.0.1.1)" \
+    "traffic_dst"       "host (10.0.1.2)" \
+    "rx_packets"        "${RX_COUNT:-0}" \
+    "tx_packets"        "${TX_COUNT:-0}" \
+    "dropped_packets"   "${DROP_COUNT:-0}" \
+    "captured_at_dst"   "0" \
+    "duration_sec"      "$DURATION" \
+    "error_msg"         "$ERROR_MSG" \
+    "note"              "Explanation of expected packet counts")
+write_result "$JSON" "mytest_${MODE}"
+
+[ "$RESULT" = "PASS" ]
+```
+
+**Step 2:** Add it to the test loop in `run_all.sh`:
+
+```bash
+# In the "Tests that run in both modes" loop:
+for test in test_basic_forward test_drop_mode test_graceful_shutdown test_mytest; do
+
+# Or, if it's afpacket-only, add it in the AF_PACKET-only section.
+```
+
+**Step 3:** Make it executable and run:
+
+```bash
+chmod +x tests/integration/test_mytest.sh
+sudo bash tests/integration/run_all.sh
+```
+
+### JSON Result Schema
+
+Each test writes a JSON result file (when `RESULT_DIR` is set by `run_all.sh`). The `generate_report.sh` script reads these to build the HTML report.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `test_name` | string | Display name (e.g., "Basic Packet Forwarding (afpacket)") |
+| `description` | string | Human-readable description |
+| `result` | string | `"PASS"` or `"FAIL"` |
+| `mode` | string | `"afpacket"` or `"ebpf"` |
+| `workers` | number | Worker thread count |
+| `input_iface` | string | Input interface name |
+| `output_iface` | string | Output interface name (or "(none - drop mode)") |
+| `traffic_type` | string | e.g., "ICMP ping" |
+| `traffic_count` | number | Number of packets/pings sent |
+| `traffic_src` | string | Source description |
+| `traffic_dst` | string | Destination description |
+| `rx_packets` | number | Raw frames captured by vasn_tap |
+| `tx_packets` | number | Frames forwarded by vasn_tap |
+| `dropped_packets` | number | Frames dropped (no output or error) |
+| `captured_at_dst` | number | Packets verified by tcpdump at destination |
+| `duration_sec` | number | Test duration in seconds |
+| `error_msg` | string | Error details (empty on PASS) |
+| `note` | string | Explanatory note about packet counts |
+
+### Test Helper Functions
+
+Defined in `tests/integration/test_helpers.sh`:
+
+| Function | Purpose |
+|----------|---------|
+| `write_result "$json" "$filename"` | Write JSON result file to `RESULT_DIR` (no-op if unset) |
+| `build_result_json "key" "val" ...` | Build a JSON string from key-value pairs |
+| `json_escape "$string"` | Escape a string for safe JSON inclusion |
+
+---
+
+## File Reference
+
+| File | Purpose |
+|------|---------|
+| `tests/unit/test_cli.c` | 18 tests for `parse_args()` |
+| `tests/unit/test_stats.c` | 10 tests for stats accumulation/reset |
+| `tests/unit/test_config.c` | 5 tests for init validation |
+| `tests/unit/test_output.c` | 8 tests for output module error paths |
+| `tests/unit/test_common.h` | Shared CMocka includes |
+| `tests/integration/run_all.sh` | Test orchestrator (both modes) |
+| `tests/integration/setup_namespaces.sh` | Create test topology |
+| `tests/integration/teardown_namespaces.sh` | Destroy test topology |
+| `tests/integration/test_helpers.sh` | JSON result writing helpers |
+| `tests/integration/generate_report.sh` | HTML report generator |
+| `tests/integration/test_basic_forward.sh` | Packet forwarding test |
+| `tests/integration/test_drop_mode.sh` | Drop mode test |
+| `tests/integration/test_multiworker.sh` | Multi-worker test (afpacket only) |
+| `tests/integration/test_fanout_distribution.sh` | Fanout distribution test with iperf3 (afpacket only) |
+| `tests/integration/test_graceful_shutdown.sh` | Graceful shutdown test |
