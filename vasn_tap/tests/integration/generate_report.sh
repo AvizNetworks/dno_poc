@@ -322,7 +322,7 @@ cat >> "$OUTPUT_HTML" << 'TOPOEOF'
     <h3>Test Topology</h3>
     <pre>
     [ns_src]                      [default ns]                      [ns_dst]
-    10.0.1.1/24                                                     10.0.2.1/24
+    192.168.200.1/24                                                     192.168.201.1/24
 
     +--------------+         +------------------+          +--------------+
     | veth_src_ns  |--veth--&gt;| veth_src_host    |          | veth_dst_ns  |

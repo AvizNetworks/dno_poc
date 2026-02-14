@@ -54,8 +54,8 @@ json_escape() {
 #       "output_iface"      "veth_dst_host" \
 #       "traffic_type"      "ICMP ping" \
 #       "traffic_count"     "20" \
-#       "traffic_src"       "ns_src (10.0.1.1)" \
-#       "traffic_dst"       "host (10.0.1.2)" \
+#       "traffic_src"       "ns_src (192.168.200.1)" \
+#       "traffic_dst"       "host (192.168.200.2)" \
 #       "rx_packets"        "40" \
 #       "tx_packets"        "40" \
 #       "dropped_packets"   "0" \

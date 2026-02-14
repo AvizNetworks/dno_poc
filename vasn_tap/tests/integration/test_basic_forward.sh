@@ -40,8 +40,8 @@ if [ ! -x "$VASN_TAP" ]; then
         "output_iface"      "veth_dst_host" \
         "traffic_type"      "ICMP ping" \
         "traffic_count"     "$NUM_PINGS" \
-        "traffic_src"       "ns_src (10.0.1.1)" \
-        "traffic_dst"       "host (10.0.1.2)" \
+        "traffic_src"       "ns_src (192.168.200.1)" \
+        "traffic_dst"       "host (192.168.200.2)" \
         "rx_packets"        "0" \
         "tx_packets"        "0" \
         "dropped_packets"   "0" \
@@ -67,8 +67,8 @@ if ! ip netns list | grep -q ns_src; then
         "output_iface"      "veth_dst_host" \
         "traffic_type"      "ICMP ping" \
         "traffic_count"     "$NUM_PINGS" \
-        "traffic_src"       "ns_src (10.0.1.1)" \
-        "traffic_dst"       "host (10.0.1.2)" \
+        "traffic_src"       "ns_src (192.168.200.1)" \
+        "traffic_dst"       "host (192.168.200.2)" \
         "rx_packets"        "0" \
         "tx_packets"        "0" \
         "dropped_packets"   "0" \
@@ -108,8 +108,8 @@ if ! kill -0 $VASN_PID 2>/dev/null; then
         "output_iface"      "veth_dst_host" \
         "traffic_type"      "ICMP ping" \
         "traffic_count"     "$NUM_PINGS" \
-        "traffic_src"       "ns_src (10.0.1.1)" \
-        "traffic_dst"       "host (10.0.1.2)" \
+        "traffic_src"       "ns_src (192.168.200.1)" \
+        "traffic_dst"       "host (192.168.200.2)" \
         "rx_packets"        "0" \
         "tx_packets"        "0" \
         "dropped_packets"   "0" \
@@ -122,7 +122,7 @@ fi
 
 # Send pings from ns_src to host (through veth_src)
 echo "  Sending $NUM_PINGS pings from ns_src..."
-ip netns exec ns_src ping -c $NUM_PINGS -i 0.1 -W 1 10.0.1.2 > /dev/null 2>&1 || true
+ip netns exec ns_src ping -c $NUM_PINGS -i 0.1 -W 1 192.168.200.2 > /dev/null 2>&1 || true
 sleep 1
 
 # Stop vasn_tap gracefully
@@ -176,8 +176,8 @@ JSON=$(build_result_json \
     "output_iface"      "veth_dst_host" \
     "traffic_type"      "ICMP ping" \
     "traffic_count"     "$NUM_PINGS" \
-    "traffic_src"       "ns_src (10.0.1.1)" \
-    "traffic_dst"       "host (10.0.1.2)" \
+    "traffic_src"       "ns_src (192.168.200.1)" \
+    "traffic_dst"       "host (192.168.200.2)" \
     "rx_packets"        "${RX_COUNT:-0}" \
     "tx_packets"        "${TX_COUNT:-0}" \
     "dropped_packets"   "${DROP_COUNT:-0}" \

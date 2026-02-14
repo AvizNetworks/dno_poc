@@ -51,12 +51,19 @@ int output_open(const char *ifname)
     /* Increase send buffer to reduce drops under burst traffic.
      * Default SO_SNDBUF is ~212KB which overflows quickly when
      * multiple workers push packets concurrently with MSG_DONTWAIT.
-     * 4MB gives enough headroom for bursty forwarding. */
+     * 4MB gives enough headroom for bursty forwarding.
+     *
+     * SO_SNDBUFFORCE bypasses the net.core.wmem_max sysctl cap,
+     * so the 4MB actually takes effect without modifying the host.
+     * Requires CAP_NET_ADMIN (which we already need for AF_PACKET). */
     {
         int sndbuf = 4 * 1024 * 1024;  /* 4 MB */
-        if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
-            fprintf(stderr, "Warning: Failed to set SO_SNDBUF to %d: %s\n",
-                    sndbuf, strerror(errno));
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &sndbuf, sizeof(sndbuf)) < 0) {
+            /* Fallback to regular SO_SNDBUF (capped at wmem_max) */
+            if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)) < 0) {
+                fprintf(stderr, "Warning: Failed to set SO_SNDBUF to %d: %s\n",
+                        sndbuf, strerror(errno));
+            }
         }
     }
 

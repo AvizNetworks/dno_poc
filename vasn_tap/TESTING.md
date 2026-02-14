@@ -206,7 +206,7 @@ The integration tests create an isolated network topology using Linux network na
 
 ```
   [ns_src]                      [default ns]                      [ns_dst]
-  10.0.1.1/24                                                     10.0.2.1/24
+  192.168.200.1/24                                                     192.168.201.1/24
 
   +--------------+         +------------------+          +--------------+
   | veth_src_ns  |--veth-->| veth_src_host    |          | veth_dst_ns  |
@@ -233,11 +233,32 @@ All tests except multiworker run in **both** capture modes:
 | `test_drop_mode.sh` | Yes | Yes | Capture packets with no output interface, verify RX > 0, TX = 0, Dropped > 0 |
 | `test_graceful_shutdown.sh` | Yes | Yes | Send SIGINT during active traffic, verify clean "Cleaning up" and "Done" messages |
 | `test_multiworker.sh` | Yes | No* | Test with 1, 2, and 4 workers, verify RX/TX for each |
-| `test_fanout_distribution.sh` | Yes | No* | Use iperf3 with 8 parallel TCP flows and `/proc/net/packet` to verify PACKET_FANOUT_HASH distributes packets across 4 worker sockets (requires iperf3; skips gracefully if not installed) |
+| `test_fanout_distribution.sh` | Yes | No* | Use iperf3 with 8 parallel TCP flows to verify PACKET_FANOUT_HASH distributes packets across 4 worker sockets. Exercises the TPACKET_V2 TX ring output path under sustained load (requires iperf3; skips gracefully if not installed) |
 
 *eBPF mode is forced to 1 worker, so multi-worker and fanout testing only apply to AF_PACKET.
 
 This gives **8 test results** in the HTML report: 3 afpacket + 3 ebpf + 1 multiworker + 1 fanout distribution.
+
+### TX Ring Performance Notes
+
+The AF_PACKET backend uses a TPACKET_V2 mmap'd TX ring for output. Integration tests exercise this path:
+
+- **`test_basic_forward.sh` (afpacket)**: Validates that ICMP packets are written into the TX ring and flushed to the destination namespace
+- **`test_fanout_distribution.sh`**: Stress-tests the TX ring under sustained iperf3 traffic (configurable via `IPERF_RATE` environment variable, default 10 Mbps per stream)
+- **`test_multiworker.sh`**: Verifies that multiple workers, each with their own independent TX ring, can forward packets concurrently without interference
+
+To manually stress-test with higher rates:
+
+```bash
+# Setup namespaces first
+sudo bash tests/integration/setup_namespaces.sh
+
+# Start vasn_tap
+sudo ./vasn_tap -m afpacket -i veth_src_host -o veth_dst_host -w 4 -v -s
+
+# In another terminal — adjust -b rate to find drop threshold
+sudo ip netns exec ns_src iperf3 -c 192.168.200.2 -P 8 -b 100M -t 10
+```
 
 ### Understanding Packet Counts
 
@@ -307,8 +328,8 @@ JSON=$(build_result_json \
     "output_iface"      "veth_dst_host" \
     "traffic_type"      "ICMP ping" \
     "traffic_count"     "20" \
-    "traffic_src"       "ns_src (10.0.1.1)" \
-    "traffic_dst"       "host (10.0.1.2)" \
+    "traffic_src"       "ns_src (192.168.200.1)" \
+    "traffic_dst"       "host (192.168.200.2)" \
     "rx_packets"        "${RX_COUNT:-0}" \
     "tx_packets"        "${TX_COUNT:-0}" \
     "dropped_packets"   "${DROP_COUNT:-0}" \

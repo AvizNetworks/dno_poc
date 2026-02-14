@@ -1,6 +1,6 @@
 # vasn_tap - High Performance Packet Tap
 
-A lightweight, high-performance packet tap application that captures traffic from customer interfaces, processes it in userspace, and forwards it to the Aviz Service Node (ASN). Supports two capture backends: **eBPF** (TC BPF + perf buffer) and **AF_PACKET** (TPACKET_V3 + FANOUT_HASH).
+A lightweight, high-performance packet tap application that captures traffic from customer interfaces, processes it in userspace, and forwards it to the Aviz Service Node (ASN). Supports two capture backends: **eBPF** (TC BPF + perf buffer) and **AF_PACKET** (TPACKET_V3 mmap RX + TPACKET_V2 mmap TX + FANOUT_HASH).
 
 ## Overview
 
@@ -10,11 +10,12 @@ vasn_tap is designed to run on customer operating systems with minimal dependenc
 
 | Feature | eBPF Mode (`-m ebpf`) | AF_PACKET Mode (`-m afpacket`) |
 |---------|----------------------|-------------------------------|
-| **Mechanism** | TC BPF hook + perf buffer | TPACKET_V3 mmap ring buffer |
+| **RX Mechanism** | TC BPF hook + perf buffer | TPACKET_V3 mmap ring buffer |
+| **TX Mechanism** | Per-packet `send()` via `output.c` | TPACKET_V2 mmap TX ring (zero-copy, batch flush) |
 | **Multi-worker** | Single thread only (perf buffer limitation) | Yes, via PACKET_FANOUT_HASH |
 | **Kernel requirement** | >= 5.10 with BTF | >= 3.2 |
 | **Dependencies** | libbpf, clang, bpftool | None (standard sockets) |
-| **Best for** | Filtering at kernel level | Portability, multi-core scaling |
+| **Best for** | Filtering at kernel level | Portability, multi-core scaling, high throughput |
 
 **When to use which:**
 - Use **afpacket** if you need multi-worker scaling, portability across kernel versions, or simpler deployment (no BPF toolchain).
@@ -131,8 +132,8 @@ vasn_tap/
 │   ├── cli.c / cli.h         # Argument parsing (extracted for testability)
 │   ├── tap.c / tap.h         # eBPF mode: load BPF, attach/detach TC hooks
 │   ├── worker.c / worker.h   # eBPF mode: perf buffer consumer, stats
-│   ├── afpacket.c / afpacket.h  # AF_PACKET mode: TPACKET_V3, FANOUT, workers
-│   ├── output.c / output.h   # Raw socket TX (AF_PACKET + QDISC_BYPASS)
+│   ├── afpacket.c / afpacket.h  # AF_PACKET mode: TPACKET_V3 RX, TPACKET_V2 TX, FANOUT
+│   ├── output.c / output.h   # Raw socket TX for eBPF mode (AF_PACKET + QDISC_BYPASS)
 │   └── ebpf/
 │       ├── tc_clone.bpf.c    # Kernel-side TC BPF program
 │       ├── tc_clone.h         # eBPF program constants
@@ -179,11 +180,24 @@ sudo sysctl -w net.core.rmem_max=26214400
 sudo sysctl -w net.core.wmem_max=26214400
 ```
 
+> **Note:** In AF_PACKET mode, `SO_SNDBUFFORCE` is used to set a 4 MB send buffer
+> on the TX socket, bypassing the `wmem_max` sysctl cap. This requires `CAP_NET_ADMIN`
+> (which is already needed for AF_PACKET raw sockets).
+
 ### AF_PACKET Ring Tuning
 
-The ring buffer size per worker is configured in `src/afpacket.h`:
+Ring buffer sizes per worker are configured in `src/afpacket.h`:
+
+**RX ring (TPACKET_V3):**
 - `AFPACKET_BLOCK_SIZE` -- 256 KB per block (default)
 - `AFPACKET_BLOCK_NR` -- 64 blocks = 16 MB per worker (default)
+
+**TX ring (TPACKET_V2):**
+- `AFPACKET_TX_BLOCK_SIZE` -- 256 KB per block (default)
+- `AFPACKET_TX_BLOCK_NR` -- 16 blocks = 4 MB per worker (default)
+- `AFPACKET_TX_FRAME_SIZE` -- 2048 bytes per frame (default)
+
+The TX ring uses `PACKET_QDISC_BYPASS` to skip the kernel qdisc layer for lower-latency output.
 
 ### eBPF Perf Buffer Tuning
 

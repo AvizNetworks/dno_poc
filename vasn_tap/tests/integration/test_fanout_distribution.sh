@@ -53,8 +53,8 @@ if ! command -v iperf3 &>/dev/null; then
         "output_iface"      "veth_dst_host" \
         "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
         "traffic_count"     "$NUM_FLOWS" \
-        "traffic_src"       "ns_src (10.0.1.1)" \
-        "traffic_dst"       "host (10.0.1.2)" \
+        "traffic_src"       "ns_src (192.168.200.1)" \
+        "traffic_dst"       "host (192.168.200.2)" \
         "rx_packets"        "0" \
         "tx_packets"        "0" \
         "dropped_packets"   "0" \
@@ -80,17 +80,17 @@ cleanup() {
         wait "$IPERF_SERVER_PID" 2>/dev/null || true
     fi
     # Also kill any stray iperf3 on our bind address
-    pkill -f "iperf3 -s -B 10.0.1.2" 2>/dev/null || true
+    pkill -f "iperf3 -s -B 192.168.200.2" 2>/dev/null || true
     # Clean up temp files
     rm -f "$STATS_FILE" "$IPERF_LOG"
 }
 trap cleanup EXIT
 
 # --- Connectivity pre-check ---
-echo "  Checking connectivity ns_src -> host (10.0.1.2)..."
-if ! ip netns exec ns_src ping -c 1 -W 2 10.0.1.2 > /dev/null 2>&1; then
-    echo "  FAIL: ns_src cannot reach 10.0.1.2 (namespaces not set up?)"
-    ERROR_MSG="Connectivity check failed: ns_src cannot ping 10.0.1.2"
+echo "  Checking connectivity ns_src -> host (192.168.200.2)..."
+if ! ip netns exec ns_src ping -c 1 -W 2 192.168.200.2 > /dev/null 2>&1; then
+    echo "  FAIL: ns_src cannot reach 192.168.200.2 (namespaces not set up?)"
+    ERROR_MSG="Connectivity check failed: ns_src cannot ping 192.168.200.2"
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Fanout Distribution" \
@@ -102,8 +102,8 @@ if ! ip netns exec ns_src ping -c 1 -W 2 10.0.1.2 > /dev/null 2>&1; then
         "output_iface"      "veth_dst_host" \
         "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
         "traffic_count"     "$NUM_FLOWS" \
-        "traffic_src"       "ns_src (10.0.1.1)" \
-        "traffic_dst"       "host (10.0.1.2)" \
+        "traffic_src"       "ns_src (192.168.200.1)" \
+        "traffic_dst"       "host (192.168.200.2)" \
         "rx_packets"        "0" \
         "tx_packets"        "0" \
         "dropped_packets"   "0" \
@@ -116,15 +116,15 @@ if ! ip netns exec ns_src ping -c 1 -W 2 10.0.1.2 > /dev/null 2>&1; then
 fi
 echo "  Connectivity OK"
 
-# --- Start iperf3 server on the host (10.0.1.2) ---
+# --- Start iperf3 server on the host (192.168.200.2) ---
 IPERF_LOG=$(mktemp /tmp/iperf3_server_XXXXXX.log)
-iperf3 -s -B 10.0.1.2 -D --logfile "$IPERF_LOG" 2>/dev/null
+iperf3 -s -B 192.168.200.2 -D --logfile "$IPERF_LOG" 2>/dev/null
 # iperf3 -D daemonizes; find its PID
 sleep 0.5
-IPERF_SERVER_PID=$(pgrep -f "iperf3 -s -B 10.0.1.2" | head -1)
+IPERF_SERVER_PID=$(pgrep -f "iperf3 -s -B 192.168.200.2" | head -1)
 if [ -z "$IPERF_SERVER_PID" ]; then
     echo "  FAIL: Could not start iperf3 server"
-    ERROR_MSG="iperf3 server failed to start on 10.0.1.2"
+    ERROR_MSG="iperf3 server failed to start on 192.168.200.2"
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Fanout Distribution" \
@@ -136,19 +136,19 @@ if [ -z "$IPERF_SERVER_PID" ]; then
         "output_iface"      "veth_dst_host" \
         "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
         "traffic_count"     "$NUM_FLOWS" \
-        "traffic_src"       "ns_src (10.0.1.1)" \
-        "traffic_dst"       "host (10.0.1.2)" \
+        "traffic_src"       "ns_src (192.168.200.1)" \
+        "traffic_dst"       "host (192.168.200.2)" \
         "rx_packets"        "0" \
         "tx_packets"        "0" \
         "dropped_packets"   "0" \
         "captured_at_dst"   "0" \
         "duration_sec"      "$DURATION" \
         "error_msg"         "$ERROR_MSG" \
-        "note"              "iperf3 server could not bind to 10.0.1.2:5201.")
+        "note"              "iperf3 server could not bind to 192.168.200.2:5201.")
     write_result "$JSON" "fanout_distribution"
     exit 1
 fi
-echo "  iperf3 server started (PID $IPERF_SERVER_PID) on 10.0.1.2:5201"
+echo "  iperf3 server started (PID $IPERF_SERVER_PID) on 192.168.200.2:5201"
 
 # --- Start vasn_tap ---
 STATS_FILE=$(mktemp /tmp/vasn_tap_fanout_XXXXXX.txt)
@@ -171,8 +171,8 @@ if ! kill -0 "$VASN_PID" 2>/dev/null; then
         "output_iface"      "veth_dst_host" \
         "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
         "traffic_count"     "$NUM_FLOWS" \
-        "traffic_src"       "ns_src (10.0.1.1)" \
-        "traffic_dst"       "host (10.0.1.2)" \
+        "traffic_src"       "ns_src (192.168.200.1)" \
+        "traffic_dst"       "host (192.168.200.2)" \
         "rx_packets"        "0" \
         "tx_packets"        "0" \
         "dropped_packets"   "0" \
@@ -188,7 +188,7 @@ echo "  vasn_tap started (PID $VASN_PID) with $NUM_WORKERS workers"
 # --- Generate multi-flow traffic with iperf3 ---
 echo "  Running iperf3 client: $NUM_FLOWS parallel TCP streams at ${IPERF_RATE}/stream for ${IPERF_DURATION}s..."
 IPERF_CLIENT_LOG=$(mktemp /tmp/iperf3_client_XXXXXX.log)
-ip netns exec ns_src iperf3 -c 10.0.1.2 -P "$NUM_FLOWS" -b "$IPERF_RATE" -t "$IPERF_DURATION" --connect-timeout 3000 > "$IPERF_CLIENT_LOG" 2>&1
+ip netns exec ns_src iperf3 -c 192.168.200.2 -P "$NUM_FLOWS" -b "$IPERF_RATE" -t "$IPERF_DURATION" --connect-timeout 3000 > "$IPERF_CLIENT_LOG" 2>&1
 IPERF_EXIT=$?
 if [ $IPERF_EXIT -ne 0 ]; then
     echo "  WARNING: iperf3 client exited with code $IPERF_EXIT"
@@ -281,8 +281,8 @@ JSON=$(build_result_json \
     "output_iface"      "veth_dst_host" \
     "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
     "traffic_count"     "$NUM_FLOWS" \
-    "traffic_src"       "ns_src (10.0.1.1)" \
-    "traffic_dst"       "host (10.0.1.2)" \
+    "traffic_src"       "ns_src (192.168.200.1)" \
+    "traffic_dst"       "host (192.168.200.2)" \
     "rx_packets"        "${RX_COUNT:-0}" \
     "tx_packets"        "${TX_COUNT:-0}" \
     "dropped_packets"   "${DROP_COUNT:-0}" \
