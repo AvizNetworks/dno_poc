@@ -53,6 +53,7 @@ static void print_usage(const char *prog)
     printf("  -w, --workers <count>   Number of worker threads (default: num CPUs)\n");
     printf("                          Note: in ebpf mode, forced to 1 (perf buffer limitation)\n");
     printf("  -v, --verbose           Enable verbose logging\n");
+    printf("  -d, --debug             Enable TX debug (hex dumps of first packet per block)\n");
     printf("  -s, --stats             Print periodic statistics\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nExamples:\n");
@@ -217,6 +218,7 @@ int main(int argc, char **argv)
         }
         aconfig.num_workers = args.num_workers;
         aconfig.verbose = args.verbose;
+        aconfig.debug = args.debug;
 
         err = afpacket_init(&g_afpacket_ctx, &aconfig);
         if (err) {
@@ -235,6 +237,7 @@ int main(int argc, char **argv)
         struct worker_config wconfig = {0};
         wconfig.num_workers = args.num_workers;
         wconfig.verbose = args.verbose;
+        wconfig.debug = args.debug;
         if (args.output_iface[0]) {
             snprintf(wconfig.output_ifname, sizeof(wconfig.output_ifname), "%s", args.output_iface);
             wconfig.output_ifindex = if_nametoindex(args.output_iface);

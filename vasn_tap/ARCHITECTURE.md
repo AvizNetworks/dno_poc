@@ -46,16 +46,19 @@ The application supports **two capture backends** selected at startup via the `-
             |  ebpf/tc_clone  |      |                   |
             +--------+--------+      +--------+----------+
                      |                         |
+                     +------------+------------+
+                     |                         |
                      v                         v
-               +-----------+      +------------------------+
-               | output.c  |      | TPACKET_V2 TX ring     |
-               | (TX sock) |      | (mmap'd, zero-copy TX) |
-               +-----------+      +------------------------+
+               +------------------------------------------+
+               |  tx_ring.c / tx_ring.h                   |
+               |  Shared TPACKET_V2 mmap TX ring          |
+               |  (both modes use same zero-copy output)  |
+               +------------------------------------------+
 ```
 
-> **Note:** The AF_PACKET backend uses its own TPACKET_V2 mmap'd TX ring
-> for high-performance output (no per-packet syscall). The `output.c` module
-> is only used by the eBPF backend.
+> **Note:** Both eBPF and AF_PACKET use the **shared** `tx_ring` module for
+> high-performance output (mmap'd TX ring, batch flush). The `output.c` module
+> is no longer used by the main binary; it remains only for the `test_output` unit tests.
 
 ## Module Details
 
@@ -145,7 +148,8 @@ struct worker_ctx {
     struct worker_config config;
     struct bpf_object *bpf_obj;   // Reference to BPF object from tap.c
     struct perf_buffer *pb;       // libbpf perf buffer handle
-    int output_fd;                // Raw socket FD for TX (-1 = drop mode)
+    struct tx_ring_ctx tx_ring;   // Shared TPACKET_V2 TX ring (tx_ring.fd == -1 if drop)
+    unsigned int tx_pending;      // Packets written since last flush (batching)
     volatile bool running;
     pthread_t *threads;
     struct worker_stats *stats;
@@ -155,7 +159,7 @@ struct worker_ctx {
 Design notes:
 - **Forced single-threaded**: `num_workers` is always set to 1 because the perf buffer polls events from all CPUs in a single `perf_buffer__poll()` call.
 - Worker thread is pinned to CPU 0 via `pthread_setaffinity_np`.
-- Callback `handle_sample()` receives `struct pkt_meta` (defined in `common.h`) and forwards the packet data via `send()` on the output socket.
+- Callback `handle_sample()` receives `struct pkt_meta` (defined in `common.h`) and forwards via the **shared TX ring** (`tx_ring_write()` + flush every 32 packets for batching).
 
 ### afpacket.c -- AF_PACKET Backend
 
@@ -184,13 +188,8 @@ struct afpacket_worker {
     unsigned int         block_nr;       // Number of RX blocks
     unsigned int         current_block;  // Current RX block index
 
-    /* TX: TPACKET_V2 mmap ring on output interface */
-    int                  tx_fd;          // AF_PACKET TX socket (-1 = drop)
-    void                *tx_ring;        // mmap'd TPACKET_V2 TX ring
-    unsigned int         tx_ring_size;   // Total TX mmap size
-    unsigned int         tx_frame_nr;    // Total TX frames in ring
-    unsigned int         tx_frame_size;  // Bytes per TX frame
-    unsigned int         tx_current;     // Next TX frame index to write
+    /* TX: shared TPACKET_V2 mmap ring (tx.fd == -1 means drop mode) */
+    struct tx_ring_ctx   tx;
 
     struct worker_stats  stats;          // Per-worker statistics
 };
@@ -205,11 +204,8 @@ struct afpacket_ctx {
 
 Internal functions:
 - `setup_rx_socket()` -- Creates AF_PACKET socket, sets TPACKET_V3, configures `PACKET_RX_RING`, binds to input interface, `mmap()`s the RX ring
-- `setup_tx_ring()` -- Creates a separate AF_PACKET socket, sets TPACKET_V2, configures `PACKET_TX_RING`, binds to output interface, `mmap()`s the TX ring. Enables `PACKET_QDISC_BYPASS` and `SO_SNDBUFFORCE` for maximum throughput
 - `join_fanout()` -- Sets `PACKET_FANOUT` with `PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_DEFRAG | PACKET_FANOUT_FLAG_ROLLOVER`
-- `tx_frame()` -- Returns a pointer to a TX ring frame by index (inline helper)
-- `tx_ring_flush()` -- Flushes all pending TX frames with a single `sendto(NULL, 0, ...)` syscall
-- `process_block()` -- Iterates packets in a TPACKET_V3 RX block, writes each into the TPACKET_V2 TX ring, then flushes with one `sendto()`
+- `process_block()` -- Iterates packets in a TPACKET_V3 RX block; for each packet calls `tx_ring_write(&worker->tx, ...)` (shared module), then `tx_ring_flush(&worker->tx)` at end of block
 - `afpacket_worker_thread()` -- Main worker loop: `poll()` -> `process_block()` -> release block
 
 RX ring buffer defaults (configurable in `afpacket.h`):
@@ -218,28 +214,35 @@ RX ring buffer defaults (configurable in `afpacket.h`):
 - Frame size: 2048 bytes
 - Block timeout: 100 ms
 
-TX ring buffer defaults (configurable in `afpacket.h`):
-- Block size: 256 KB
-- Block count: 16 (= 4 MB per worker)
-- Frame size: 2048 bytes
+TX is handled by the **shared** `tx_ring` module (see below).
 
-### output.c -- TX Output Module (eBPF mode only)
+### tx_ring.c -- Shared TX Output (both modes)
+
+**File:** `src/tx_ring.c`, `src/tx_ring.h`
+
+Shared TPACKET_V2 mmap'd TX ring used by **both** eBPF and AF_PACKET backends. Ensures a single, optimized output path and consistent throughput in either mode.
+
+```c
+struct tx_ring_ctx { ... };   // fd, ring, frame_nr, frame_size, current, max_tx_len, debug
+
+int  tx_ring_setup(struct tx_ring_ctx *ctx, int ifindex, bool verbose, bool debug);
+void tx_ring_teardown(struct tx_ring_ctx *ctx);
+int  tx_ring_write(struct tx_ring_ctx *ctx, const void *data, uint32_t len);  // 0 = ok, -1 = dropped
+void tx_ring_flush(struct tx_ring_ctx *ctx);
+```
+
+- **AF_PACKET**: Each worker has its own `struct tx_ring_ctx tx`; `tx_ring_setup()` is called per worker in `afpacket_init()`. Flush happens once per RX block in `process_block()`.
+- **eBPF**: Single `struct tx_ring_ctx tx_ring` in `worker_ctx`; `tx_ring_setup()` in `workers_init()`. `handle_sample()` calls `tx_ring_write()` and flushes every 32 packets to batch syscalls.
+
+**MTU clamping:** At setup, the output interface MTU is read via `SIOCGIFMTU`; `max_tx_len` is set to `min(1518, MTU+14)`. In `tx_ring_write()`, packet length is clamped to `max_tx_len` so the kernel never sees a frame larger than the interface allows (avoids "af_packet: packet size is too long" and TX ring stuck state). Oversize packets are truncated; for full fidelity use UDP or a path with jumbo MTU.
+
+Ring defaults (in `tx_ring.c`): 256 KB blocks × 16 = 4 MB, 2048-byte frames; `PACKET_QDISC_BYPASS` and `SO_SNDBUFFORCE` (4 MB) on the TX socket.
+
+### output.c -- Legacy / test-only
 
 **File:** `src/output.c`, `src/output.h`
 
-Standalone module for sending raw packets out an interface. Used exclusively by the **eBPF backend** (`worker.c`). The AF_PACKET backend has its own TPACKET_V2 mmap'd TX ring and does not use this module.
-
-```c
-int  output_open(const char *ifname);            // Open AF_PACKET raw socket
-int  output_send(int fd, const void *data, uint32_t len);  // Send packet
-void output_close(int fd);                       // Close socket
-```
-
-Implementation details:
-- Uses `AF_PACKET` + `SOCK_RAW` + `ETH_P_ALL`
-- Enables `PACKET_QDISC_BYPASS` for lower latency (bypasses kernel qdisc layer)
-- Uses `SO_SNDBUFFORCE` to set a 4 MB send buffer (bypasses `wmem_max` sysctl cap)
-- `output_send()` uses `MSG_DONTWAIT` for non-blocking sends
+Raw socket open/send/close. **Not used by the main binary**; both modes use `tx_ring` for output. Kept for the `test_output` unit test suite (error-path tests for `output_open`, `output_send`, `output_close`).
 
 ### ebpf/tc_clone.bpf.c -- Kernel-Side BPF Program
 
@@ -257,13 +260,13 @@ The eBPF program that runs in the kernel at the TC (Traffic Control) hook points
 ### eBPF Mode
 
 ```
-  +---------+     +-------------+     +-----------------+     +--------+     +--------+
-  |   NIC   | --> | TC Ingress/ | --> | Perf Buffer     | --> | Worker | --> | Output |
-  | (eth0)  |     | Egress Hook |     | (per-CPU ring)  |     | Thread |     | Socket |
-  +---------+     +-------------+     +-----------------+     +--------+     +--------+
+  +---------+     +-------------+     +-----------------+     +--------+     +-------------------+
+  |   NIC   | --> | TC Ingress/ | --> | Perf Buffer     | --> | Worker | --> | Shared TX ring    |
+  | (eth0)  |     | Egress Hook |     | (per-CPU ring)  |     | Thread |     | (tx_ring.c)       | --> eth1
+  +---------+     +-------------+     +-----------------+     +--------+     +-------------------+
                         |                                          |              |
-                   BPF program                              handle_sample()   send() to
-                  clones packet                             in worker.c       output iface
+                   BPF program                              handle_sample()   tx_ring_write()
+                  clones packet                             in worker.c       flush every 32 pkts
                   to perf buffer
                         |
                   original packet
@@ -273,35 +276,35 @@ The eBPF program that runs in the kernel at the TC (Traffic Control) hook points
 Characteristics:
 - Single worker thread polls all per-CPU perf buffers
 - Kernel does the cloning; userspace only receives copies
+- **TX**: Same shared TPACKET_V2 mmap ring as AF_PACKET; flush every 32 packets to batch syscalls
 - BPF program can be extended for in-kernel filtering
 
 ### AF_PACKET Mode
 
 ```
   +---------+     +------------------+     +-----------+     +-------------------+
-  |   NIC   | --> | AF_PACKET Socket | --> | Worker 0  | --> | TPACKET_V2 TX     |
-  | (eth0)  |     | TPACKET_V3 RX    |     |           |     | ring 0 (mmap'd)   | --> eth1
+  |   NIC   | --> | AF_PACKET Socket | --> | Worker 0  | --> | tx_ring (shared   |
+  | (eth0)  |     | TPACKET_V3 RX    |     |           |     | module) ring 0    | --> eth1
   +---------+     | ring (mmap'd)    |     +-----------+     +-------------------+
                   |                  |
-                  | PACKET_FANOUT    | --> | Worker 1  | --> | TX ring 1         | --> eth1
+                  | PACKET_FANOUT    | --> | Worker 1  | --> | tx_ring ring 1    | --> eth1
                   | _HASH            |     +-----------+     +-------------------+
                   |                  |
-                  |                  | --> | Worker 2  | --> | TX ring 2         | --> eth1
+                  |                  | --> | Worker 2  | --> | tx_ring ring 2    | --> eth1
                   +------------------+     +-----------+     +-------------------+
                           |                       |                    |
-                    Kernel distributes       memcpy into         single sendto()
-                    packets by 5-tuple       TX ring frame       flushes entire
-                    hash (flow affinity)     (zero syscall)      batch per RX block
+                    Kernel distributes       tx_ring_write()     tx_ring_flush()
+                    packets by 5-tuple       (shared module)     per RX block
+                    hash (flow affinity)
 ```
 
 Characteristics:
-- Each worker has its own mmap'd RX ring buffer (TPACKET_V3) and TX ring buffer (TPACKET_V2)
+- Each worker has its own mmap'd RX ring (TPACKET_V3) and its own **shared-module** TX ring (one `struct tx_ring_ctx` per worker)
 - **RX path**: TPACKET_V3 variable-length blocks — kernel fills blocks, worker polls via `poll()`
-- **TX path**: TPACKET_V2 fixed-size frames — worker writes packets directly into mmap'd memory, then flushes with a single `sendto()` per RX block (no per-packet syscall)
+- **TX path**: Shared `tx_ring` — worker calls `tx_ring_write()` then `tx_ring_flush()` once per RX block (one syscall per block)
 - FANOUT_HASH ensures packets from the same flow always go to the same worker (preserves ordering)
 - FANOUT_FLAG_DEFRAG reassembles IP fragments before distribution
 - FANOUT_FLAG_ROLLOVER overflows to next worker if a ring is full
-- `PACKET_QDISC_BYPASS` on the TX socket skips the kernel qdisc layer for lower latency
 
 ## Key Design Decisions
 
@@ -323,22 +326,16 @@ AF_PACKET mode uses `PACKET_FANOUT_HASH` to distribute packets across workers ba
 
 IP fragments lack full 5-tuple information (only the first fragment has ports). Without special handling, fragments of the same packet could be distributed to different workers. `PACKET_FANOUT_FLAG_DEFRAG` tells the kernel to reassemble fragments before applying the fanout hash.
 
-### TPACKET_V2 TX Ring for AF_PACKET Output
+### Common TX Path (tx_ring) for Both Modes
 
-The AF_PACKET backend originally used per-packet `send()` syscalls for output, identical to the eBPF backend's `output.c` module. This was replaced with a TPACKET_V2 mmap'd TX ring for significantly better throughput:
+Both eBPF and AF_PACKET use the **same** shared `tx_ring` module (TPACKET_V2 mmap'd TX ring) for output. This gives one code path, consistent behavior, and high throughput in either mode.
 
-| Approach | Syscalls per block | Bottleneck |
-|----------|-------------------|------------|
-| **Per-packet `send()`** | N (one per packet) | Syscall overhead, `EAGAIN` drops when socket buffer fills |
-| **`sendmmsg()` batching** | 1 per batch | `sendmmsg()` stops at first `EAGAIN`, silently dropping remaining packets |
-| **TPACKET_V2 TX ring** | 1 per RX block | Packets written into shared mmap memory; single `sendto(NULL, 0)` flushes entire batch |
+| Approach | Syscalls | Bottleneck |
+|----------|----------|------------|
+| **Per-packet `send()`** (old) | N per packet | Syscall overhead, `EAGAIN` drops when socket buffer fills |
+| **Shared TPACKET_V2 TX ring** (current) | 1 per batch (AF_PACKET: per RX block; eBPF: every 32 packets) | Packets written into mmap memory; single `sendto(NULL, 0)` flushes |
 
-Why TPACKET_V2 and not V3 for TX:
-- TPACKET_V3 TX (added in kernel 4.10) still uses fixed-size frames internally — no variable-length advantage for TX
-- TPACKET_V2 TX has been stable since kernel 2.6.31, maximizing portability
-- Both offer the same zero-copy mmap'd TX ring semantics
-
-The TX ring handles back-pressure gracefully: if a frame is still owned by the kernel (being transmitted), the worker flushes pending frames, does a brief `sched_yield()` spin, and drops the packet only if the frame is still unavailable after retries.
+Why TPACKET_V2 and not V3 for TX: TPACKET_V3 TX still uses fixed-size frames; V2 is stable since 2.6.31 and equally capable for this use. The shared module handles back-pressure (flush + brief spin; drop only if frame still unavailable after retries).
 
 ### Atomic Statistics
 
@@ -358,10 +355,11 @@ The eBPF perf buffer (`PERF_EVENT_ARRAY`) delivers events from all CPUs through 
 | `struct cli_args` | `src/cli.h` | Parsed command-line arguments |
 | `struct tap_ctx` | `src/tap.h` | eBPF object and TC hook state |
 | `struct worker_config` | `src/worker.h` | eBPF worker configuration |
-| `struct worker_ctx` | `src/worker.h` | eBPF worker runtime state |
+| `struct worker_ctx` | `src/worker.h` | eBPF worker runtime state (includes `tx_ring`) |
 | `struct worker_stats` | `src/worker.h` | Atomic packet/byte counters (shared by both modes) |
+| `struct tx_ring_ctx` | `src/tx_ring.h` | Shared TPACKET_V2 TX ring state (used by both modes) |
 | `struct afpacket_config` | `src/afpacket.h` | AF_PACKET backend configuration |
-| `struct afpacket_worker` | `src/afpacket.h` | Per-worker ring buffer and socket state |
+| `struct afpacket_worker` | `src/afpacket.h` | Per-worker RX ring + `struct tx_ring_ctx tx` |
 | `struct afpacket_ctx` | `src/afpacket.h` | AF_PACKET backend runtime state |
 | `struct pkt_meta` | `include/common.h` | Packet metadata passed from eBPF to userspace |
 
@@ -372,7 +370,8 @@ The eBPF perf buffer (`PERF_EVENT_ARRAY`) delivers events from all CPUs through 
 | `src/main.c` | ~317 | Entry point, mode dispatch, signal handling, stats loop |
 | `src/cli.c` | ~85 | `parse_args()` -- extracted for testability |
 | `src/tap.c` | ~200 | eBPF: load, attach, detach, cleanup |
-| `src/worker.c` | ~425 | eBPF: perf buffer polling, packet forwarding |
-| `src/afpacket.c` | ~761 | AF_PACKET: TPACKET_V3 RX ring, TPACKET_V2 TX ring, FANOUT, multi-worker |
-| `src/output.c` | ~107 | Raw socket TX with QDISC_BYPASS (eBPF mode only) |
+| `src/worker.c` | ~425 | eBPF: perf buffer polling, forwards via shared tx_ring |
+| `src/tx_ring.c` | ~180 | Shared TPACKET_V2 mmap TX ring (both modes) |
+| `src/afpacket.c` | ~660 | AF_PACKET: TPACKET_V3 RX, shared tx_ring per worker, FANOUT |
+| `src/output.c` | ~107 | Legacy raw socket TX; used only by test_output unit tests |
 | `src/ebpf/tc_clone.bpf.c` | ~80 | Kernel BPF program: clone to perf buffer |

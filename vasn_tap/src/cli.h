@@ -25,6 +25,7 @@ struct cli_args {
     enum capture_mode mode;       /* -m / --mode (default: ebpf) */
     int num_workers;              /* -w / --workers (0 = auto) */
     bool verbose;                 /* -v / --verbose */
+    bool debug;                   /* -d / --debug (TX hex dumps) */
     bool show_stats;              /* -s / --stats */
     bool help;                    /* -h / --help */
 };

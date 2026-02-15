@@ -33,6 +33,7 @@
 #include <arpa/inet.h>
 
 #include "afpacket.h"
+#include "tx_ring.h"
 #include "../include/common.h"
 
 /* Poll timeout in milliseconds */
@@ -142,122 +143,6 @@ static int setup_rx_socket(int ifindex, struct afpacket_worker *worker, bool ver
 }
 
 /*
- * Setup a TPACKET_V2 TX ring on a separate AF_PACKET socket bound to the
- * output interface.  Packets are written into mmap'd frames and flushed
- * with sendto() — one syscall per batch rather than one per packet.
- *
- * @param output_ifindex: Output interface index
- * @param worker: Worker struct to populate with tx_fd, tx_ring, etc.
- * @param verbose: Enable verbose logging
- * @return: 0 on success, negative errno on failure
- */
-static int setup_tx_ring(int output_ifindex, struct afpacket_worker *worker,
-                         bool verbose)
-{
-    int fd;
-    int ver = TPACKET_V2;
-    struct tpacket_req req = {0};
-    struct sockaddr_ll sll = {0};
-    void *ring;
-    unsigned int ring_size;
-    unsigned int frame_nr;
-
-    /* Create AF_PACKET raw socket for TX */
-    fd = socket(AF_PACKET, SOCK_RAW, 0 /* TX only, no RX needed */);
-    if (fd < 0) {
-        fprintf(stderr, "AF_PACKET TX: Failed to create socket: %s\n",
-                strerror(errno));
-        return -errno;
-    }
-
-    /* Set TPACKET_V2 for TX ring */
-    if (setsockopt(fd, SOL_PACKET, PACKET_VERSION, &ver, sizeof(ver)) < 0) {
-        fprintf(stderr, "AF_PACKET TX: Failed to set TPACKET_V2: %s\n",
-                strerror(errno));
-        close(fd);
-        return -errno;
-    }
-
-    /* Bypass the kernel qdisc layer for lower latency on TX.
-     * Not fatal if unsupported — we'll just go through qdisc. */
-    {
-        int opt = 1;
-        setsockopt(fd, SOL_PACKET, PACKET_QDISC_BYPASS, &opt, sizeof(opt));
-    }
-
-    /* Optionally increase send buffer as a safety margin.
-     * SO_SNDBUFFORCE bypasses wmem_max and requires CAP_NET_ADMIN. */
-    {
-        int sndbuf = 4 * 1024 * 1024; /* 4 MB */
-        if (setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &sndbuf,
-                       sizeof(sndbuf)) < 0) {
-            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-        }
-    }
-
-    /* Calculate TX ring parameters */
-    frame_nr = (AFPACKET_TX_BLOCK_SIZE / AFPACKET_TX_FRAME_SIZE)
-               * AFPACKET_TX_BLOCK_NR;
-
-    req.tp_block_size = AFPACKET_TX_BLOCK_SIZE;
-    req.tp_block_nr   = AFPACKET_TX_BLOCK_NR;
-    req.tp_frame_size = AFPACKET_TX_FRAME_SIZE;
-    req.tp_frame_nr   = frame_nr;
-
-    if (setsockopt(fd, SOL_PACKET, PACKET_TX_RING, &req, sizeof(req)) < 0) {
-        fprintf(stderr, "AF_PACKET TX: Failed to setup TX ring: %s\n",
-                strerror(errno));
-        close(fd);
-        return -errno;
-    }
-
-    /* Bind to output interface */
-    sll.sll_family   = AF_PACKET;
-    sll.sll_protocol = htons(ETH_P_ALL);
-    sll.sll_ifindex  = output_ifindex;
-
-    if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
-        fprintf(stderr, "AF_PACKET TX: Failed to bind to ifindex %d: %s\n",
-                output_ifindex, strerror(errno));
-        close(fd);
-        return -errno;
-    }
-
-    /* mmap the TX ring */
-    ring_size = req.tp_block_size * req.tp_block_nr;
-    ring = mmap(NULL, ring_size, PROT_READ | PROT_WRITE,
-                MAP_SHARED | MAP_LOCKED, fd, 0);
-    if (ring == MAP_FAILED) {
-        ring = mmap(NULL, ring_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                    fd, 0);
-        if (ring == MAP_FAILED) {
-            fprintf(stderr, "AF_PACKET TX: Failed to mmap TX ring: %s\n",
-                    strerror(errno));
-            close(fd);
-            return -errno;
-        }
-        if (verbose) {
-            fprintf(stderr, "AF_PACKET TX: mmap without MAP_LOCKED\n");
-        }
-    }
-
-    /* Populate worker TX fields */
-    worker->tx_fd         = fd;
-    worker->tx_ring       = ring;
-    worker->tx_ring_size  = ring_size;
-    worker->tx_frame_nr   = frame_nr;
-    worker->tx_frame_size = AFPACKET_TX_FRAME_SIZE;
-    worker->tx_current    = 0;
-
-    if (verbose) {
-        printf("AF_PACKET TX: ring: %u frames x %u bytes = %u KB\n",
-               frame_nr, AFPACKET_TX_FRAME_SIZE, ring_size / 1024);
-    }
-
-    return 0;
-}
-
-/*
  * Join fanout group for a socket
  * Must be called AFTER bind()
  */
@@ -302,128 +187,65 @@ static int pin_to_cpu(int cpu_id)
 }
 
 /*
- * Get pointer to a TX ring frame by index (TPACKET_V2 layout).
- * Each frame starts with a struct tpacket2_hdr.
- */
-static inline struct tpacket2_hdr *tx_frame(struct afpacket_worker *worker,
-                                            unsigned int idx)
-{
-    return (struct tpacket2_hdr *)((uint8_t *)worker->tx_ring +
-                                   (idx * worker->tx_frame_size));
-}
-
-/*
- * Flush pending TX ring frames to the wire.
- * A single sendto() tells the kernel to transmit all frames marked
- * TP_STATUS_SEND_REQUEST in the ring.
- */
-static void tx_ring_flush(struct afpacket_worker *worker)
-{
-    if (worker->tx_fd < 0)
-        return;
-
-    if (sendto(worker->tx_fd, NULL, 0, MSG_DONTWAIT, NULL, 0) < 0) {
-        /* EAGAIN/ENOBUFS are transient — packets remain in the ring
-         * and will be retried on the next flush. Other errors are
-         * unexpected but non-fatal. */
-        if (errno != EAGAIN && errno != ENOBUFS) {
-            /* Silently ignore; stats already track drops via frame status. */
-        }
-    }
-}
-
-/*
  * Process all packets in a TPACKET_V3 RX block, writing each into the
- * TPACKET_V2 TX ring and flushing at the end.
+ * shared TX ring and flushing at the end.
  */
 static void process_block(struct afpacket_worker *worker,
-                          struct tpacket_block_desc *block)
+                          struct tpacket_block_desc *block,
+                          int worker_id)
 {
     uint32_t num_pkts = block->hdr.bh1.num_pkts;
     struct tpacket3_hdr *pkt;
     uint8_t *pkt_data;
     uint32_t pkt_len;
     uint32_t i;
-    uint32_t queued = 0;   /* Frames placed into TX ring this block */
+    uint32_t queued = 0;
 
-    /* Get pointer to first packet in block */
     pkt = (struct tpacket3_hdr *)((uint8_t *)block + block->hdr.bh1.offset_to_first_pkt);
 
     for (i = 0; i < num_pkts; i++) {
-        /* Get packet data and length */
         pkt_data = (uint8_t *)pkt + pkt->tp_mac;
         pkt_len  = pkt->tp_snaplen;
 
-        /* Update RX stats */
+        /* DEBUG: dump first packet once per worker (only when -d; mutex only if debug on) */
+        if (worker->debug && i == 0 && num_pkts > 0 && pkt_len >= 14 &&
+            (unsigned)worker_id < MAX_CPUS) {
+            static _Atomic int debug_printed[MAX_CPUS];
+            if (atomic_load(&debug_printed[worker_id]) == 0) {
+                static pthread_mutex_t debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+                pthread_mutex_lock(&debug_mutex);
+                if (atomic_load(&debug_printed[worker_id]) == 0) {
+                    atomic_store(&debug_printed[worker_id], 1);
+                    unsigned int n = pkt_len < 64 ? pkt_len : 64;
+                    fprintf(stderr, "[TX debug afpacket] worker %d first pkt len=%u, first %u bytes: ", worker_id, (unsigned)pkt_len, n);
+                    for (unsigned int j = 0; j < n; j++)
+                        fprintf(stderr, "%02x", pkt_data[j]);
+                    fprintf(stderr, "\n");
+                }
+                pthread_mutex_unlock(&debug_mutex);
+            }
+        }
+
         atomic_fetch_add(&worker->stats.packets_received, 1);
         atomic_fetch_add(&worker->stats.bytes_received, pkt_len);
 
-        /* Send to TX ring if configured */
-        if (worker->tx_fd >= 0) {
-            struct tpacket2_hdr *txhdr = tx_frame(worker, worker->tx_current);
-
-            /* Check that the frame is available (kernel has finished sending
-             * or it's still in initial state). If the frame is still owned by
-             * the kernel (TP_STATUS_SEND_REQUEST or TP_STATUS_SENDING), the
-             * ring is full — flush and try once more. */
-            if (txhdr->tp_status != TP_STATUS_AVAILABLE &&
-                txhdr->tp_status != TP_STATUS_WRONG_FORMAT) {
-                /* Ring full — flush what we have so far */
-                tx_ring_flush(worker);
-
-                /* Brief spin-wait for the frame to become available.
-                 * In practice the kernel drains very quickly. */
-                int retries = 64;
-                while (retries-- > 0 &&
-                       txhdr->tp_status != TP_STATUS_AVAILABLE &&
-                       txhdr->tp_status != TP_STATUS_WRONG_FORMAT) {
-                    sched_yield();
-                }
-
-                /* If still not available, drop this packet */
-                if (txhdr->tp_status != TP_STATUS_AVAILABLE &&
-                    txhdr->tp_status != TP_STATUS_WRONG_FORMAT) {
-                    atomic_fetch_add(&worker->stats.packets_dropped, 1);
-                    goto next_pkt;
-                }
+        if (worker->tx.fd >= 0) {
+            if (tx_ring_write(&worker->tx, pkt_data, pkt_len) == 0) {
+                atomic_fetch_add(&worker->stats.packets_sent, 1);
+                atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
+                queued++;
+            } else {
+                atomic_fetch_add(&worker->stats.packets_dropped, 1);
             }
-
-            /* Ensure packet fits in the frame (minus header + alignment) */
-            uint32_t max_payload = worker->tx_frame_size -
-                                   TPACKET2_HDRLEN;
-            if (pkt_len > max_payload)
-                pkt_len = max_payload; /* truncate oversized */
-
-            /* Write packet into TX frame */
-            txhdr->tp_len     = pkt_len;
-            txhdr->tp_snaplen = pkt_len;
-
-            memcpy((uint8_t *)txhdr + TPACKET2_HDRLEN, pkt_data, pkt_len);
-
-            /* Mark frame ready for kernel */
-            __sync_synchronize();          /* full barrier before status flip */
-            txhdr->tp_status = TP_STATUS_SEND_REQUEST;
-
-            /* Advance to next TX frame */
-            worker->tx_current = (worker->tx_current + 1) %
-                                 worker->tx_frame_nr;
-            queued++;
-
-            atomic_fetch_add(&worker->stats.packets_sent, 1);
-            atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
         } else {
-            /* Drop mode */
             atomic_fetch_add(&worker->stats.packets_dropped, 1);
         }
 
-next_pkt:
-        /* Advance to next packet in block */
         pkt = (struct tpacket3_hdr *)((uint8_t *)pkt + pkt->tp_next_offset);
     }
 
-    /* Flush all queued TX frames with a single sendto() */
     if (queued > 0) {
-        tx_ring_flush(worker);
+        tx_ring_flush(&worker->tx);
     }
 }
 
@@ -481,7 +303,7 @@ static void *afpacket_worker_thread(void *arg)
         }
 
         /* Process all packets in the block */
-        process_block(worker, block);
+        process_block(worker, block, worker_id);
 
         /* Release block back to kernel */
         block->hdr.bh1.block_status = TP_STATUS_KERNEL;
@@ -501,15 +323,7 @@ static void *afpacket_worker_thread(void *arg)
  */
 static void cleanup_worker(struct afpacket_worker *worker)
 {
-    /* Tear down TX ring */
-    if (worker->tx_ring && worker->tx_ring != MAP_FAILED) {
-        munmap(worker->tx_ring, worker->tx_ring_size);
-        worker->tx_ring = NULL;
-    }
-    if (worker->tx_fd >= 0) {
-        close(worker->tx_fd);
-        worker->tx_fd = -1;
-    }
+    tx_ring_teardown(&worker->tx);
 
     /* Tear down RX ring */
     if (worker->rd) {
@@ -553,10 +367,11 @@ int afpacket_init(struct afpacket_ctx *ctx, const struct afpacket_config *config
         return -ENOMEM;
     }
 
-    /* Initialize each worker's fd to -1 */
+    /* Initialize each worker */
     for (i = 0; i < ctx->config.num_workers; i++) {
         ctx->workers[i].rx_fd = -1;
-        ctx->workers[i].tx_fd = -1;
+        ctx->workers[i].tx.fd = -1;
+        ctx->workers[i].debug = ctx->config.debug;
     }
 
     /* Setup RX socket + ring for each worker */
@@ -575,10 +390,10 @@ int afpacket_init(struct afpacket_ctx *ctx, const struct afpacket_config *config
             goto err_cleanup;
         }
 
-        /* Setup TX ring if output interface configured */
+        /* Setup shared TX ring if output interface configured */
         if (ctx->config.output_ifindex > 0 && ctx->config.output_ifname[0] != '\0') {
-            err = setup_tx_ring(ctx->config.output_ifindex,
-                                &ctx->workers[i], ctx->config.verbose && i == 0);
+            err = tx_ring_setup(&ctx->workers[i].tx, ctx->config.output_ifindex,
+                                ctx->config.verbose && i == 0, ctx->config.debug);
             if (err) {
                 fprintf(stderr, "AF_PACKET: Failed to setup TX ring for worker %d\n", i);
                 goto err_cleanup;

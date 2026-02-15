@@ -11,7 +11,7 @@ vasn_tap is designed to run on customer operating systems with minimal dependenc
 | Feature | eBPF Mode (`-m ebpf`) | AF_PACKET Mode (`-m afpacket`) |
 |---------|----------------------|-------------------------------|
 | **RX Mechanism** | TC BPF hook + perf buffer | TPACKET_V3 mmap ring buffer |
-| **TX Mechanism** | Per-packet `send()` via `output.c` | TPACKET_V2 mmap TX ring (zero-copy, batch flush) |
+| **TX Mechanism** | Shared TPACKET_V2 mmap TX ring (`tx_ring.c`), flush every 32 packets | Shared TPACKET_V2 mmap TX ring (`tx_ring.c`), flush per RX block |
 | **Multi-worker** | Single thread only (perf buffer limitation) | Yes, via PACKET_FANOUT_HASH |
 | **Kernel requirement** | >= 5.10 with BTF | >= 3.2 |
 | **Dependencies** | libbpf, clang, bpftool | None (standard sockets) |
@@ -93,6 +93,7 @@ sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 | `-m, --mode <mode>` | Capture mode: `ebpf` or `afpacket` | `ebpf` |
 | `-w, --workers <n>` | Number of worker threads (1-128) | Auto (num CPUs) |
 | `-v, --verbose` | Enable verbose logging | Off |
+| `-d, --debug` | Enable TX debug (hex dump of first packet per worker; no cost when omitted) | Off |
 | `-s, --stats` | Print periodic statistics (every 1s) | Off |
 | `-h, --help` | Show help message and exit | -- |
 
@@ -100,6 +101,7 @@ sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 - In **ebpf** mode, worker count is forced to 1 regardless of `-w` (perf buffer limitation).
 - In **afpacket** mode, workers are distributed via PACKET_FANOUT_HASH for per-flow affinity.
 - If `-o` is omitted, packets are captured and counted but not forwarded (useful for benchmarking).
+- TX packet length is clamped to the output interface MTU (avoids kernel "packet size is too long" and stuck ring). Oversize packets are truncated; use UDP or jumbo MTU on the path to avoid truncation.
 
 ## Testing
 
@@ -117,7 +119,7 @@ Runs 4 test suites (41 tests total) using CMocka: CLI parsing, config validation
 sudo bash tests/integration/run_all.sh
 ```
 
-Creates network namespaces with veth pairs, runs tests in both eBPF and AF_PACKET modes, and generates an **HTML report** at `test_report.html` in the project root.
+Creates network namespaces with veth pairs, runs tests in both eBPF and AF_PACKET modes, and generates an **HTML report** at `test_report.html` in the project root. The fanout distribution test uses **iperf3 UDP** (`-u -l 1470`) to avoid TSO/GRO oversize frames on the tap path.
 
 See [TESTING.md](TESTING.md) for full details on the test suites, how to add tests, and the test matrix.
 
@@ -132,8 +134,9 @@ vasn_tap/
 │   ├── cli.c / cli.h         # Argument parsing (extracted for testability)
 │   ├── tap.c / tap.h         # eBPF mode: load BPF, attach/detach TC hooks
 │   ├── worker.c / worker.h   # eBPF mode: perf buffer consumer, stats
-│   ├── afpacket.c / afpacket.h  # AF_PACKET mode: TPACKET_V3 RX, TPACKET_V2 TX, FANOUT
-│   ├── output.c / output.h   # Raw socket TX for eBPF mode (AF_PACKET + QDISC_BYPASS)
+│   ├── tx_ring.c / tx_ring.h     # Shared TPACKET_V2 mmap TX ring (both modes)
+│   ├── afpacket.c / afpacket.h   # AF_PACKET mode: TPACKET_V3 RX, FANOUT, uses tx_ring
+│   ├── output.c / output.h      # Legacy; used only by test_output unit tests
 │   └── ebpf/
 │       ├── tc_clone.bpf.c    # Kernel-side TC BPF program
 │       ├── tc_clone.h         # eBPF program constants
@@ -184,20 +187,15 @@ sudo sysctl -w net.core.wmem_max=26214400
 > on the TX socket, bypassing the `wmem_max` sysctl cap. This requires `CAP_NET_ADMIN`
 > (which is already needed for AF_PACKET raw sockets).
 
-### AF_PACKET Ring Tuning
+### Ring Tuning
 
-Ring buffer sizes per worker are configured in `src/afpacket.h`:
-
-**RX ring (TPACKET_V3):**
+**RX ring (AF_PACKET only)** — in `src/afpacket.h`:
 - `AFPACKET_BLOCK_SIZE` -- 256 KB per block (default)
 - `AFPACKET_BLOCK_NR` -- 64 blocks = 16 MB per worker (default)
 
-**TX ring (TPACKET_V2):**
-- `AFPACKET_TX_BLOCK_SIZE` -- 256 KB per block (default)
-- `AFPACKET_TX_BLOCK_NR` -- 16 blocks = 4 MB per worker (default)
-- `AFPACKET_TX_FRAME_SIZE` -- 2048 bytes per frame (default)
-
-The TX ring uses `PACKET_QDISC_BYPASS` to skip the kernel qdisc layer for lower-latency output.
+**TX ring (shared by both modes)** — in `src/tx_ring.c`:
+- 256 KB blocks × 16 = 4 MB per ring, 2048-byte frames
+- Uses `PACKET_QDISC_BYPASS` and 4 MB send buffer (`SO_SNDBUFFORCE`) for lower latency
 
 ### eBPF Perf Buffer Tuning
 

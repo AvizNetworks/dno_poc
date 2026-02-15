@@ -14,6 +14,8 @@
 struct bpf_object;
 struct perf_buffer;
 
+#include "tx_ring.h"
+
 /* Per-worker statistics */
 struct worker_stats {
     _Atomic uint64_t packets_received;
@@ -29,6 +31,7 @@ struct worker_config {
     int output_ifindex;           /* Output interface index (0 = drop mode) */
     char output_ifname[64];       /* Output interface name */
     bool verbose;                 /* Verbose logging */
+    bool debug;                   /* TX debug (hex dumps) */
 };
 
 /* Worker context */
@@ -36,7 +39,8 @@ struct worker_ctx {
     struct worker_config config;
     struct bpf_object *bpf_obj;   /* Reference to BPF object */
     struct perf_buffer *pb;       /* Perf buffer */
-    int output_fd;                /* Raw socket for output (-1 if drop mode) */
+    struct tx_ring_ctx tx_ring;   /* Shared TPACKET_V2 TX ring (tx_ring.fd == -1 if drop mode) */
+    unsigned int tx_pending;      /* Packets written since last flush (for batching) */
     volatile bool running;        /* Running flag */
     pthread_t *threads;           /* Worker thread handles */
     struct worker_stats *stats;   /* Per-worker stats array */

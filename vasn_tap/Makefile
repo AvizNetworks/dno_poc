@@ -29,11 +29,11 @@ BPF_CFLAGS := -g -O2 -target bpf
 BPF_CFLAGS += -D__TARGET_ARCH_x86
 BPF_CFLAGS += -I$(INCLUDE_DIR) -I$(EBPF_DIR)
 
-# Source files
+# Source files (output.c only used by unit test test_output)
 SRCS := $(SRC_DIR)/main.c \
         $(SRC_DIR)/tap.c \
         $(SRC_DIR)/worker.c \
-        $(SRC_DIR)/output.c \
+        $(SRC_DIR)/tx_ring.c \
         $(SRC_DIR)/afpacket.c \
         $(SRC_DIR)/cli.c
 
@@ -44,8 +44,8 @@ TEST_INTEG_DIR := tests/integration
 # Test libraries
 TEST_LDFLAGS := -lcmocka
 
-# Object files used by tests (everything except main.o)
-TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/output.o $(BUILD_DIR)/cli.o
+# Object files used by tests (everything except main.o, tap.o; output.o only for test_output)
+TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/tx_ring.o $(BUILD_DIR)/cli.o
 
 # Object files
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
@@ -79,7 +79,7 @@ $(BPF_OBJ): $(BPF_SRC) $(VMLINUX_H) $(EBPF_DIR)/tc_clone.h
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # Compile userspace objects
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(INCLUDE_DIR)/common.h
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/tx_ring.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(INCLUDE_DIR)/common.h
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
 

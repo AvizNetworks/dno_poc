@@ -4,7 +4,7 @@
 #
 # Verifies that PACKET_FANOUT_HASH actually distributes packets across
 # multiple worker sockets by:
-#   1. Running iperf3 with multiple parallel TCP streams (distinct 5-tuples)
+#   1. Running iperf3 with multiple parallel UDP streams (distinct 5-tuples)
 #   2. Parsing vasn_tap's per-worker stats output to check each worker's RX count
 #
 # This test is AF_PACKET-only (fanout is an AF_PACKET kernel feature).
@@ -22,8 +22,11 @@ VASN_TAP="$PROJECT_DIR/vasn_tap"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 NUM_FLOWS="${NUM_FLOWS:-8}"
 IPERF_DURATION=5
-IPERF_RATE="${IPERF_RATE:-10M}"   # Per-stream bandwidth limit (e.g. 10M = 10 Mbps per stream)
+IPERF_RATE="${IPERF_RATE:-1M}"    # Per-stream bandwidth limit (UDP; e.g. 1M = 1 Mbps per stream)
+# Require captured_at_dst to be at least this fraction of TX (80% allows minor timing variance)
+CAPTURED_MIN_PERCENT=80
 START_TIME=$(date +%s)
+CAPTURED_AT_DST=0
 
 # Source helpers for JSON result writing
 source "$SCRIPT_DIR/test_helpers.sh"
@@ -45,13 +48,13 @@ if ! command -v iperf3 &>/dev/null; then
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Fanout Distribution" \
-        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel TCP flows" \
+        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel UDP flows" \
         "result"            "$RESULT" \
         "mode"              "afpacket" \
         "workers"           "$NUM_WORKERS" \
         "input_iface"       "veth_src_host" \
         "output_iface"      "veth_dst_host" \
-        "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
+        "traffic_type"      "iperf3 UDP ($NUM_FLOWS streams x ${IPERF_RATE}/stream, -l 1470)" \
         "traffic_count"     "$NUM_FLOWS" \
         "traffic_src"       "ns_src (192.168.200.1)" \
         "traffic_dst"       "host (192.168.200.2)" \
@@ -74,6 +77,11 @@ cleanup() {
         kill -INT "$VASN_PID" 2>/dev/null || true
         wait "$VASN_PID" 2>/dev/null || true
     fi
+    # Kill tcpdump in ns_dst if still running
+    if [ -n "$TCPDUMP_PID" ] && kill -0 "$TCPDUMP_PID" 2>/dev/null; then
+        kill "$TCPDUMP_PID" 2>/dev/null || true
+        wait "$TCPDUMP_PID" 2>/dev/null || true
+    fi
     # Kill iperf3 server if still running
     if [ -n "$IPERF_SERVER_PID" ] && kill -0 "$IPERF_SERVER_PID" 2>/dev/null; then
         kill "$IPERF_SERVER_PID" 2>/dev/null || true
@@ -82,7 +90,7 @@ cleanup() {
     # Also kill any stray iperf3 on our bind address
     pkill -f "iperf3 -s -B 192.168.200.2" 2>/dev/null || true
     # Clean up temp files
-    rm -f "$STATS_FILE" "$IPERF_LOG"
+    rm -f "$STATS_FILE" "$IPERF_LOG" "$CAPTURE_FILE"
 }
 trap cleanup EXIT
 
@@ -94,13 +102,13 @@ if ! ip netns exec ns_src ping -c 1 -W 2 192.168.200.2 > /dev/null 2>&1; then
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Fanout Distribution" \
-        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel TCP flows" \
+        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel UDP flows" \
         "result"            "FAIL" \
         "mode"              "afpacket" \
         "workers"           "$NUM_WORKERS" \
         "input_iface"       "veth_src_host" \
         "output_iface"      "veth_dst_host" \
-        "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
+        "traffic_type"      "iperf3 UDP ($NUM_FLOWS streams x ${IPERF_RATE}/stream, -l 1470)" \
         "traffic_count"     "$NUM_FLOWS" \
         "traffic_src"       "ns_src (192.168.200.1)" \
         "traffic_dst"       "host (192.168.200.2)" \
@@ -128,13 +136,13 @@ if [ -z "$IPERF_SERVER_PID" ]; then
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Fanout Distribution" \
-        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel TCP flows" \
+        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel UDP flows" \
         "result"            "FAIL" \
         "mode"              "afpacket" \
         "workers"           "$NUM_WORKERS" \
         "input_iface"       "veth_src_host" \
         "output_iface"      "veth_dst_host" \
-        "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
+        "traffic_type"      "iperf3 UDP ($NUM_FLOWS streams x ${IPERF_RATE}/stream, -l 1470)" \
         "traffic_count"     "$NUM_FLOWS" \
         "traffic_src"       "ns_src (192.168.200.1)" \
         "traffic_dst"       "host (192.168.200.2)" \
@@ -150,6 +158,14 @@ if [ -z "$IPERF_SERVER_PID" ]; then
 fi
 echo "  iperf3 server started (PID $IPERF_SERVER_PID) on 192.168.200.2:5201"
 
+# --- Start packet capture in ns_dst (verify forwarded packets reach destination) ---
+# Run tcpdump without timeout so we can stop it with SIGINT for a clean pcap flush.
+# Use -B 8192 (8 MiB) so kernel capture buffer does not drop packets under load.
+CAPTURE_FILE=$(mktemp /tmp/vasn_tap_fanout_cap_XXXXXX.pcap)
+ip netns exec ns_dst tcpdump -B 8192 -i veth_dst_ns -w "$CAPTURE_FILE" 2>/dev/null &
+TCPDUMP_PID=$!
+sleep 0.5
+
 # --- Start vasn_tap ---
 STATS_FILE=$(mktemp /tmp/vasn_tap_fanout_XXXXXX.txt)
 $VASN_TAP -m afpacket -i veth_src_host -o veth_dst_host -w "$NUM_WORKERS" -v -s > "$STATS_FILE" 2>&1 &
@@ -163,13 +179,13 @@ if ! kill -0 "$VASN_PID" 2>/dev/null; then
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Fanout Distribution" \
-        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel TCP flows" \
+        "description"       "Verify PACKET_FANOUT_HASH distributes traffic across $NUM_WORKERS worker sockets using $NUM_FLOWS parallel UDP flows" \
         "result"            "FAIL" \
         "mode"              "afpacket" \
         "workers"           "$NUM_WORKERS" \
         "input_iface"       "veth_src_host" \
         "output_iface"      "veth_dst_host" \
-        "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
+        "traffic_type"      "iperf3 UDP ($NUM_FLOWS streams x ${IPERF_RATE}/stream, -l 1470)" \
         "traffic_count"     "$NUM_FLOWS" \
         "traffic_src"       "ns_src (192.168.200.1)" \
         "traffic_dst"       "host (192.168.200.2)" \
@@ -185,10 +201,10 @@ if ! kill -0 "$VASN_PID" 2>/dev/null; then
 fi
 echo "  vasn_tap started (PID $VASN_PID) with $NUM_WORKERS workers"
 
-# --- Generate multi-flow traffic with iperf3 ---
-echo "  Running iperf3 client: $NUM_FLOWS parallel TCP streams at ${IPERF_RATE}/stream for ${IPERF_DURATION}s..."
+# --- Generate multi-flow traffic with iperf3 (UDP to avoid TSO/GRO oversize frames) ---
+echo "  Running iperf3 client: $NUM_FLOWS parallel UDP streams at ${IPERF_RATE}/stream, -l 1470, for ${IPERF_DURATION}s..."
 IPERF_CLIENT_LOG=$(mktemp /tmp/iperf3_client_XXXXXX.log)
-ip netns exec ns_src iperf3 -c 192.168.200.2 -P "$NUM_FLOWS" -b "$IPERF_RATE" -t "$IPERF_DURATION" --connect-timeout 3000 > "$IPERF_CLIENT_LOG" 2>&1
+ip netns exec ns_src iperf3 -c 192.168.200.2 -u -P "$NUM_FLOWS" -b "$IPERF_RATE" -t "$IPERF_DURATION" -l 1470 --connect-timeout 3000 > "$IPERF_CLIENT_LOG" 2>&1
 IPERF_EXIT=$?
 if [ $IPERF_EXIT -ne 0 ]; then
     echo "  WARNING: iperf3 client exited with code $IPERF_EXIT"
@@ -205,13 +221,20 @@ kill -INT "$VASN_PID" 2>/dev/null || true
 wait "$VASN_PID" 2>/dev/null || true
 VASN_PID=""
 
+# Allow packets in flight to reach ns_dst, then stop tcpdump with SIGINT so it flushes the pcap
+sleep 2
+kill -INT "$TCPDUMP_PID" 2>/dev/null || true
+wait "$TCPDUMP_PID" 2>/dev/null || true
+TCPDUMP_PID=""
+CAPTURED_AT_DST=$(tcpdump -r "$CAPTURE_FILE" 2>/dev/null | wc -l)
+
 # --- Parse aggregate stats ---
 RX_COUNT=$(grep -oP 'RX: \K[0-9]+' "$STATS_FILE" | tail -1)
 TX_COUNT=$(grep -oP 'TX: \K[0-9]+' "$STATS_FILE" | tail -1)
 DROP_COUNT=$(grep -oP 'Dropped: \K[0-9]+' "$STATS_FILE" | tail -1)
 
 echo ""
-echo "  Aggregate stats: RX=${RX_COUNT:-0}, TX=${TX_COUNT:-0}, Dropped=${DROP_COUNT:-0}"
+echo "  Aggregate stats: RX=${RX_COUNT:-0}, TX=${TX_COUNT:-0}, Dropped=${DROP_COUNT:-0}, captured_at_dst=${CAPTURED_AT_DST:-0}"
 
 # --- Parse per-worker stats ---
 # vasn_tap prints lines like: "  Worker 0: RX=1200 TX=1200 Dropped=0"
@@ -251,42 +274,49 @@ echo "  Workers with traffic: $WORKERS_WITH_TRAFFIC / $NUM_WORKERS"
 # Pass criteria:
 #   1. Total RX > 0 (packets were captured)
 #   2. At least 2 workers have RX > 0 (proves fanout distribution)
+#   3. captured_at_dst >= CAPTURED_MIN_PERCENT% of TX (forwarded packets actually reach ns_dst)
+TX_VAL="${TX_COUNT:-0}"
+MIN_REQUIRED=$(( TX_VAL * CAPTURED_MIN_PERCENT / 100 ))
 if [ "$TOTAL_RX" -le 0 ]; then
     ERROR_MSG="No packets captured (total RX = $TOTAL_RX). Per-worker: [$PER_WORKER_DETAIL]"
     echo "  FAIL: $ERROR_MSG"
 elif [ "$WORKERS_WITH_TRAFFIC" -lt 2 ]; then
     ERROR_MSG="Only $WORKERS_WITH_TRAFFIC worker(s) received traffic (need >=2 to prove distribution). Per-worker: [$PER_WORKER_DETAIL]"
     echo "  FAIL: $ERROR_MSG"
+elif [ "${CAPTURED_AT_DST:-0}" -lt "$MIN_REQUIRED" ]; then
+    ERROR_MSG="Too few packets at destination: captured_at_dst=${CAPTURED_AT_DST:-0}, need >=${MIN_REQUIRED} (${CAPTURED_MIN_PERCENT}% of TX=${TX_VAL}). Check forwarding."
+    echo "  FAIL: $ERROR_MSG"
 else
     RESULT="PASS"
-    echo "  PASS: $WORKERS_WITH_TRAFFIC/$NUM_WORKERS workers received traffic (total RX: $TOTAL_RX)"
+    echo "  PASS: $WORKERS_WITH_TRAFFIC/$NUM_WORKERS workers received traffic, captured_at_dst=$CAPTURED_AT_DST (TX=$TX_VAL, total RX: $TOTAL_RX)"
 fi
 
 # --- Write JSON result ---
 DURATION=$(($(date +%s) - START_TIME))
 
-NOTE="Fanout test sends $NUM_FLOWS parallel TCP streams at ${IPERF_RATE}/stream (iperf3 -P $NUM_FLOWS -b $IPERF_RATE) for ${IPERF_DURATION}s to create distinct 5-tuples."
+NOTE="Fanout test sends $NUM_FLOWS parallel UDP streams at ${IPERF_RATE}/stream, -l 1470 (iperf3 -u -P $NUM_FLOWS -b $IPERF_RATE -l 1470) for ${IPERF_DURATION}s to create distinct 5-tuples."
 NOTE="$NOTE PACKET_FANOUT_HASH distributes flows by hashing src/dst IP + ports + protocol."
 NOTE="$NOTE Per-worker breakdown: [$PER_WORKER_DETAIL]."
 NOTE="$NOTE $WORKERS_WITH_TRAFFIC of $NUM_WORKERS workers received packets."
 NOTE="$NOTE A single flow (e.g. one ping) always goes to one worker -- multiple flows are needed to prove distribution."
+NOTE="$NOTE captured_at_dst must be >= ${CAPTURED_MIN_PERCENT}% of TX (packets seen in ns_dst via tcpdump on veth_dst_ns)."
 
 JSON=$(build_result_json \
     "test_name"         "Fanout Distribution" \
-    "description"       "Verify PACKET_FANOUT_HASH distributes $NUM_FLOWS TCP flows across $NUM_WORKERS AF_PACKET worker threads" \
+    "description"       "Verify PACKET_FANOUT_HASH distributes $NUM_FLOWS UDP flows across $NUM_WORKERS AF_PACKET worker threads and packets reach ns_dst" \
     "result"            "$RESULT" \
     "mode"              "afpacket" \
     "workers"           "$NUM_WORKERS" \
     "input_iface"       "veth_src_host" \
     "output_iface"      "veth_dst_host" \
-    "traffic_type"      "iperf3 TCP ($NUM_FLOWS streams x ${IPERF_RATE}/stream)" \
+    "traffic_type"      "iperf3 UDP ($NUM_FLOWS streams x ${IPERF_RATE}/stream, -l 1470)" \
     "traffic_count"     "$NUM_FLOWS" \
     "traffic_src"       "ns_src (192.168.200.1)" \
     "traffic_dst"       "host (192.168.200.2)" \
     "rx_packets"        "${RX_COUNT:-0}" \
     "tx_packets"        "${TX_COUNT:-0}" \
     "dropped_packets"   "${DROP_COUNT:-0}" \
-    "captured_at_dst"   "0" \
+    "captured_at_dst"   "${CAPTURED_AT_DST:-0}" \
     "duration_sec"      "$DURATION" \
     "error_msg"         "$ERROR_MSG" \
     "note"              "$NOTE")

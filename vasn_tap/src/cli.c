@@ -17,6 +17,7 @@ static struct option cli_long_options[] = {
     {"mode",    required_argument, 0, 'm'},
     {"workers", required_argument, 0, 'w'},
     {"verbose", no_argument,       0, 'v'},
+    {"debug",   no_argument,       0, 'd'},
     {"stats",   no_argument,       0, 's'},
     {"help",    no_argument,       0, 'h'},
     {0, 0, 0, 0}
@@ -38,7 +39,7 @@ int parse_args(int argc, char **argv, struct cli_args *args)
     optind = 1;
     opterr = 0;  /* Suppress getopt error messages in tests */
 
-    while ((opt = getopt_long(argc, argv, "i:o:m:w:vsh", cli_long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:o:m:w:vsdh", cli_long_options, NULL)) != -1) {
         switch (opt) {
         case 'i':
             snprintf(args->input_iface, sizeof(args->input_iface), "%s", optarg);
@@ -66,6 +67,9 @@ int parse_args(int argc, char **argv, struct cli_args *args)
             break;
         case 'v':
             args->verbose = true;
+            break;
+        case 'd':
+            args->debug = true;
             break;
         case 's':
             args->show_stats = true;

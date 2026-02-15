@@ -24,6 +24,7 @@
 #include <bpf/libbpf.h>
 
 #include "worker.h"
+#include "tx_ring.h"
 #include "../include/common.h"
 
 /* Perf buffer configuration */
@@ -50,7 +51,6 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
     struct worker_ctx *wctx = g_worker_ctx;
     struct pkt_meta *meta = (struct pkt_meta *)data;
     struct worker_stats *stats;
-    ssize_t sent;
 
     if (!wctx || !meta || size < sizeof(struct pkt_meta)) {
         return;
@@ -63,13 +63,6 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
     atomic_fetch_add(&stats->packets_received, 1);
     atomic_fetch_add(&stats->bytes_received, meta->len);
 
-    /* Check if we have an output interface */
-    if (wctx->output_fd < 0) {
-        /* Drop mode - just count the drop */
-        atomic_fetch_add(&stats->packets_dropped, 1);
-        return;
-    }
-
     /* Get packet data pointer (after metadata) */
     __u8 *pkt_data = meta->data;
     __u32 pkt_len = meta->len;
@@ -80,13 +73,24 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         return;
     }
 
-    /* Send packet to output interface */
-    sent = send(wctx->output_fd, pkt_data, pkt_len, MSG_DONTWAIT);
-    if (sent < 0) {
+    /* Drop mode */
+    if (wctx->tx_ring.fd < 0) {
         atomic_fetch_add(&stats->packets_dropped, 1);
-    } else {
+        return;
+    }
+
+    /* Write to shared TX ring (same path as AF_PACKET backend) */
+    if (tx_ring_write(&wctx->tx_ring, pkt_data, pkt_len) == 0) {
         atomic_fetch_add(&stats->packets_sent, 1);
-        atomic_fetch_add(&stats->bytes_sent, sent);
+        atomic_fetch_add(&stats->bytes_sent, pkt_len);
+        wctx->tx_pending++;
+        /* Flush every 32 packets to batch syscalls */
+        if (wctx->tx_pending >= 32) {
+            tx_ring_flush(&wctx->tx_ring);
+            wctx->tx_pending = 0;
+        }
+    } else {
+        atomic_fetch_add(&stats->packets_dropped, 1);
     }
 }
 
@@ -173,43 +177,6 @@ static void *worker_thread(void *arg)
     return NULL;
 }
 
-/*
- * Open raw socket for output interface
- */
-static int open_output_socket(const char *ifname)
-{
-    struct sockaddr_ll sll = {};
-    int fd, ifindex;
-
-    ifindex = if_nametoindex(ifname);
-    if (ifindex == 0) {
-        fprintf(stderr, "Output interface %s not found\n", ifname);
-        return -ENODEV;
-    }
-
-    /* Open raw socket */
-    fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-    if (fd < 0) {
-        fprintf(stderr, "Failed to open raw socket: %s\n", strerror(errno));
-        return -errno;
-    }
-
-    /* Bind to interface */
-    sll.sll_family = AF_PACKET;
-    sll.sll_protocol = htons(ETH_P_ALL);
-    sll.sll_ifindex = ifindex;
-
-    if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
-        fprintf(stderr, "Failed to bind socket to %s: %s\n",
-                ifname, strerror(errno));
-        close(fd);
-        return -errno;
-    }
-
-    printf("Opened output socket on %s (ifindex=%d)\n", ifname, ifindex);
-    return fd;
-}
-
 int workers_init(struct worker_ctx *ctx, struct bpf_object *bpf_obj,
                  const struct worker_config *config)
 {
@@ -224,7 +191,7 @@ int workers_init(struct worker_ctx *ctx, struct bpf_object *bpf_obj,
     memset(ctx, 0, sizeof(*ctx));
     ctx->config = *config;
     ctx->bpf_obj = bpf_obj;
-    ctx->output_fd = -1;
+    ctx->tx_ring.fd = -1;
 
     /* Store global context for perf buffer callbacks */
     g_worker_ctx = ctx;
@@ -273,11 +240,12 @@ int workers_init(struct worker_ctx *ctx, struct bpf_object *bpf_obj,
         return -ENOMEM;
     }
 
-    /* Open output socket if interface specified */
+    /* Setup shared TX ring if output interface specified */
     if (config->output_ifindex > 0 && config->output_ifname[0] != '\0') {
-        ctx->output_fd = open_output_socket(config->output_ifname);
-        if (ctx->output_fd < 0) {
-            err = ctx->output_fd;
+        int ifindex = if_nametoindex(config->output_ifname);
+        if (ifindex == 0) {
+            fprintf(stderr, "Output interface %s not found\n", config->output_ifname);
+            err = -ENODEV;
             free(ctx->stats);
             ctx->stats = NULL;
             free(ctx->threads);
@@ -286,6 +254,17 @@ int workers_init(struct worker_ctx *ctx, struct bpf_object *bpf_obj,
             ctx->pb = NULL;
             return err;
         }
+        err = tx_ring_setup(&ctx->tx_ring, ifindex, config->verbose, config->debug);
+        if (err) {
+            free(ctx->stats);
+            ctx->stats = NULL;
+            free(ctx->threads);
+            ctx->threads = NULL;
+            perf_buffer__free(ctx->pb);
+            ctx->pb = NULL;
+            return err;
+        }
+        printf("TX ring on %s (ifindex=%d)\n", config->output_ifname, ifindex);
     } else {
         printf("No output interface specified - running in drop mode\n");
     }
@@ -364,9 +343,10 @@ void workers_cleanup(struct worker_ctx *ctx)
         workers_stop(ctx);
     }
 
-    if (ctx->output_fd >= 0) {
-        close(ctx->output_fd);
-        ctx->output_fd = -1;
+    /* Flush any pending TX then teardown shared TX ring */
+    if (ctx->tx_ring.fd >= 0) {
+        tx_ring_flush(&ctx->tx_ring);
+        tx_ring_teardown(&ctx->tx_ring);
     }
 
     if (ctx->pb) {

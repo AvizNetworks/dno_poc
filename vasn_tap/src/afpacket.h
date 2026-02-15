@@ -14,20 +14,13 @@
 
 /* Reuse worker_stats from worker.h for consistent stats interface */
 #include "worker.h"
+#include "tx_ring.h"
 
 /* TPACKET_V3 RX ring configuration */
 #define AFPACKET_BLOCK_SIZE     (1 << 18)   /* 256 KB per block */
 #define AFPACKET_BLOCK_NR       64          /* 64 blocks = 16 MB per worker */
 #define AFPACKET_FRAME_SIZE     (1 << 11)   /* 2048 bytes per frame */
 #define AFPACKET_BLOCK_TIMEOUT  100         /* 100ms block retire timeout */
-
-/* TPACKET_V2 TX ring configuration
- * Uses a separate AF_PACKET socket with TPACKET_V2 for mmap'd TX.
- * Packets are written directly into ring frames (no per-packet syscall),
- * then flushed with a single sendto() per RX block. */
-#define AFPACKET_TX_BLOCK_SIZE  (1 << 18)   /* 256 KB per block */
-#define AFPACKET_TX_BLOCK_NR    16          /* 16 blocks = 4 MB per worker */
-#define AFPACKET_TX_FRAME_SIZE  (1 << 11)   /* 2048 bytes per frame */
 
 /* Fanout group ID (arbitrary, must be same for all sockets) */
 #define AFPACKET_FANOUT_GROUP_ID  42
@@ -40,6 +33,7 @@ struct afpacket_config {
     int  output_ifindex;          /* Output interface index (0 = drop mode) */
     int  num_workers;             /* Number of worker threads */
     bool verbose;                 /* Verbose logging */
+    bool debug;                   /* TX debug (hex dumps) */
 };
 
 /* Per-worker state for AF_PACKET mode */
@@ -52,14 +46,10 @@ struct afpacket_worker {
     unsigned int         block_nr;       /* Number of RX blocks */
     unsigned int         current_block;  /* Current RX block index */
 
-    /* TX: TPACKET_V2 mmap ring on output interface (-1/NULL = drop mode) */
-    int                  tx_fd;          /* AF_PACKET TX socket (-1 = drop) */
-    void                *tx_ring;        /* mmap'd TPACKET_V2 TX ring */
-    unsigned int         tx_ring_size;   /* Total TX mmap size in bytes */
-    unsigned int         tx_frame_nr;    /* Total number of TX frames */
-    unsigned int         tx_frame_size;  /* Bytes per TX frame */
-    unsigned int         tx_current;     /* Next TX frame index to write */
+    /* TX: shared TPACKET_V2 mmap ring (tx.fd == -1 means drop mode) */
+    struct tx_ring_ctx   tx;
 
+    bool                 debug;          /* Enable TX debug prints (from config) */
     struct worker_stats  stats;          /* Per-worker statistics */
 };
 
