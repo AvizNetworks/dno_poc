@@ -1,0 +1,37 @@
+# vasn_tap - Example filter (ACL) config
+# Use: vasn_tap -i <iface> -o <iface> -c config.example.yaml
+# Validate only: vasn_tap -i lo -c config.example.yaml --validate-config
+#
+# Phase 1: filter section only. default_action applies when no rule matches.
+# Rules are evaluated first-match; empty rules => default_action for every packet.
+
+filter:
+  default_action: drop   # allow | drop
+  rules:
+    # Allow TCP to port 443 (e.g. HTTPS)
+    - action: allow
+      match:
+        protocol: tcp
+        port_dst: 443
+
+    # Allow TCP to port 443 (e.g. HTTPS)
+    - action: allow
+      match:
+        protocol: tcp
+
+
+    # Allow traffic from a subnet
+    - action: allow
+      match:
+        ip_src: 192.168.200.0/24
+
+    # Allow ICMP (ping)
+    - action: allow
+      match:
+        protocol: icmp
+
+# Match fields (all optional within each rule's match):
+#   protocol: tcp | udp | icmp | icmpv6 | or number (e.g. 6)
+#   port_src, port_dst: 1-65535
+#   ip_src, ip_dst: IPv4 address or CIDR (e.g. 10.0.0.0/8)
+#   eth_type: 0x0800 (IPv4) or decimal
