@@ -11,13 +11,13 @@ vasn_tap is a lightweight packet tap that runs on customer operating systems. It
   ================               ==================              ===================
 
   +-----------+                  +------------------+            +------------------+
-  | Customer  |   raw traffic    |                  |  forwarded |                  |
-  | Interface |  ------------->  |  vasn_tap        |  --------> |  ASN (on-prem)   |
-  | (eth0)    |  (not modified)  |  -i eth0 -o eth1 |  (eth1)   |                  |
-  +-----------+                  +------------------+            +------------------+
-       |                                |
-       |  original traffic              | capture + process
-       |  continues normally            | in userspace
+  | Customer  |   raw traffic    |  capture         |  forwarded |                  |
+  | Interface |  ------------->  |  optional filter |  --------> |  ASN (on-prem)   |
+  | (eth0)    |  (not modified)  |  (YAML -c)       |  (eth1)   |                  |
+  +-----------+                  |  stats / -F dump |            +------------------+
+       |                         +------------------+
+       |  original traffic              |
+       |  continues normally            | L2/L3/L4 ACL (filter.c), then tx_ring
        v                                |
    [Normal stack]                  [Stats, logging]
 ```
@@ -30,12 +30,14 @@ The application supports **two capture backends** selected at startup via the `-
 ## Module Map
 
 ```
-                          +-----------+
-                          |  main.c   |  Entry point, signal handling
-                          |  cli.c    |  Argument parsing
-                          +-----+-----+
-                                |
-                   mode selection (g_capture_mode)
+                          +------------------+
+                          |  main.c          |  Entry point, signal handling
+                          |  cli.c           |  Argument parsing
+                          |  config.c       |  YAML filter config load
+                          |  filter.c       |  ACL filter_packet (L2/L3/L4)
+                          +--------+---------+
+                                   |
+                      mode selection (g_capture_mode)
                        /                    \
                       /                      \
             +--------+--------+      +--------+---------+
@@ -101,6 +103,25 @@ struct cli_args {
 ```
 
 Return values: `0` = success, `1` = help requested, `-1` = error.
+
+CLI also supports `-c, --config <path>` (filter config YAML), `--validate-config` (load/validate and exit), and `-F, --filter-stats` (periodically dump filter rules and per-rule hit counts when a filter config is loaded).
+
+### config.c -- Filter Config (YAML)
+
+**File:** `src/config.c`, `src/config.h`
+
+Loads the filter (ACL) configuration from a YAML file. Used when `-c` is set. Parsing is a single-pass libyaml event stream: top-level key **filter**, then **default_action** (scalar) and **rules** (sequence of mappings); each rule has **action** and an optional **match** mapping (protocol, port_src, port_dst, ip_src, ip_dst, eth_type).
+
+- **config_load(path)** — Opens file, parses YAML, fills `struct tap_config` (filter section). On error returns NULL and sets a static error message (retrievable via **config_get_error()**).
+- **config_free(cfg)** — Frees the config. Safe to call with NULL.
+
+Config layout: **filter.default_action** (`allow` | `drop`), **filter.rules[]** — each rule has **action** and optional **match** (protocol, port_src, port_dst, ip_src, ip_dst, eth_type). Validation is done at load; invalid files cause startup failure (no "allow all" fallback). Config is read once at startup; restart required for changes.
+
+### filter.c -- Packet Filter (ACL)
+
+**File:** `src/filter.c`, `src/filter.h`
+
+Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before **tx_ring_write**, increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip TX. When **-F (--filter-stats)** is set, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without **-F**, counters are still updated but no read/print is done.
 
 ### tap.c -- eBPF Tap Module
 
@@ -231,57 +252,9 @@ int  tx_ring_write(struct tx_ring_ctx *ctx, const void *data, uint32_t len);  //
 void tx_ring_flush(struct tx_ring_ctx *ctx);
 ```
 
-- **AF_PACKET**: Each worker has its own `struct tx_ring_ctx tx`; `tx_ring_setup()` is called per worker in `afpacket_init()`. Flush happens once per RX block in `process_block()`.
-- **eBPF**: Single `struct tx_ring_ctx tx_ring` in `worker_ctx`; `tx_ring_setup()` in `workers_init()`. `handle_sample()` calls `tx_ring_write()` and flushes every 32 packets to batch syscalls.
+- **AF_PACKET**: Each worker has its own `struct tx_ring_ctx tx`; `tx_ring_setup()` is called per worker in `afpacket_init()`. In `process_block()`, if **g_filter_config** is set, **filter_packet()** is called first; on DROP the packet is counted as dropped and not written. Flush happens once per RX block.
+- **eBPF**: Single `struct tx_ring_ctx tx_ring` in `worker_ctx`; `tx_ring_setup()` in `workers_init()`. In `handle_sample()`, if **g_filter_config** is set, **filter_packet()** is called first; on DROP the packet is counted as dropped and not written. Otherwise `tx_ring_write()` and flush every 32 packets to batch syscalls.
 
-**MTU clamping:** At setup, the output interface MTU is read via `SIOCGIFMTU`; `max_tx_len` is set to `min(1518, MTU+14)`. In `tx_ring_write()`, packet length is clamped to `max_tx_len` so the kernel never sees a frame larger than the interface allows (avoids "af_packet: packet size is too long" and TX ring stuck state). Oversize packets are truncated; for full fidelity use UDP or a path with jumbo MTU.
-
-Ring defaults (in `tx_ring.c`): 256 KB blocks × 16 = 4 MB, 2048-byte frames; `PACKET_QDISC_BYPASS` and `SO_SNDBUFFORCE` (4 MB) on the TX socket.
-
-### output.c -- Legacy / test-only
-
-**File:** `src/output.c`, `src/output.h`
-
-Raw socket open/send/close. **Not used by the main binary**; both modes use `tx_ring` for output. Kept for the `test_output` unit test suite (error-path tests for `output_open`, `output_send`, `output_close`).
-
-### ebpf/tc_clone.bpf.c -- Kernel-Side BPF Program
-
-**File:** `src/ebpf/tc_clone.bpf.c`, `src/ebpf/tc_clone.h`
-
-The eBPF program that runs in the kernel at the TC (Traffic Control) hook points.
-
-- Attached to both **ingress** and **egress** of the target interface
-- Clones each packet's metadata + data into a `PERF_EVENT_ARRAY` map (`events`)
-- Uses `bpf_perf_event_output()` to deliver `struct pkt_meta` + raw packet bytes to userspace
-- Returns `TC_ACT_OK` -- original packet is not modified or dropped
-
-## Data Flow Diagrams
-
-### eBPF Mode
-
-```
-  +---------+     +-------------+     +-----------------+     +--------+     +-------------------+
-  |   NIC   | --> | TC Ingress/ | --> | Perf Buffer     | --> | Worker | --> | Shared TX ring    |
-  | (eth0)  |     | Egress Hook |     | (per-CPU ring)  |     | Thread |     | (tx_ring.c)       | --> eth1
-  +---------+     +-------------+     +-----------------+     +--------+     +-------------------+
-                        |                                          |              |
-                   BPF program                              handle_sample()   tx_ring_write()
-                  clones packet                             in worker.c       flush every 32 pkts
-                  to perf buffer
-                        |
-                  original packet
-                  continues normally
-```
-
-Characteristics:
-- Single worker thread polls all per-CPU perf buffers
-- Kernel does the cloning; userspace only receives copies
-- **TX**: Same shared TPACKET_V2 mmap ring as AF_PACKET; flush every 32 packets to batch syscalls
-- BPF program can be extended for in-kernel filtering
-
-### AF_PACKET Mode
-
-```
   +---------+     +------------------+     +-----------+     +-------------------+
   |   NIC   | --> | AF_PACKET Socket | --> | Worker 0  | --> | tx_ring (shared   |
   | (eth0)  |     | TPACKET_V3 RX    |     |           |     | module) ring 0    | --> eth1
@@ -293,8 +266,8 @@ Characteristics:
                   |                  | --> | Worker 2  | --> | tx_ring ring 2    | --> eth1
                   +------------------+     +-----------+     +-------------------+
                           |                       |                    |
-                    Kernel distributes       tx_ring_write()     tx_ring_flush()
-                    packets by 5-tuple       (shared module)     per RX block
+                    Kernel distributes       filter then          tx_ring_flush()
+                    packets by 5-tuple       tx_ring_write()      per RX block
                     hash (flow affinity)
 ```
 
@@ -348,6 +321,10 @@ All `worker_stats` fields use `_Atomic uint64_t`. This allows:
 
 The eBPF perf buffer (`PERF_EVENT_ARRAY`) delivers events from all CPUs through a single `perf_buffer__poll()` call. Unlike AF_PACKET's FANOUT, there is no kernel-level mechanism to distribute perf buffer events across multiple userspace threads. Therefore, `num_workers` is forced to 1 in eBPF mode.
 
+### Integration Tests
+
+Integration tests are Bash-based and require root. The runner is `tests/integration/run_integ.sh [basic|filter|all]`: **basic** (8 cases), **filter** (2 ACL tests), **all** (10 cases). Make targets: `make test-basic`, `make test-filter`, `make test-all`. HTML reports are written to **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report.html). See [TESTING.md](TESTING.md) for details.
+
 ## Struct Quick Reference
 
 | Struct | File | Purpose |
@@ -361,14 +338,17 @@ The eBPF perf buffer (`PERF_EVENT_ARRAY`) delivers events from all CPUs through 
 | `struct afpacket_config` | `src/afpacket.h` | AF_PACKET backend configuration |
 | `struct afpacket_worker` | `src/afpacket.h` | Per-worker RX ring + `struct tx_ring_ctx tx` |
 | `struct afpacket_ctx` | `src/afpacket.h` | AF_PACKET backend runtime state |
+| `struct tap_config` / `struct filter_config` | `src/config.h` | Filter (ACL) config from YAML |
 | `struct pkt_meta` | `include/common.h` | Packet metadata passed from eBPF to userspace |
 
 ## Source File Summary
 
 | File | Lines | Description |
 |------|-------|-------------|
-| `src/main.c` | ~317 | Entry point, mode dispatch, signal handling, stats loop |
+| `src/main.c` | ~330 | Entry point, config load, mode dispatch, signal handling, stats loop |
 | `src/cli.c` | ~85 | `parse_args()` -- extracted for testability |
+| `src/config.c` | ~350 | YAML filter config load (libyaml), validation |
+| `src/filter.c` | ~120 | `filter_packet()` -- L2/L3/L4 ACL, first-match |
 | `src/tap.c` | ~200 | eBPF: load, attach, detach, cleanup |
 | `src/worker.c` | ~425 | eBPF: perf buffer polling, forwards via shared tx_ring |
 | `src/tx_ring.c` | ~180 | Shared TPACKET_V2 mmap TX ring (both modes) |

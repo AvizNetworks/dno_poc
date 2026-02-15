@@ -12,14 +12,17 @@
 #include "cli.h"
 
 static struct option cli_long_options[] = {
-    {"input",   required_argument, 0, 'i'},
-    {"output",  required_argument, 0, 'o'},
-    {"mode",    required_argument, 0, 'm'},
-    {"workers", required_argument, 0, 'w'},
-    {"verbose", no_argument,       0, 'v'},
-    {"debug",   no_argument,       0, 'd'},
-    {"stats",   no_argument,       0, 's'},
-    {"help",    no_argument,       0, 'h'},
+    {"input",           required_argument, 0, 'i'},
+    {"output",          required_argument, 0, 'o'},
+    {"config",          required_argument, 0, 'c'},
+    {"mode",            required_argument, 0, 'm'},
+    {"workers",         required_argument, 0, 'w'},
+    {"verbose",         no_argument,       0, 'v'},
+    {"debug",           no_argument,       0, 'd'},
+    {"stats",           no_argument,       0, 's'},
+    {"filter-stats",    no_argument,       0, 'F'},
+    {"validate-config", no_argument,       0, 'V'},
+    {"help",            no_argument,       0, 'h'},
     {0, 0, 0, 0}
 };
 
@@ -39,13 +42,19 @@ int parse_args(int argc, char **argv, struct cli_args *args)
     optind = 1;
     opterr = 0;  /* Suppress getopt error messages in tests */
 
-    while ((opt = getopt_long(argc, argv, "i:o:m:w:vsdh", cli_long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:o:c:m:w:vsdFVh", cli_long_options, NULL)) != -1) {
         switch (opt) {
         case 'i':
             snprintf(args->input_iface, sizeof(args->input_iface), "%s", optarg);
             break;
         case 'o':
             snprintf(args->output_iface, sizeof(args->output_iface), "%s", optarg);
+            break;
+        case 'c':
+            snprintf(args->config_path, sizeof(args->config_path), "%s", optarg);
+            break;
+        case 'V':
+            args->validate_config = true;
             break;
         case 'm':
             if (strcmp(optarg, "ebpf") == 0) {
@@ -73,6 +82,9 @@ int parse_args(int argc, char **argv, struct cli_args *args)
             break;
         case 's':
             args->show_stats = true;
+            break;
+        case 'F':
+            args->show_filter_stats = true;
             break;
         case 'h':
             args->help = true;

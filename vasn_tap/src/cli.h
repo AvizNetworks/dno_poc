@@ -22,11 +22,14 @@ enum capture_mode {
 struct cli_args {
     char input_iface[64];         /* -i / --input */
     char output_iface[64];        /* -o / --output */
+    char config_path[256];       /* -c / --config (YAML filter config) */
     enum capture_mode mode;       /* -m / --mode (default: ebpf) */
     int num_workers;              /* -w / --workers (0 = auto) */
     bool verbose;                 /* -v / --verbose */
     bool debug;                   /* -d / --debug (TX hex dumps) */
     bool show_stats;              /* -s / --stats */
+    bool show_filter_stats;       /* -F / --filter-stats (dump rules + per-rule counters) */
+    bool validate_config;         /* --validate-config (load and validate -c then exit) */
     bool help;                    /* -h / --help */
 };
 

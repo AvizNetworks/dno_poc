@@ -32,6 +32,7 @@ sudo apt-get update
 sudo apt-get install -y gcc make \
     clang llvm libelf-dev zlib1g-dev \
     libbpf-dev linux-tools-common linux-tools-$(uname -r) \
+    libyaml-dev \
     libcmocka-dev    # for unit tests
 ```
 
@@ -41,6 +42,7 @@ sudo apt-get install -y gcc make \
 sudo dnf install -y gcc make \
     clang llvm elfutils-libelf-devel zlib-devel \
     libbpf-devel bpftool \
+    libyaml-devel \
     libcmocka-devel  # for unit tests
 ```
 
@@ -80,6 +82,12 @@ sudo ./vasn_tap -i eth0 -o eth1 -s
 # AF_PACKET benchmark mode (capture only, no forwarding)
 sudo ./vasn_tap -m afpacket -i eth0 -w 4 -s
 
+# With filter config (YAML): only allowed traffic is forwarded
+sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -c /etc/vasn_tap/filter.yaml -s
+
+# Validate config only (load and exit)
+sudo ./vasn_tap -i lo -c /path/to/config.yaml --validate-config
+
 # Verbose output for debugging
 sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 ```
@@ -95,6 +103,9 @@ sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 | `-v, --verbose` | Enable verbose logging | Off |
 | `-d, --debug` | Enable TX debug (hex dump of first packet per worker; no cost when omitted) | Off |
 | `-s, --stats` | Print periodic statistics (every 1s) | Off |
+| `-F, --filter-stats` | With -s, dump filter rules and per-rule hit counts (only when -c is set) | Off |
+| `-c, --config <path>` | Filter config (YAML). If set, missing/invalid file => exit at startup | None |
+| `-V, --validate-config` | Load and validate config only, then exit (use with `-c`) | Off |
 | `-h, --help` | Show help message and exit | -- |
 
 **Notes:**
@@ -102,6 +113,28 @@ sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 - In **afpacket** mode, workers are distributed via PACKET_FANOUT_HASH for per-flow affinity.
 - If `-o` is omitted, packets are captured and counted but not forwarded (useful for benchmarking).
 - TX packet length is clamped to the output interface MTU (avoids kernel "packet size is too long" and stuck ring). Oversize packets are truncated; use UDP or jumbo MTU on the path to avoid truncation.
+- If **`-c` is set** but the config file is missing or invalid, vasn_tap **exits at startup** with an error (no "allow all" fallback). Use **`--validate-config`** to check a config file without running the tap. Config is read once at startup; **restart is required** for config changes. For long-running deployments, run as a systemd service and reload by restarting the unit.
+
+### Filter (ACL) config
+
+When `-c <path>` is given, a YAML file defines an ACL: **default_action** (`allow` or `drop`) and a list of **rules**. Each rule has an **action** and an optional **match** (L2/L3/L4 criteria). Packets are evaluated **first-match**: the first rule whose match criteria fit the packet determines allow/drop; if no rule matches, **default_action** applies. No rule match fields => match-all rule.
+
+Example (see `config.example.yaml`):
+
+```yaml
+filter:
+  default_action: drop
+  rules:
+    - action: allow
+      match:
+        protocol: tcp
+        port_dst: 443
+    - action: allow
+      match:
+        ip_src: 192.168.200.0/24
+```
+
+Match fields: **protocol** (tcp, udp, icmp, icmpv6 or number), **port_src**, **port_dst**, **ip_src**, **ip_dst** (IPv4 or CIDR), **eth_type**. All match fields in a rule are ANDed; only specified fields are checked.
 
 ## Testing
 
@@ -111,15 +144,17 @@ sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 make test
 ```
 
-Runs 4 test suites (41 tests total) using CMocka: CLI parsing, config validation, stats accumulation, and output error paths.
+Runs 6 unit test suites using CMocka: CLI parsing, config validation, stats accumulation, output error paths, filter logic, and YAML config load.
 
 ### Integration Tests (requires root)
 
 ```bash
-sudo bash tests/integration/run_all.sh
+make test-basic   # 8 cases → tests/integration/reports/test_report_basic.html
+make test-filter  # 2 cases → tests/integration/reports/test_report_filter.html
+make test-all     # 10 cases → tests/integration/reports/test_report.html
 ```
 
-Creates network namespaces with veth pairs, runs tests in both eBPF and AF_PACKET modes, and generates an **HTML report** at `test_report.html` in the project root. The fanout distribution test uses **iperf3 UDP** (`-u -l 1470`) to avoid TSO/GRO oversize frames on the tap path.
+Or run the runner directly: `sudo tests/integration/run_integ.sh [basic|filter|all]`. Creates network namespaces with veth pairs; **basic** runs forwarding, drop mode, graceful shutdown (both modes), multiworker, and fanout; **filter** runs the ACL filter tests (afpacket + ebpf). HTML reports are written under **tests/integration/reports/**.
 
 See [TESTING.md](TESTING.md) for full details on the test suites, how to add tests, and the test matrix.
 
@@ -149,7 +184,9 @@ vasn_tap/
 │   │   ├── test_output.c     # 8 tests: send/open/close error paths
 │   │   └── test_common.h     # Shared CMocka includes
 │   └── integration/           # Bash-based integration tests
-│       ├── run_all.sh         # Orchestrator (runs all tests, generates HTML)
+│       ├── run_integ.sh       # Runner: basic (8) | filter (2) | all (10)
+│       ├── run_all.sh         # Wrapper for run_integ.sh all
+│       ├── reports/           # HTML reports (test_report*.html)
 │       ├── setup_namespaces.sh    # Create ns_src/ns_dst + veth pairs
 │       ├── teardown_namespaces.sh # Cleanup
 │       ├── test_helpers.sh    # JSON result writer helpers

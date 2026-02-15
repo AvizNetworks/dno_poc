@@ -17,8 +17,11 @@ vasn_tap uses a **two-tier testing strategy**:
 # Run unit tests (no root required)
 make test
 
-# Run integration tests (requires root, generates HTML report)
-sudo bash tests/integration/run_all.sh
+# Run integration tests (requires root; reports in tests/integration/reports/)
+make test-basic   # 8 cases
+make test-filter  # 2 filter cases
+make test-all     # 10 cases (full suite)
+# Or: sudo tests/integration/run_integ.sh [basic|filter|all]
 ```
 
 ---
@@ -194,11 +197,12 @@ Originally, CLI parsing lived inside `main()` in `main.c`. This made it impossib
 ### How to Run
 
 ```bash
-# Run full suite (sets up namespaces, runs all tests, generates HTML report)
-sudo bash tests/integration/run_all.sh
+# Run full suite (sets up namespaces, runs all 10 tests, generates HTML report)
+make test-all
+# Or: sudo tests/integration/run_integ.sh all
 ```
 
-The HTML report is generated at `test_report.html` in the project root.
+HTML reports are generated under **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report.html depending on which suite was run).
 
 ### Test Topology
 
@@ -274,7 +278,13 @@ The HTML report includes explanatory notes on each test card clarifying this. In
 
 ### HTML Report
 
-After running the integration tests, `test_report.html` is generated in the project root. It includes:
+After running the integration tests, HTML reports are generated under **tests/integration/reports/**:
+
+- **test_report_basic.html** (make test-basic, 8 cases)
+- **test_report_filter.html** (make test-filter, 2 cases)
+- **test_report.html** (make test-all, 10 cases)
+
+Each report includes:
 
 - **Summary bar**: Total tests, passed, failed, duration
 - **Topology diagram**: ASCII art showing the test network layout
@@ -342,25 +352,22 @@ write_result "$JSON" "mytest_${MODE}"
 [ "$RESULT" = "PASS" ]
 ```
 
-**Step 2:** Add it to the test loop in `run_all.sh`:
+**Step 2:** Add it to the appropriate suite in `run_integ.sh`:
 
-```bash
-# In the "Tests that run in both modes" loop:
-for test in test_basic_forward test_drop_mode test_graceful_shutdown test_mytest; do
-
-# Or, if it's afpacket-only, add it in the AF_PACKET-only section.
-```
+- For a test that runs in both modes (like basic_forward): add it to the loop in the `basic`/`all` section (e.g. `for test in test_basic_forward test_drop_mode test_graceful_shutdown test_mytest`).
+- For afpacket-only: add it in the "AF_PACKET-only tests" block.
+- For a filter-only test: add it in the `filter` suite block.
 
 **Step 3:** Make it executable and run:
 
 ```bash
 chmod +x tests/integration/test_mytest.sh
-sudo bash tests/integration/run_all.sh
+sudo tests/integration/run_integ.sh all   # or basic / filter
 ```
 
 ### JSON Result Schema
 
-Each test writes a JSON result file (when `RESULT_DIR` is set by `run_all.sh`). The `generate_report.sh` script reads these to build the HTML report.
+Each test writes a JSON result file (when `RESULT_DIR` is set by `run_integ.sh`). The `generate_report.sh` script reads these to build the HTML report.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -404,13 +411,17 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/unit/test_config.c` | 5 tests for init validation |
 | `tests/unit/test_output.c` | 8 tests for output module error paths |
 | `tests/unit/test_common.h` | Shared CMocka includes |
-| `tests/integration/run_all.sh` | Test orchestrator (both modes) |
+| `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (2) \| all (10) |
+| `tests/integration/run_all.sh` | Wrapper for `run_integ.sh all` |
+| `tests/integration/reports/` | HTML reports (test_report_basic.html, test_report_filter.html, test_report.html) |
 | `tests/integration/setup_namespaces.sh` | Create test topology |
 | `tests/integration/teardown_namespaces.sh` | Destroy test topology |
 | `tests/integration/test_helpers.sh` | JSON result writing helpers |
 | `tests/integration/generate_report.sh` | HTML report generator |
 | `tests/integration/test_basic_forward.sh` | Packet forwarding test |
 | `tests/integration/test_drop_mode.sh` | Drop mode test |
+| `tests/integration/test_filter_afpacket.sh` | Filter (ACL) test, afpacket mode |
+| `tests/integration/test_filter_ebpf.sh` | Filter (ACL) test, eBPF mode |
 | `tests/integration/test_multiworker.sh` | Multi-worker test (afpacket only) |
 | `tests/integration/test_fanout_distribution.sh` | Fanout distribution test with iperf3 (afpacket only) |
 | `tests/integration/test_graceful_shutdown.sh` | Graceful shutdown test |

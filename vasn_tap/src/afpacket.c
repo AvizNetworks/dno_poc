@@ -34,6 +34,7 @@
 
 #include "afpacket.h"
 #include "tx_ring.h"
+#include "filter.h"
 #include "../include/common.h"
 
 /* Poll timeout in milliseconds */
@@ -230,7 +231,21 @@ static void process_block(struct afpacket_worker *worker,
         atomic_fetch_add(&worker->stats.bytes_received, pkt_len);
 
         if (worker->tx.fd >= 0) {
-            if (tx_ring_write(&worker->tx, pkt_data, pkt_len) == 0) {
+            if (g_filter_config) {
+                int matched;
+                enum filter_action fa = filter_packet(g_filter_config, pkt_data, pkt_len, &matched);
+                unsigned int slot = (matched >= 0) ? (unsigned int)matched : g_filter_config->num_rules;
+                atomic_fetch_add(&filter_rule_hits[slot], 1);
+                if (fa == FILTER_ACTION_DROP) {
+                    atomic_fetch_add(&worker->stats.packets_dropped, 1);
+                } else if (tx_ring_write(&worker->tx, pkt_data, pkt_len) == 0) {
+                    atomic_fetch_add(&worker->stats.packets_sent, 1);
+                    atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
+                    queued++;
+                } else {
+                    atomic_fetch_add(&worker->stats.packets_dropped, 1);
+                }
+            } else if (tx_ring_write(&worker->tx, pkt_data, pkt_len) == 0) {
                 atomic_fetch_add(&worker->stats.packets_sent, 1);
                 atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
                 queued++;

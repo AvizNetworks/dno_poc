@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include <signal.h>
 #include <getopt.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <time.h>
 #include <net/if.h>
 #include <sys/sysinfo.h>
@@ -19,6 +21,8 @@
 #include "worker.h"
 #include "afpacket.h"
 #include "cli.h"
+#include "config.h"
+#include "filter.h"
 #include "../include/common.h"
 
 /* Program version */
@@ -30,6 +34,7 @@ static struct worker_ctx g_worker_ctx;
 static struct afpacket_ctx g_afpacket_ctx;
 static enum capture_mode g_capture_mode = CAPTURE_MODE_EBPF;
 static volatile bool g_running = true;
+static struct tap_config *g_tap_config = NULL;
 
 /* Statistics interval in seconds */
 #define STATS_INTERVAL_SEC 1
@@ -55,6 +60,9 @@ static void print_usage(const char *prog)
     printf("  -v, --verbose           Enable verbose logging\n");
     printf("  -d, --debug             Enable TX debug (hex dumps of first packet per block)\n");
     printf("  -s, --stats             Print periodic statistics\n");
+    printf("  -F, --filter-stats      With -s, dump filter rules and per-rule hit counts\n");
+    printf("  -c, --config <path>      Filter config (YAML). If set, invalid/missing file => exit\n");
+    printf("  -V, --validate-config   Load and validate config only, then exit\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nExamples:\n");
     printf("  # AF_PACKET mode: 4 workers, capture from eth0, forward to eth1\n");
@@ -148,9 +156,30 @@ static void print_stats_generic(struct worker_stats *stats, double elapsed_sec)
 }
 
 /*
+ * Dump filter rules and per-rule counters. Only called when show_filter_stats
+ * and g_filter_config are set (no aggregation/print without the flag).
+ */
+static void print_filter_stats_dump(void)
+{
+    const struct filter_config *cfg = g_filter_config;
+    unsigned int i;
+    char line[256];
+
+    if (!cfg)
+        return;
+    printf("\n--- Filter rules (hits) ---\n");
+    for (i = 0; i <= cfg->num_rules; i++) {
+        uint64_t count = atomic_load(&filter_rule_hits[i]);
+        filter_format_rule(cfg, i, line, sizeof(line));
+        printf("  %s  -> %lu\n", line, (unsigned long)count);
+    }
+    printf("----------------------------\n");
+}
+
+/*
  * Collect and print stats for the active capture mode
  */
-static void collect_and_print_stats(double elapsed_sec)
+static void collect_and_print_stats(double elapsed_sec, bool show_filter_stats)
 {
     struct worker_stats stats;
 
@@ -161,6 +190,9 @@ static void collect_and_print_stats(double elapsed_sec)
     }
 
     print_stats_generic(&stats, elapsed_sec);
+
+    if (show_filter_stats && g_filter_config)
+        print_filter_stats_dump();
 }
 
 int main(int argc, char **argv)
@@ -184,6 +216,24 @@ int main(int argc, char **argv)
 
     g_capture_mode = args.mode;
 
+    /* Load filter config if path given */
+    if (args.config_path[0]) {
+        g_tap_config = config_load(args.config_path);
+        if (!g_tap_config) {
+            fprintf(stderr, "Config error: %s\n", config_get_error());
+            return 1;
+        }
+        filter_set_config(&g_tap_config->filter);
+        filter_stats_reset(g_tap_config->filter.num_rules);
+        if (args.validate_config) {
+            printf("Config valid.\n");
+            config_free(g_tap_config);
+            g_tap_config = NULL;
+            filter_set_config(NULL);
+            return 0;
+        }
+    }
+
     /* Check for root privileges */
     if (geteuid() != 0) {
         fprintf(stderr, "Error: This program requires root privileges\n");
@@ -198,6 +248,7 @@ int main(int argc, char **argv)
     printf("Input interface:  %s\n", args.input_iface);
     printf("Output interface: %s\n", args.output_iface[0] ? args.output_iface : "(drop mode)");
     printf("Worker threads:   %d\n", args.num_workers > 0 ? args.num_workers : get_nprocs());
+    printf("Filter config:    %s\n", args.config_path[0] ? args.config_path : "(none)");
     printf("\n");
 
     /*
@@ -286,7 +337,7 @@ int main(int argc, char **argv)
         if (args.show_stats) {
             time_t now = time(NULL);
             if (now - last_stats_time >= STATS_INTERVAL_SEC) {
-                collect_and_print_stats((double)(now - start_time));
+                collect_and_print_stats((double)(now - start_time), args.show_filter_stats);
                 last_stats_time = now;
             }
         }
@@ -295,7 +346,7 @@ int main(int argc, char **argv)
     /* Print final statistics */
     if (args.show_stats) {
         time_t now = time(NULL);
-        collect_and_print_stats((double)(now - start_time));
+        collect_and_print_stats((double)(now - start_time), args.show_filter_stats);
 
         /* Print per-worker breakdown for AF_PACKET (useful for fanout verification) */
         if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
@@ -305,6 +356,11 @@ int main(int argc, char **argv)
 
     /* Cleanup based on mode */
     printf("Cleaning up...\n");
+    filter_set_config(NULL);
+    if (g_tap_config) {
+        config_free(g_tap_config);
+        g_tap_config = NULL;
+    }
     if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
         afpacket_stop(&g_afpacket_ctx);
         afpacket_cleanup(&g_afpacket_ctx);

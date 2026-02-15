@@ -22,7 +22,7 @@ CFLAGS := -Wall -Wextra -O2 -g -pthread
 CFLAGS += -I$(INCLUDE_DIR) -I$(SRC_DIR)
 
 # Linker flags
-LDFLAGS := -lbpf -lelf -lz -lpthread
+LDFLAGS := -lbpf -lelf -lz -lpthread -lyaml
 
 # BPF compiler flags
 BPF_CFLAGS := -g -O2 -target bpf
@@ -35,7 +35,9 @@ SRCS := $(SRC_DIR)/main.c \
         $(SRC_DIR)/worker.c \
         $(SRC_DIR)/tx_ring.c \
         $(SRC_DIR)/afpacket.c \
-        $(SRC_DIR)/cli.c
+        $(SRC_DIR)/cli.c \
+        $(SRC_DIR)/config.c \
+        $(SRC_DIR)/filter.c
 
 # Test directories
 TEST_UNIT_DIR := tests/unit
@@ -45,7 +47,7 @@ TEST_INTEG_DIR := tests/integration
 TEST_LDFLAGS := -lcmocka
 
 # Object files used by tests (everything except main.o, tap.o; output.o only for test_output)
-TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/tx_ring.o $(BUILD_DIR)/cli.o
+TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/tx_ring.o $(BUILD_DIR)/cli.o $(BUILD_DIR)/config.o $(BUILD_DIR)/filter.o
 
 # Object files
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
@@ -56,7 +58,7 @@ BPF_SRC := $(EBPF_DIR)/tc_clone.bpf.c
 # vmlinux.h path
 VMLINUX_H := $(EBPF_DIR)/vmlinux.h
 
-.PHONY: all clean install vmlinux test test-integ test-all
+.PHONY: all clean install vmlinux test test-basic test-filter test-all help
 
 all: $(BUILD_DIR) $(VMLINUX_H) $(BPF_OBJ) $(TARGET)
 
@@ -79,7 +81,7 @@ $(BPF_OBJ): $(BPF_SRC) $(VMLINUX_H) $(EBPF_DIR)/tc_clone.h
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # Compile userspace objects
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/tx_ring.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(INCLUDE_DIR)/common.h
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/tx_ring.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(SRC_DIR)/config.h $(SRC_DIR)/filter.h $(INCLUDE_DIR)/common.h
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -125,13 +127,21 @@ $(BUILD_DIR)/test_output: $(TEST_UNIT_DIR)/test_output.c $(BUILD_DIR)/output.o
 	@echo "Building test_output..."
 	$(CC) $(CFLAGS) -o $@ $< $(BUILD_DIR)/output.o $(TEST_LDFLAGS)
 
+$(BUILD_DIR)/test_filter: $(TEST_UNIT_DIR)/test_filter.c $(BUILD_DIR)/config.o $(BUILD_DIR)/filter.o
+	@echo "Building test_filter..."
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $< $(BUILD_DIR)/config.o $(BUILD_DIR)/filter.o $(TEST_LDFLAGS) -lyaml
+
+$(BUILD_DIR)/test_config_filter: $(TEST_UNIT_DIR)/test_config_filter.c $(BUILD_DIR)/config.o
+	@echo "Building test_config_filter..."
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $< $(BUILD_DIR)/config.o $(TEST_LDFLAGS) -lyaml
+
 # Run all unit tests (no root required)
-test: $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output
+test: $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output $(BUILD_DIR)/test_filter $(BUILD_DIR)/test_config_filter
 	@echo ""
 	@echo "=== Running Unit Tests ==="
 	@echo ""
 	@PASS=0; FAIL=0; \
-	for t in $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output; do \
+	for t in $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output $(BUILD_DIR)/test_filter $(BUILD_DIR)/test_config_filter; do \
 		echo "--- $$t ---"; \
 		if $$t; then PASS=$$((PASS+1)); else FAIL=$$((FAIL+1)); fi; \
 		echo ""; \
@@ -139,30 +149,42 @@ test: $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(B
 	echo "=== Unit Tests: $$PASS passed, $$FAIL failed ==="; \
 	[ $$FAIL -eq 0 ]
 
-# Run integration tests (requires root)
-test-integ: $(TARGET)
+# Integration tests (require root; each generates its own HTML report)
+test-basic: $(TARGET)
 	@echo ""
-	@echo "=== Running Integration Tests ==="
-	@echo "(requires root and 'make' to have been run first)"
+	@echo "=== Basic Integration Tests (8 cases) ==="
+	@echo "(requires root)"
 	@echo ""
-	sudo $(TEST_INTEG_DIR)/run_all.sh
+	sudo $(TEST_INTEG_DIR)/run_integ.sh basic
 
-# Run all tests
-test-all: test test-integ
+test-filter: $(TARGET)
+	@echo ""
+	@echo "=== Filter Integration Tests (2 cases) ==="
+	@echo "(requires root)"
+	@echo ""
+	sudo $(TEST_INTEG_DIR)/run_integ.sh filter
+
+test-all: $(TARGET)
+	@echo ""
+	@echo "=== All Integration Tests (10 cases) ==="
+	@echo "(requires root)"
+	@echo ""
+	sudo $(TEST_INTEG_DIR)/run_integ.sh all
 
 # Help
 help:
 	@echo "vasn_tap Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all        - Build everything (default)"
-	@echo "  clean      - Remove build artifacts"
-	@echo "  test       - Run unit tests (no root needed)"
-	@echo "  test-integ - Run integration tests (needs root, generates HTML report)"
-	@echo "  test-all   - Run all tests"
-	@echo "  vmlinux    - Generate vmlinux.h only"
-	@echo "  install    - Install to /usr/local (requires root)"
-	@echo "  help       - Show this help"
+	@echo "  all         - Build everything (default)"
+	@echo "  clean       - Remove build artifacts"
+	@echo "  test        - Run unit tests (no root needed)"
+	@echo "  test-basic  - Run basic integration tests, 8 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-filter - Run filter integration tests, 2 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-all    - Run all integration tests, 10 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  vmlinux     - Generate vmlinux.h only"
+	@echo "  install     - Install to /usr/local (requires root)"
+	@echo "  help        - Show this help"
 	@echo ""
 	@echo "Requirements:"
 	@echo "  - Linux kernel >= 5.10 with BTF support"
