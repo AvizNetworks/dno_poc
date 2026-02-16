@@ -193,6 +193,17 @@ static void test_parse_help(void **state)
     assert_true(args.help);
 }
 
+static void test_parse_version(void **state)
+{
+    (void)state;
+    char *argv[] = {"vasn_tap", "--version"};
+    struct cli_args args;
+
+    int ret = parse_args(2, argv, &args);
+    assert_int_equal(ret, 1);  /* 1 = version requested */
+    assert_true(args.show_version);
+}
+
 /* ---- Combined options test ---- */
 
 static void test_parse_full_commandline(void **state)
@@ -248,6 +259,7 @@ int main(void)
         cmocka_unit_test(test_parse_verbose),
         cmocka_unit_test(test_parse_stats),
         cmocka_unit_test(test_parse_help),
+        cmocka_unit_test(test_parse_version),
         /* Combined */
         cmocka_unit_test(test_parse_full_commandline),
         /* Edge cases */

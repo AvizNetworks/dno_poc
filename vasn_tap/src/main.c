@@ -29,6 +29,13 @@
 /* Program version */
 #define VERSION "1.0.0"
 
+#ifndef VASN_TAP_GIT_COMMIT
+#define VASN_TAP_GIT_COMMIT "unknown"
+#endif
+#ifndef VASN_TAP_BUILD_DATETIME
+#define VASN_TAP_BUILD_DATETIME "unknown"
+#endif
+
 /* Global contexts for signal handler */
 static struct tap_ctx g_tap_ctx;
 static struct worker_ctx g_worker_ctx;
@@ -65,6 +72,7 @@ static void print_usage(const char *prog)
     printf("  -F, --filter-stats      With -s, dump filter rules and per-rule hit counts\n");
     printf("  -c, --config <path>      Filter config (YAML). If set, invalid/missing file => exit\n");
     printf("  -V, --validate-config   Load and validate config only, then exit\n");
+    printf("  --version               Show version and exit\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nExamples:\n");
     printf("  # AF_PACKET mode: 4 workers, capture from eth0, forward to eth1\n");
@@ -233,6 +241,12 @@ int main(int argc, char **argv)
     /* Parse command line arguments using extracted parser */
     ret = parse_args(argc, argv, &args);
     if (ret == 1) {
+        if (args.show_version) {
+            printf("vasn_tap %s\n", VERSION);
+            printf("git commit: %s\n", VASN_TAP_GIT_COMMIT);
+            printf("build: %s\n", VASN_TAP_BUILD_DATETIME);
+            return 0;
+        }
         /* --help requested */
         print_usage(argv[0]);
         return 0;
@@ -288,7 +302,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    printf("=== vasn_tap v%s ===\n", VERSION);
+    printf("=== vasn_tap v%s (%s %s) ===\n", VERSION, VASN_TAP_GIT_COMMIT, VASN_TAP_BUILD_DATETIME);
     printf("Capture mode:     %s\n", g_capture_mode == CAPTURE_MODE_AFPACKET ? "afpacket" : "ebpf");
     printf("Input interface:  %s\n", args.input_iface);
     printf("Output interface: %s\n", args.output_iface[0] ? args.output_iface : "(drop mode)");

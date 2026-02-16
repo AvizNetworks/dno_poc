@@ -31,6 +31,7 @@ struct cli_args {
     bool show_filter_stats;       /* -F / --filter-stats (dump rules + per-rule counters) */
     bool validate_config;         /* --validate-config (load and validate -c then exit) */
     bool help;                    /* -h / --help */
+    bool show_version;           /* --version (show version and exit) */
 };
 
 /*
@@ -38,7 +39,7 @@ struct cli_args {
  * @param argc: Argument count
  * @param argv: Argument vector
  * @param args: Output structure for parsed args
- * @return: 0 on success, -1 on error, 1 if --help requested
+ * @return: 0 on success, -1 on error, 1 if --help or --version requested
  */
 int parse_args(int argc, char **argv, struct cli_args *args);
 

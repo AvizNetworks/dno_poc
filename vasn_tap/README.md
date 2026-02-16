@@ -106,6 +106,7 @@ sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 | `-F, --filter-stats` | With -s, dump filter rules and per-rule hit counts (only when -c is set) | Off |
 | `-c, --config <path>` | Filter config (YAML). If set, missing/invalid file => exit at startup | None |
 | `-V, --validate-config` | Load and validate config only, then exit (use with `-c`) | Off |
+| `--version` | Show version, git commit, and build timestamp (UTC) then exit | -- |
 | `-h, --help` | Show help message and exit | -- |
 
 **Notes:**

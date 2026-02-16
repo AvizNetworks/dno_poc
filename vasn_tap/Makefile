@@ -17,9 +17,15 @@ BUILD_DIR := build
 TARGET := vasn_tap
 BPF_OBJ := tc_clone.bpf.o
 
+# Version / build info (for main.c; no spaces in value to keep -D one token)
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATETIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+
 # Compiler flags
 CFLAGS := -Wall -Wextra -O2 -g -pthread
 CFLAGS += -I$(INCLUDE_DIR) -I$(SRC_DIR)
+CFLAGS += -DVASN_TAP_GIT_COMMIT=\"$(GIT_COMMIT)\"
+CFLAGS += -DVASN_TAP_BUILD_DATETIME=\"$(BUILD_DATETIME)\"
 
 # Linker flags
 LDFLAGS := -lbpf -lelf -lz -lpthread -lyaml
