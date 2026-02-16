@@ -127,7 +127,7 @@ enum filter_action filter_packet(const struct filter_config *cfg,
 		uint8_t ihl = (pkt[ip_off] & 0x0f) * 4;
 		if (ihl >= 20 && pkt_len >= ip_off + (uint32_t)ihl) {
 			protocol = pkt[ip_off + 9];
-			/* IP addresses in network byte order to match config (parse_cidr stores network order) */
+			/* IP addresses in canonical form (same as config parse_cidr) */
 			ip_src = (uint32_t)pkt[ip_off + 12] << 24 |
 			         (uint32_t)pkt[ip_off + 13] << 16 |
 			         (uint32_t)pkt[ip_off + 14] << 8 |
@@ -238,8 +238,14 @@ void filter_format_rule(const struct filter_config *cfg, unsigned int rule_index
 		if (n > 0 && (size_t)n < left) { p += n; left -= (size_t)n; }
 	}
 	if (m->has_ip_src) {
-		a.s_addr = (in_addr_t)m->ip_src;  /* already network order */
-		n = snprintf(p, left, " ip_src=%s", inet_ntoa(a));
+		char addrbuf[INET_ADDRSTRLEN];
+		a.s_addr = (in_addr_t)htonl(m->ip_src);  /* stored canonical; inet_ntop wants network order */
+		if (inet_ntop(AF_INET, &a, addrbuf, sizeof(addrbuf)))
+			n = snprintf(p, left, " ip_src=%s", addrbuf);
+		else
+			n = snprintf(p, left, " ip_src=%u.%u.%u.%u",
+				(unsigned)(m->ip_src >> 24) & 0xff, (unsigned)(m->ip_src >> 16) & 0xff,
+				(unsigned)(m->ip_src >> 8) & 0xff, (unsigned)m->ip_src & 0xff);
 		if (n > 0 && (size_t)n < left) { p += n; left -= (size_t)n; }
 		if (m->ip_src_mask != 0 && m->ip_src_mask != 0xFFFFFFFFu) {
 			unsigned int prefix = __builtin_popcount(m->ip_src_mask);
@@ -248,8 +254,14 @@ void filter_format_rule(const struct filter_config *cfg, unsigned int rule_index
 		}
 	}
 	if (m->has_ip_dst) {
-		a.s_addr = (in_addr_t)m->ip_dst;  /* already network order */
-		n = snprintf(p, left, " ip_dst=%s", inet_ntoa(a));
+		char addrbuf[INET_ADDRSTRLEN];
+		a.s_addr = (in_addr_t)htonl(m->ip_dst);  /* stored canonical; inet_ntop wants network order */
+		if (inet_ntop(AF_INET, &a, addrbuf, sizeof(addrbuf)))
+			n = snprintf(p, left, " ip_dst=%s", addrbuf);
+		else
+			n = snprintf(p, left, " ip_dst=%u.%u.%u.%u",
+				(unsigned)(m->ip_dst >> 24) & 0xff, (unsigned)(m->ip_dst >> 16) & 0xff,
+				(unsigned)(m->ip_dst >> 8) & 0xff, (unsigned)m->ip_dst & 0xff);
 		if (n > 0 && (size_t)n < left) { p += n; left -= (size_t)n; }
 		if (m->ip_dst_mask != 0 && m->ip_dst_mask != 0xFFFFFFFFu) {
 			unsigned int prefix = __builtin_popcount(m->ip_dst_mask);

@@ -80,7 +80,7 @@ build_result_json() {
 
         # Numeric fields - output without quotes
         case "$key" in
-            workers|traffic_count|rx_packets|tx_packets|dropped_packets|captured_at_dst|duration_sec|exit_code|has_cleanup|has_done|has_final_stats)
+            workers|traffic_count|rx_packets|tx_packets|dropped_packets|captured_at_dst|tunnel_packets|duration_sec|exit_code|has_cleanup|has_done|has_final_stats)
                 json+="\"$key\":${val:-0}"
                 ;;
             *)

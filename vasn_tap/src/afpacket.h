@@ -12,6 +12,8 @@
 #include <stdatomic.h>
 #include <pthread.h>
 
+struct tunnel_ctx;
+
 /* Reuse worker_stats from worker.h for consistent stats interface */
 #include "worker.h"
 #include "tx_ring.h"
@@ -31,6 +33,7 @@ struct afpacket_config {
     int  input_ifindex;           /* Input interface index */
     char output_ifname[64];       /* Output interface name */
     int  output_ifindex;          /* Output interface index (0 = drop mode) */
+    struct tunnel_ctx *tunnel_ctx; /* If set, use tunnel_send instead of tx_ring */
     int  num_workers;             /* Number of worker threads */
     bool verbose;                 /* Verbose logging */
     bool debug;                   /* TX debug (hex dumps) */

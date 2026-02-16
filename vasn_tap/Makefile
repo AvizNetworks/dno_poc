@@ -37,7 +37,8 @@ SRCS := $(SRC_DIR)/main.c \
         $(SRC_DIR)/afpacket.c \
         $(SRC_DIR)/cli.c \
         $(SRC_DIR)/config.c \
-        $(SRC_DIR)/filter.c
+        $(SRC_DIR)/filter.c \
+        $(SRC_DIR)/tunnel.c
 
 # Test directories
 TEST_UNIT_DIR := tests/unit
@@ -47,7 +48,7 @@ TEST_INTEG_DIR := tests/integration
 TEST_LDFLAGS := -lcmocka
 
 # Object files used by tests (everything except main.o, tap.o; output.o only for test_output)
-TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/tx_ring.o $(BUILD_DIR)/cli.o $(BUILD_DIR)/config.o $(BUILD_DIR)/filter.o
+TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/tx_ring.o $(BUILD_DIR)/cli.o $(BUILD_DIR)/config.o $(BUILD_DIR)/filter.o $(BUILD_DIR)/tunnel.o
 
 # Object files
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
@@ -58,7 +59,7 @@ BPF_SRC := $(EBPF_DIR)/tc_clone.bpf.c
 # vmlinux.h path
 VMLINUX_H := $(EBPF_DIR)/vmlinux.h
 
-.PHONY: all clean install vmlinux test test-basic test-filter test-all help
+.PHONY: all clean install vmlinux test test-basic test-filter test-tunnel test-all help
 
 all: $(BUILD_DIR) $(VMLINUX_H) $(BPF_OBJ) $(TARGET)
 
@@ -81,7 +82,7 @@ $(BPF_OBJ): $(BPF_SRC) $(VMLINUX_H) $(EBPF_DIR)/tc_clone.h
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # Compile userspace objects
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/tx_ring.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(SRC_DIR)/config.h $(SRC_DIR)/filter.h $(INCLUDE_DIR)/common.h
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/tx_ring.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(SRC_DIR)/config.h $(SRC_DIR)/filter.h $(SRC_DIR)/tunnel.h $(INCLUDE_DIR)/common.h
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -164,9 +165,16 @@ test-filter: $(TARGET)
 	@echo ""
 	sudo $(TEST_INTEG_DIR)/run_integ.sh filter
 
+test-tunnel: $(TARGET)
+	@echo ""
+	@echo "=== Tunnel Integration Tests (2 cases: GRE, VXLAN) ==="
+	@echo "(requires root)"
+	@echo ""
+	sudo $(TEST_INTEG_DIR)/run_integ.sh tunnel
+
 test-all: $(TARGET)
 	@echo ""
-	@echo "=== All Integration Tests (18 cases) ==="
+	@echo "=== All Integration Tests (20 cases: basic + filter + tunnel) ==="
 	@echo "(requires root)"
 	@echo ""
 	sudo $(TEST_INTEG_DIR)/run_integ.sh all
@@ -180,8 +188,9 @@ help:
 	@echo "  clean       - Remove build artifacts"
 	@echo "  test        - Run unit tests (no root needed)"
 	@echo "  test-basic  - Run basic integration tests, 8 cases (needs root, reports in tests/integration/reports/)"
-	@echo "  test-filter - Run filter integration tests, 10 cases (needs root, reports in tests/integration/reports/)"
-	@echo "  test-all    - Run all integration tests, 18 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-filter  - Run filter integration tests, 10 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-tunnel  - Run tunnel integration tests, 2 cases GRE+VXLAN (needs root, reports in tests/integration/reports/)"
+	@echo "  test-all     - Run all integration tests, 20 cases (needs root, reports in tests/integration/reports/)"
 	@echo "  vmlinux     - Generate vmlinux.h only"
 	@echo "  install     - Install to /usr/local (requires root)"
 	@echo "  help        - Show this help"

@@ -1,13 +1,14 @@
 #!/bin/bash
 #
-# vasn_tap integration test runner - Suite: basic | filter | all
-# Usage: sudo ./tests/integration/run_integ.sh [basic|filter|all]
+# vasn_tap integration test runner - Suite: basic | filter | tunnel | all
+# Usage: sudo ./tests/integration/run_integ.sh [basic|filter|tunnel|all]
 #
 # basic: 8 tests (basic_forward, drop_mode, graceful_shutdown x2 modes, multiworker, fanout)
 # filter: 10 tests (drop_all x2, allow_all, allow_icmp_rule, drop_icmp_rule, ip_cidr x2 modes each)
-# all: 18 tests (basic 8 + filter 10)
+# tunnel: 2 tests (tunnel_gre, tunnel_vxlan)
+# all: 20 tests (basic 8 + filter 10 + tunnel 2)
 #
-# Reports: tests/integration/reports/test_report_basic.html, test_report_filter.html, test_report.html
+# Reports: tests/integration/reports/test_report_*.html
 #
 
 set -o pipefail
@@ -20,7 +21,7 @@ SUITE_START=$(date +%s)
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: Integration tests require root privileges"
-    echo "Usage: sudo $0 [basic|filter|all]"
+    echo "Usage: sudo $0 [basic|filter|tunnel|all]"
     exit 1
 fi
 
@@ -30,10 +31,10 @@ if [ ! -x "$PROJECT_DIR/vasn_tap" ]; then
 fi
 
 case "$SUITE" in
-    basic|filter|all) ;;
+    basic|filter|tunnel|all) ;;
     *)
-        echo "Error: Invalid suite. Use: basic, filter, or all"
-        echo "Usage: sudo $0 [basic|filter|all]"
+        echo "Error: Invalid suite. Use: basic, filter, tunnel, or all"
+        echo "Usage: sudo $0 [basic|filter|tunnel|all]"
         exit 1
         ;;
 esac
@@ -115,6 +116,15 @@ if [ "$SUITE" = "filter" ]; then
     done
 fi
 
+if [ "$SUITE" = "tunnel" ] || [ "$SUITE" = "all" ]; then
+    echo "========== Tunnel tests =========="
+    echo ""
+    echo ">>> Running: test_tunnel_gre.sh"
+    run_one "test_tunnel_gre.sh"
+    echo ">>> Running: test_tunnel_vxlan.sh"
+    run_one "test_tunnel_vxlan.sh"
+fi
+
 echo ">>> Tearing down test environment..."
 bash "$SCRIPT_DIR/teardown_namespaces.sh"
 echo ""
@@ -123,9 +133,10 @@ SUITE_END=$(date +%s)
 TOTAL_DURATION=$((SUITE_END - SUITE_START))
 
 case "$SUITE" in
-    basic)  REPORT_PATH="$REPORT_DIR/test_report_basic.html" ;;
-    filter) REPORT_PATH="$REPORT_DIR/test_report_filter.html" ;;
-    all)    REPORT_PATH="$REPORT_DIR/test_report.html" ;;
+    basic)   REPORT_PATH="$REPORT_DIR/test_report_basic.html" ;;
+    filter)  REPORT_PATH="$REPORT_DIR/test_report_filter.html" ;;
+    tunnel)  REPORT_PATH="$REPORT_DIR/test_report_tunnel.html" ;;
+    all)     REPORT_PATH="$REPORT_DIR/test_report.html" ;;
 esac
 
 mkdir -p "$REPORT_DIR"

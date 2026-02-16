@@ -33,6 +33,7 @@
 #include <arpa/inet.h>
 
 #include "afpacket.h"
+#include "tunnel.h"
 #include "tx_ring.h"
 #include "filter.h"
 #include "../include/common.h"
@@ -193,7 +194,8 @@ static int pin_to_cpu(int cpu_id)
  */
 static void process_block(struct afpacket_worker *worker,
                           struct tpacket_block_desc *block,
-                          int worker_id)
+                          int worker_id,
+                          struct tunnel_ctx *tunnel_ctx)
 {
     uint32_t num_pkts = block->hdr.bh1.num_pkts;
     struct tpacket3_hdr *pkt;
@@ -230,7 +232,29 @@ static void process_block(struct afpacket_worker *worker,
         atomic_fetch_add(&worker->stats.packets_received, 1);
         atomic_fetch_add(&worker->stats.bytes_received, pkt_len);
 
-        if (worker->tx.fd >= 0) {
+        if (tunnel_ctx) {
+            if (g_filter_config) {
+                int matched;
+                enum filter_action fa = filter_packet(g_filter_config, pkt_data, pkt_len, &matched);
+                unsigned int slot = (matched >= 0) ? (unsigned int)matched : g_filter_config->num_rules;
+                atomic_fetch_add(&filter_rule_hits[slot], 1);
+                if (fa == FILTER_ACTION_DROP) {
+                    atomic_fetch_add(&worker->stats.packets_dropped, 1);
+                } else if (tunnel_send(tunnel_ctx, pkt_data, pkt_len) == 0) {
+                    atomic_fetch_add(&worker->stats.packets_sent, 1);
+                    atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
+                    queued++;
+                } else {
+                    atomic_fetch_add(&worker->stats.packets_dropped, 1);
+                }
+            } else if (tunnel_send(tunnel_ctx, pkt_data, pkt_len) == 0) {
+                atomic_fetch_add(&worker->stats.packets_sent, 1);
+                atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
+                queued++;
+            } else {
+                atomic_fetch_add(&worker->stats.packets_dropped, 1);
+            }
+        } else if (worker->tx.fd >= 0) {
             if (g_filter_config) {
                 int matched;
                 enum filter_action fa = filter_packet(g_filter_config, pkt_data, pkt_len, &matched);
@@ -260,7 +284,10 @@ static void process_block(struct afpacket_worker *worker,
     }
 
     if (queued > 0) {
-        tx_ring_flush(&worker->tx);
+        if (tunnel_ctx)
+            tunnel_flush(tunnel_ctx);
+        else
+            tx_ring_flush(&worker->tx);
     }
 }
 
@@ -318,7 +345,7 @@ static void *afpacket_worker_thread(void *arg)
         }
 
         /* Process all packets in the block */
-        process_block(worker, block, worker_id);
+        process_block(worker, block, worker_id, ctx->config.tunnel_ctx);
 
         /* Release block back to kernel */
         block->hdr.bh1.block_status = TP_STATUS_KERNEL;
@@ -423,7 +450,7 @@ int afpacket_init(struct afpacket_ctx *ctx, const struct afpacket_config *config
         goto err_cleanup;
     }
 
-    if (!config->output_ifindex) {
+    if (!config->tunnel_ctx && !config->output_ifindex) {
         printf("AF_PACKET: No output interface specified - running in drop mode\n");
     }
 

@@ -1,67 +1,3 @@
-#!/bin/bash
-#
-# vasn_tap integration test - HTML Report Generator
-#
-# Usage: ./generate_report.sh <result_dir> <output_html> [total_duration_sec]
-#
-# Reads JSON result files from <result_dir>, produces a self-contained
-# HTML report at <output_html>.
-#
-
-set -e
-
-RESULT_DIR="$1"
-OUTPUT_HTML="$2"
-TOTAL_DURATION="${3:-0}"
-
-if [ -z "$RESULT_DIR" ] || [ -z "$OUTPUT_HTML" ]; then
-    echo "Usage: $0 <result_dir> <output_html> [total_duration_sec]"
-    exit 1
-fi
-
-# Count pass/fail
-TOTAL_PASS=0
-TOTAL_FAIL=0
-TOTAL_TESTS=0
-
-for f in "$RESULT_DIR"/*.json; do
-    [ -f "$f" ] || continue
-    result=$(grep -oP '"result"\s*:\s*"\K[^"]+' "$f")
-    TOTAL_TESTS=$((TOTAL_TESTS + 1))
-    if [ "$result" = "PASS" ]; then
-        TOTAL_PASS=$((TOTAL_PASS + 1))
-    else
-        TOTAL_FAIL=$((TOTAL_FAIL + 1))
-    fi
-done
-
-# System info
-REPORT_DATE=$(date '+%Y-%m-%d %H:%M:%S %Z')
-KERNEL_VER=$(uname -r)
-HOSTNAME_STR=$(hostname)
-ARCH=$(uname -m)
-
-# Helper: extract JSON field (simple grep-based, works for our flat JSON)
-jval() {
-    local file="$1" key="$2"
-    grep -oP "\"${key}\"\s*:\s*\"\K[^\"]*" "$file" 2>/dev/null | head -1
-}
-jnum() {
-    local file="$1" key="$2"
-    grep -oP "\"${key}\"\s*:\s*\K[0-9]+" "$file" 2>/dev/null | head -1
-}
-
-# Determine overall status
-if [ $TOTAL_FAIL -eq 0 ] && [ $TOTAL_TESTS -gt 0 ]; then
-    OVERALL_STATUS="ALL PASSED"
-    OVERALL_CLASS="pass"
-else
-    OVERALL_STATUS="$TOTAL_FAIL FAILED"
-    OVERALL_CLASS="fail"
-fi
-
-# Start building HTML
-cat > "$OUTPUT_HTML" << 'HTMLHEAD'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -273,51 +209,39 @@ cat > "$OUTPUT_HTML" << 'HTMLHEAD'
 </style>
 </head>
 <body>
-HTMLHEAD
-
-# Write header section
-cat >> "$OUTPUT_HTML" << HEADEREOF
 <div class="header">
   <h1>vasn_tap Integration Test Report</h1>
   <div class="subtitle">Automated packet tap testing results</div>
   <div class="meta">
-    <span>Date: $REPORT_DATE</span>
-    <span>Host: $HOSTNAME_STR</span>
-    <span>Kernel: $KERNEL_VER</span>
-    <span>Arch: $ARCH</span>
+    <span>Date: 2026-02-16 16:49:37 UTC</span>
+    <span>Host: asn-dev-100g</span>
+    <span>Kernel: 5.15.0-170-generic</span>
+    <span>Arch: x86_64</span>
   </div>
 </div>
-HEADEREOF
-
-# Write summary bar
-cat >> "$OUTPUT_HTML" << SUMMARYEOF
 <div class="container">
   <div class="summary">
     <div class="summary-card total">
       <div class="label">Total Tests</div>
-      <div class="value">$TOTAL_TESTS</div>
+      <div class="value">2</div>
     </div>
     <div class="summary-card passed">
       <div class="label">Passed</div>
-      <div class="value">$TOTAL_PASS</div>
+      <div class="value">2</div>
     </div>
     <div class="summary-card failed">
       <div class="label">Failed</div>
-      <div class="value">$TOTAL_FAIL</div>
+      <div class="value">0</div>
     </div>
     <div class="summary-card">
       <div class="label">Duration</div>
-      <div class="value">${TOTAL_DURATION}s</div>
+      <div class="value">35s</div>
     </div>
-    <div class="summary-card overall $OVERALL_CLASS">
+    <div class="summary-card overall pass">
       <div class="label">Status</div>
-      <div class="value $OVERALL_CLASS">$OVERALL_STATUS</div>
+      <div class="value pass">ALL PASSED</div>
     </div>
   </div>
-SUMMARYEOF
-
-# Write topology diagram
-cat >> "$OUTPUT_HTML" << 'TOPOEOF'
   <div class="topology">
     <h3>Test Topology</h3>
     <pre>
@@ -336,50 +260,15 @@ cat >> "$OUTPUT_HTML" << 'TOPOEOF'
     Traffic flow: ns_src --ping--&gt; veth_src_host --vasn_tap--&gt; veth_dst_host --&gt; ns_dst
     </pre>
   </div>
-TOPOEOF
 
-# Write each test card
-for f in $(ls "$RESULT_DIR"/*.json 2>/dev/null | sort); do
-    [ -f "$f" ] || continue
-
-    test_name=$(jval "$f" "test_name")
-    description=$(jval "$f" "description")
-    result=$(jval "$f" "result")
-    mode=$(jval "$f" "mode")
-    workers=$(jnum "$f" "workers")
-    input_iface=$(jval "$f" "input_iface")
-    output_iface=$(jval "$f" "output_iface")
-    traffic_type=$(jval "$f" "traffic_type")
-    traffic_count=$(jnum "$f" "traffic_count")
-    traffic_src=$(jval "$f" "traffic_src")
-    traffic_dst=$(jval "$f" "traffic_dst")
-    rx_packets=$(jnum "$f" "rx_packets")
-    tx_packets=$(jnum "$f" "tx_packets")
-    dropped_packets=$(jnum "$f" "dropped_packets")
-    captured_at_dst=$(jnum "$f" "captured_at_dst")
-    tunnel_packets=$(jnum "$f" "tunnel_packets")
-    duration_sec=$(jnum "$f" "duration_sec")
-    error_msg=$(jval "$f" "error_msg")
-
-    # Determine card class
-    if [ "$result" = "PASS" ]; then
-        card_class="pass"
-        badge_text="PASS"
-    else
-        card_class="fail"
-        badge_text="FAIL"
-    fi
-
-    cat >> "$OUTPUT_HTML" << CARDEOF
-
-  <div class="test-card $card_class" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
-        <h3>$test_name</h3>
-        <div class="desc">$description</div>
+        <h3>Tunnel GRE</h3>
+        <div class="desc">GRE tunnel encap to 192.168.201.1 (ns_dst); expect Tunnel (GRE) packets sent > 0</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge $card_class">$badge_text</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -387,104 +276,112 @@ for f in $(ls "$RESULT_DIR"/*.json 2>/dev/null | sort); do
       <div class="section-title">Configuration</div>
       <table class="info-table">
         <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
-        <tr><td>${mode:-n/a}</td><td>${workers:-0}</td><td>${input_iface:-n/a}</td><td>${output_iface:-n/a}</td></tr>
+        <tr><td>afpacket</td><td>2</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
       </table>
 
       <div class="section-title">Traffic Injected by Test</div>
       <table class="info-table">
         <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
-        <tr><td>${traffic_type:-n/a}</td><td>${traffic_count:-0}</td><td>${traffic_src:-n/a}</td><td>${traffic_dst:-n/a}</td><td>~$((${traffic_count:-0} * 2 + 10)) (requests + replies + ARP)</td></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
       </table>
 
       <div class="section-title">Results</div>
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">${rx_packets:-0}</div>
+          <div class="val highlight">48</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">${tx_packets:-0}</div>
+          <div class="val highlight">48</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">${dropped_packets:-0}</div>
+          <div class="val">0</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">${captured_at_dst:-0}</div>
+          <div class="val">48</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">${duration_sec:-0}s</div>
+          <div class="val">16s</div>
         </div>
       </div>
-CARDEOF
-
-    # Tunnel tests: show tunnel packets sent when present
-    if [ -n "$tunnel_packets" ]; then
-        cat >> "$OUTPUT_HTML" << TUNNELEOF
       <div class="detail-grid" style="margin-top:8px;">
         <div class="detail-item">
           <div class="label">Tunnel Packets Sent</div>
-          <div class="val highlight">$tunnel_packets</div>
+          <div class="val highlight">48</div>
           <div class="sublabel">Encapsulated (VXLAN/GRE) and sent to remote</div>
         </div>
       </div>
-TUNNELEOF
-    fi
+    </div>
+  </div>
 
-    # Note box (explanatory text about packet counts)
-    note=$(jval "$f" "note")
-    if [ -n "$note" ]; then
-        cat >> "$OUTPUT_HTML" << NOTEEOF
-      <div class="note-box">
-        <div class="note-label">Why do the numbers differ from pings sent?</div>
-        <div>$note</div>
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Tunnel VXLAN</h3>
+        <div class="desc">VXLAN tunnel encap to 192.168.201.1 (ns_dst); expect Tunnel (VXLAN) packets sent > 0</div>
       </div>
-NOTEEOF
-    fi
-
-    # Error box (only if failed)
-    if [ "$result" != "PASS" ] && [ -n "$error_msg" ]; then
-        cat >> "$OUTPUT_HTML" << ERREOF
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>$error_msg</div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge pass">PASS</span>
+        <span class="toggle-icon">&#9654;</span>
       </div>
-ERREOF
-    fi
-
-    # Extra details for graceful_shutdown test
-    has_cleanup=$(jnum "$f" "has_cleanup")
-    has_done=$(jnum "$f" "has_done")
-    has_final_stats=$(jnum "$f" "has_final_stats")
-    exit_code=$(jnum "$f" "exit_code")
-
-    if [ -n "$has_cleanup" ]; then
-        cat >> "$OUTPUT_HTML" << SHUTEOF
-      <div class="section-title">Shutdown Verification</div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
       <table class="info-table">
-        <tr><th>Check</th><th>Result</th></tr>
-        <tr><td>Exit code</td><td>${exit_code:-n/a}</td></tr>
-        <tr><td>"Cleaning up..." message</td><td>$([ "${has_cleanup:-0}" -gt 0 ] && echo "Yes" || echo "No")</td></tr>
-        <tr><td>"Done." message</td><td>$([ "${has_done:-0}" -gt 0 ] && echo "Yes" || echo "No")</td></tr>
-        <tr><td>Final statistics printed</td><td>$([ "${has_final_stats:-0}" -gt 0 ] && echo "Yes" || echo "No")</td></tr>
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>afpacket</td><td>2</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
       </table>
-SHUTEOF
-    fi
 
-    echo "    </div>" >> "$OUTPUT_HTML"
-    echo "  </div>" >> "$OUTPUT_HTML"
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
 
-done
-
-# Footer and close
-cat >> "$OUTPUT_HTML" << 'FOOTEREOF'
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">0</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">80</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">15s</div>
+        </div>
+      </div>
+      <div class="detail-grid" style="margin-top:8px;">
+        <div class="detail-item">
+          <div class="label">Tunnel Packets Sent</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Encapsulated (VXLAN/GRE) and sent to remote</div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="footer">
@@ -499,6 +396,3 @@ document.querySelectorAll('.test-card.fail').forEach(function(card) {
 </script>
 </body>
 </html>
-FOOTEREOF
-
-echo "HTML report generated: $OUTPUT_HTML"

@@ -20,8 +20,9 @@ make test
 # Run integration tests (requires root; reports in tests/integration/reports/)
 make test-basic   # 8 cases
 make test-filter  # 10 filter cases
-make test-all     # 18 cases (full suite)
-# Or: sudo tests/integration/run_integ.sh [basic|filter|all]
+make test-tunnel  # 2 tunnel cases (GRE, VXLAN)
+make test-all     # 20 cases (basic + filter + tunnel)
+# Or: sudo tests/integration/run_integ.sh [basic|filter|tunnel|all]
 ```
 
 ---
@@ -88,6 +89,17 @@ Tests the stats aggregation functions for both the AF_PACKET and eBPF backends.
 #### test_config.c -- Config Validation (5 tests)
 
 Tests parameter validation in init functions.
+
+#### test_config_filter.c -- YAML Load and Tunnel Parsing (10 tests)
+
+Tests `config_load()`: null/empty path, missing file, valid minimal, valid with rules, invalid YAML, invalid default_action, config_free null, and tunnel section parsing.
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_config_load_tunnel_gre` | YAML with `tunnel: { type: gre, remote_ip: ... }` loads and GRE fields are correct |
+| `test_config_load_tunnel_vxlan` | YAML with `tunnel: { type: vxlan, remote_ip: ..., vni: ..., dstport: ... }` loads and VXLAN fields are correct |
+
+(Other tests in this file cover general config load/free; see file for full list.)
 
 | Test | What it verifies |
 |------|-----------------|
@@ -197,12 +209,12 @@ Originally, CLI parsing lived inside `main()` in `main.c`. This made it impossib
 ### How to Run
 
 ```bash
-# Run full suite (sets up namespaces, runs all 18 tests: 8 basic + 10 filter, generates HTML report)
+# Run full suite (sets up namespaces, runs all 20 tests: 8 basic + 10 filter + 2 tunnel, generates HTML report)
 make test-all
 # Or: sudo tests/integration/run_integ.sh all
 ```
 
-HTML reports are generated under **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report.html depending on which suite was run).
+HTML reports are generated under **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report.html depending on which suite was run).
 
 ### Test Topology
 
@@ -238,10 +250,12 @@ All tests except multiworker run in **both** capture modes:
 | `test_graceful_shutdown.sh` | Yes | Yes | Send SIGINT during active traffic, verify clean "Cleaning up" and "Done" messages |
 | `test_multiworker.sh` | Yes | No* | Test with 1, 2, and 4 workers, verify RX/TX for each |
 | `test_fanout_distribution.sh` | Yes | No* | Use iperf3 with 8 parallel TCP flows to verify PACKET_FANOUT_HASH distributes packets across 4 worker sockets. Exercises the TPACKET_V2 TX ring output path under sustained load (requires iperf3; skips gracefully if not installed) |
+| `test_tunnel_gre.sh` | Yes | No | GRE tunnel: allow-all filter, tunnel to 192.168.201.1; ARP prime, pings; assert "Tunnel (GRE): N > 0"; tcpdump in ns_dst (proto 47) for received-at-destination |
+| `test_tunnel_vxlan.sh` | Yes | No | VXLAN tunnel: allow-all filter, tunnel to 192.168.201.1; ARP prime, pings; assert "Tunnel (VXLAN): N > 0"; tcpdump in ns_dst (udp port 4789) for received-at-destination |
 
-*eBPF mode is forced to 1 worker, so multi-worker and fanout testing only apply to AF_PACKET.
+*eBPF mode is forced to 1 worker, so multi-worker, fanout, and tunnel testing only apply to AF_PACKET.
 
-This gives **8 test results** in the HTML report: 3 afpacket + 3 ebpf + 1 multiworker + 1 fanout distribution.
+This gives **8 basic + 10 filter + 2 tunnel = 20** test results in the HTML reports (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, and test_report.html for full suite).
 
 ### TX Ring Performance Notes
 
@@ -282,13 +296,14 @@ After running the integration tests, HTML reports are generated under **tests/in
 
 - **test_report_basic.html** (make test-basic, 8 cases)
 - **test_report_filter.html** (make test-filter, 10 cases)
-- **test_report.html** (make test-all, 18 cases)
+- **test_report_tunnel.html** (make test-tunnel, 2 cases)
+- **test_report.html** (make test-all, 20 cases)
 
 Each report includes:
 
 - **Summary bar**: Total tests, passed, failed, duration
 - **Topology diagram**: ASCII art showing the test network layout
-- **Per-test cards** (click to expand): Configuration, traffic sent, results (raw frames captured, frames forwarded, frames dropped, received at destination), duration, and explanatory notes
+- **Per-test cards** (click to expand): Configuration, traffic sent, results (raw frames captured, frames forwarded, frames dropped, received at destination), duration, and explanatory notes. For tunnel tests, **Tunnel Packets Sent** is shown when `tunnel_packets` is present; **Received at Destination** is the encapsulated packet count captured in ns_dst (tcpdump).
 - **Error details**: Automatically expanded for failed tests
 
 ### How to Add a New Integration Test
@@ -409,11 +424,12 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/unit/test_cli.c` | 18 tests for `parse_args()` |
 | `tests/unit/test_stats.c` | 10 tests for stats accumulation/reset |
 | `tests/unit/test_config.c` | 5 tests for init validation |
+| `tests/unit/test_config_filter.c` | 10 tests for YAML load and tunnel (GRE/VXLAN) parsing |
 | `tests/unit/test_output.c` | 8 tests for output module error paths |
 | `tests/unit/test_common.h` | Shared CMocka includes |
-| `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (10) \| all (18) |
+| `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (10) \| tunnel (2) \| all (20) |
 | `tests/integration/run_all.sh` | Wrapper for `run_integ.sh all` |
-| `tests/integration/reports/` | HTML reports (test_report_basic.html, test_report_filter.html, test_report.html) |
+| `tests/integration/reports/` | HTML reports (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report.html) |
 | `tests/integration/setup_namespaces.sh` | Create test topology |
 | `tests/integration/teardown_namespaces.sh` | Destroy test topology |
 | `tests/integration/test_helpers.sh` | JSON result writing helpers |
@@ -429,3 +445,5 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/integration/test_multiworker.sh` | Multi-worker test (afpacket only) |
 | `tests/integration/test_fanout_distribution.sh` | Fanout distribution test with iperf3 (afpacket only) |
 | `tests/integration/test_graceful_shutdown.sh` | Graceful shutdown test |
+| `tests/integration/test_tunnel_gre.sh` | GRE tunnel encap test (afpacket) |
+| `tests/integration/test_tunnel_vxlan.sh` | VXLAN tunnel encap test (afpacket) |

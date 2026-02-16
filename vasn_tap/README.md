@@ -11,7 +11,7 @@ vasn_tap is designed to run on customer operating systems with minimal dependenc
 | Feature | eBPF Mode (`-m ebpf`) | AF_PACKET Mode (`-m afpacket`) |
 |---------|----------------------|-------------------------------|
 | **RX Mechanism** | TC BPF hook + perf buffer | TPACKET_V3 mmap ring buffer |
-| **TX Mechanism** | Shared TPACKET_V2 mmap TX ring (`tx_ring.c`), flush every 32 packets | Shared TPACKET_V2 mmap TX ring (`tx_ring.c`), flush per RX block |
+| **TX Mechanism** | TX ring or userspace tunnel (VXLAN/GRE) when configured | TX ring or userspace tunnel (VXLAN/GRE) when configured |
 | **Multi-worker** | Single thread only (perf buffer limitation) | Yes, via PACKET_FANOUT_HASH |
 | **Kernel requirement** | >= 5.10 with BTF | >= 3.2 |
 | **Dependencies** | libbpf, clang, bpftool | None (standard sockets) |
@@ -136,6 +136,25 @@ filter:
 
 Match fields: **protocol** (tcp, udp, icmp, icmpv6 or number), **port_src**, **port_dst**, **ip_src**, **ip_dst** (IPv4 or CIDR), **eth_type**. All match fields in a rule are ANDed; only specified fields are checked.
 
+### Tunnel (optional)
+
+When the YAML config includes a top-level **tunnel** section, allowed packets are encapsulated in userspace (VXLAN or GRE) and sent to a remote IP instead of being L2-forwarded. No kernel tunnel device is created. **`-o` is required** when tunnel is enabled; **`-o lo` is rejected**.
+
+Example (see `config.example.yaml`):
+
+```yaml
+filter:
+  default_action: allow
+  rules: []
+tunnel:
+  type: gre
+  remote_ip: 10.4.5.187
+  key: 1000
+#  local_ip: optional; else derived from output interface (-o)
+```
+
+For VXLAN: **type: vxlan**, **remote_ip** (required), **vni** (e.g. 1000), **dstport** (default 4789), optional **local_ip**. For GRE: **type: gre**, **remote_ip** (required), optional **key** and **local_ip**. With **-s**, stats show a line: `Tunnel (VXLAN): N packets sent, M bytes` or `Tunnel (GRE): ...`.
+
 ## Testing
 
 ### Unit Tests (no root required)
@@ -151,10 +170,11 @@ Runs 6 unit test suites using CMocka: CLI parsing, config validation, stats accu
 ```bash
 make test-basic   # 8 cases → tests/integration/reports/test_report_basic.html
 make test-filter  # 10 cases → tests/integration/reports/test_report_filter.html
-make test-all     # 18 cases → tests/integration/reports/test_report.html
+make test-tunnel  # 2 cases (GRE, VXLAN) → tests/integration/reports/test_report_tunnel.html
+make test-all     # 20 cases (basic + filter + tunnel) → tests/integration/reports/test_report.html
 ```
 
-Or run the runner directly: `sudo tests/integration/run_integ.sh [basic|filter|all]`. Creates network namespaces with veth pairs; **basic** runs forwarding, drop mode, graceful shutdown (both modes), multiworker, and fanout; **filter** runs the ACL filter tests (afpacket + ebpf). HTML reports are written under **tests/integration/reports/**.
+Or run the runner directly: `sudo tests/integration/run_integ.sh [basic|filter|tunnel|all]`. Creates network namespaces with veth pairs; **basic** runs forwarding, drop mode, graceful shutdown (both modes), multiworker, and fanout; **filter** runs the ACL filter tests (afpacket + ebpf); **tunnel** runs GRE and VXLAN tunnel encap tests (afpacket). HTML reports are written under **tests/integration/reports/**.
 
 See [TESTING.md](TESTING.md) for full details on the test suites, how to add tests, and the test matrix.
 
@@ -165,12 +185,15 @@ vasn_tap/
 ├── include/
 │   └── common.h              # Shared types (pkt_meta, pkt_direction, constants)
 ├── src/
-│   ├── main.c                # Entry point, CLI dispatch, signal handling
+│   ├── main.c                # Entry point, CLI dispatch, tunnel init, signal handling
 │   ├── cli.c / cli.h         # Argument parsing (extracted for testability)
+│   ├── config.c / config.h   # YAML filter + tunnel config load
+│   ├── filter.c / filter.h   # ACL filter_packet (L2/L3/L4)
+│   ├── tunnel.c / tunnel.h   # Optional VXLAN/GRE encap (userspace raw socket)
 │   ├── tap.c / tap.h         # eBPF mode: load BPF, attach/detach TC hooks
 │   ├── worker.c / worker.h   # eBPF mode: perf buffer consumer, stats
-│   ├── tx_ring.c / tx_ring.h     # Shared TPACKET_V2 mmap TX ring (both modes)
-│   ├── afpacket.c / afpacket.h   # AF_PACKET mode: TPACKET_V3 RX, FANOUT, uses tx_ring
+│   ├── tx_ring.c / tx_ring.h     # Shared TPACKET_V2 mmap TX ring (when no tunnel)
+│   ├── afpacket.c / afpacket.h   # AF_PACKET mode: TPACKET_V3 RX, FANOUT, tx_ring or tunnel
 │   ├── output.c / output.h      # Legacy; used only by test_output unit tests
 │   └── ebpf/
 │       ├── tc_clone.bpf.c    # Kernel-side TC BPF program
@@ -180,11 +203,12 @@ vasn_tap/
 │   ├── unit/                  # CMocka unit tests
 │   │   ├── test_cli.c        # 18 tests: mode, interface, workers, flags
 │   │   ├── test_config.c     # 5 tests: init validation, enum values
+│   │   ├── test_config_filter.c  # 10 tests: YAML load, filter + tunnel section
 │   │   ├── test_stats.c      # 10 tests: stats accumulation, reset, NULL safety
 │   │   ├── test_output.c     # 8 tests: send/open/close error paths
 │   │   └── test_common.h     # Shared CMocka includes
 │   └── integration/           # Bash-based integration tests
-│       ├── run_integ.sh       # Runner: basic (8) | filter (10) | all (18)
+│       ├── run_integ.sh       # Runner: basic (8) | filter (10) | tunnel (2) | all (20)
 │       ├── run_all.sh         # Wrapper for run_integ.sh all
 │       ├── reports/           # HTML reports (test_report*.html)
 │       ├── setup_namespaces.sh    # Create ns_src/ns_dst + veth pairs
@@ -194,7 +218,9 @@ vasn_tap/
 │       ├── test_basic_forward.sh  # Packet forwarding (both modes)
 │       ├── test_drop_mode.sh      # Drop mode verification (both modes)
 │       ├── test_multiworker.sh    # Multi-worker scaling (afpacket only)
-│       └── test_graceful_shutdown.sh  # SIGINT handling (both modes)
+│       ├── test_graceful_shutdown.sh  # SIGINT handling (both modes)
+│       ├── test_tunnel_gre.sh     # GRE tunnel encap (afpacket)
+│       └── test_tunnel_vxlan.sh   # VXLAN tunnel encap (afpacket)
 ├── Makefile                   # Build system + test targets
 ├── README.md                  # This file
 ├── ARCHITECTURE.md            # Detailed architecture documentation

@@ -19,11 +19,11 @@ struct filter_match {
 	uint16_t eth_type;       /* e.g. 0x0800 = IPv4 */
 
 	bool has_ip_src;
-	uint32_t ip_src;         /* IPv4 host order */
+	uint32_t ip_src;         /* IPv4 canonical (same as packet: (b0<<24)|(b1<<16)|...) */
 	uint32_t ip_src_mask;    /* 0 = no CIDR, else prefix mask */
 
 	bool has_ip_dst;
-	uint32_t ip_dst;
+	uint32_t ip_dst;         /* IPv4 canonical (same as packet) */
 	uint32_t ip_dst_mask;
 
 	bool has_protocol;
@@ -52,9 +52,28 @@ struct filter_config {
 	unsigned int num_rules;
 };
 
-/* Top-level config (Phase 1: filter only) */
+/* Tunnel type (userspace encap only) */
+enum tunnel_type {
+	TUNNEL_TYPE_NONE = 0,
+	TUNNEL_TYPE_VXLAN,
+	TUNNEL_TYPE_GRE,
+};
+
+/* Tunnel config from YAML (optional). When present, tunnel is enabled. */
+struct tunnel_config {
+	enum tunnel_type type;           /* VXLAN or GRE */
+	char remote_ip[64];              /* Remote VTEP/ASN IP (required) */
+	uint32_t vni;                    /* VXLAN VNI (required for VXLAN) */
+	uint16_t dstport;                /* VXLAN UDP dst port (default 4789) */
+	uint32_t key;                    /* GRE key (optional, 0 = not set) */
+	char local_ip[64];               /* Optional local/source IP; empty = derive from -o */
+	bool enabled;                    /* true if tunnel section was present and valid */
+};
+
+/* Top-level config: filter and optional tunnel */
 struct tap_config {
 	struct filter_config filter;
+	struct tunnel_config tunnel;
 };
 
 /*

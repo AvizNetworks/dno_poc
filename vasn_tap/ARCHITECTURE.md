@@ -17,7 +17,7 @@ vasn_tap is a lightweight packet tap that runs on customer operating systems. It
   +-----------+                  |  stats / -F dump |            +------------------+
        |                         +------------------+
        |  original traffic              |
-       |  continues normally            | L2/L3/L4 ACL (filter.c), then tx_ring
+       |  continues normally            | L2/L3/L4 ACL (filter.c), then tx_ring or tunnel (VXLAN/GRE)
        v                                |
    [Normal stack]                  [Stats, logging]
 ```
@@ -33,8 +33,9 @@ The application supports **two capture backends** selected at startup via the `-
                           +------------------+
                           |  main.c          |  Entry point, signal handling
                           |  cli.c           |  Argument parsing
-                          |  config.c       |  YAML filter config load
+                          |  config.c       |  YAML filter + optional tunnel config load
                           |  filter.c       |  ACL filter_packet (L2/L3/L4)
+                          |  tunnel.c       |  Optional VXLAN/GRE encap (userspace raw socket)
                           +--------+---------+
                                    |
                       mode selection (g_capture_mode)
@@ -52,15 +53,13 @@ The application supports **two capture backends** selected at startup via the `-
                      |                         |
                      v                         v
                +------------------------------------------+
-               |  tx_ring.c / tx_ring.h                   |
-               |  Shared TPACKET_V2 mmap TX ring          |
-               |  (both modes use same zero-copy output)  |
+               |  tx_ring.c / tx_ring.h   OR  tunnel.c    |
+               |  TX: mmap ring when -o set; when YAML    |
+               |  has tunnel: userspace VXLAN/GRE encap  |
                +------------------------------------------+
 ```
 
-> **Note:** Both eBPF and AF_PACKET use the **shared** `tx_ring` module for
-> high-performance output (mmap'd TX ring, batch flush). The `output.c` module
-> is no longer used by the main binary; it remains only for the `test_output` unit tests.
+> **Note:** When no tunnel is configured, both eBPF and AF_PACKET use the **shared** `tx_ring` module for output (mmap'd TX ring, batch flush). When the YAML config includes a **tunnel** section (VXLAN or GRE), allowed packets are encapsulated in userspace by **tunnel.c** and sent via a raw AF_PACKET socket on the output interface; no TX ring is used and `output_ifindex` is set to 0. The `output.c` module is no longer used by the main binary; it remains only for the `test_output` unit tests.
 
 ## Module Details
 
@@ -79,8 +78,12 @@ Key globals:
 - `g_tap_ctx` -- eBPF tap context
 - `g_worker_ctx` -- eBPF worker context
 - `g_afpacket_ctx` -- AF_PACKET context
+- `g_tunnel_ctx` -- tunnel context (when YAML has tunnel section; used for VXLAN/GRE encap)
+- `g_tap_config` -- loaded filter + tunnel config
 - `g_capture_mode` -- selected mode (from CLI)
 - `g_running` -- volatile flag, set to false on SIGINT
+
+When tunnel is enabled, main calls **tunnel_init()** after config load (requires `-o`; `-o lo` is rejected). The TX line in stats and the "Tunnel (VXLAN|GRE): N packets sent" line use the tunnel's own counters when tunnel is active.
 
 ### cli.c -- Argument Parsing
 
@@ -115,13 +118,27 @@ Loads the filter (ACL) configuration from a YAML file. Used when `-c` is set. Pa
 - **config_load(path)** — Opens file, parses YAML, fills `struct tap_config` (filter section). On error returns NULL and sets a static error message (retrievable via **config_get_error()**).
 - **config_free(cfg)** — Frees the config. Safe to call with NULL.
 
-Config layout: **filter.default_action** (`allow` | `drop`), **filter.rules[]** — each rule has **action** and optional **match** (protocol, port_src, port_dst, ip_src, ip_dst, eth_type). Validation is done at load; invalid files cause startup failure (no "allow all" fallback). Config is read once at startup; restart required for changes.
+Config layout: **filter.default_action** (`allow` | `drop`), **filter.rules[]** — each rule has **action** and optional **match** (protocol, port_src, port_dst, ip_src, ip_dst, eth_type). Optional top-level **tunnel** section: **type** (`vxlan` | `gre`), **remote_ip** (required), **vni** (VXLAN), **dstport** (VXLAN, default 4789), **key** (GRE), **local_ip** (optional). When tunnel is present, `-o` is required and `-o lo` is rejected. Validation is done at load; invalid files cause startup failure. Config is read once at startup; restart required for changes.
 
 ### filter.c -- Packet Filter (ACL)
 
 **File:** `src/filter.c`, `src/filter.h`
 
-Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. IP addresses in config (from **parse_cidr**) and in the packet are compared in **network byte order**. L2 handling supports standard Ethernet (IP at offset 14) and **802.1Q VLAN** (ethertype 0x8100, IP at offset 18), with a fallback to detect IPv4 at offset 18 when the frame layout is non-standard. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before **tx_ring_write**, increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip TX. When **-F (--filter-stats)** is set, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without **-F**, counters are still updated but no read/print is done.
+Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. IP addresses in config (from **parse_cidr**) and in the packet are compared in **network byte order**. L2 handling supports standard Ethernet (IP at offset 14) and **802.1Q VLAN** (ethertype 0x8100, IP at offset 18), with a fallback to detect IPv4 at offset 18 when the frame layout is non-standard. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before output: when **tunnel_ctx** is set they call **tunnel_send()** (and **tunnel_flush()** per block) instead of **tx_ring_write()**; otherwise they use the shared TX ring. Workers increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip output. When **-F (--filter-stats)** is set, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without **-F**, counters are still updated but no read/print is done.
+
+### tunnel.c -- VXLAN/GRE Encapsulation (Optional)
+
+**File:** `src/tunnel.c`, `src/tunnel.h`
+
+When the YAML config includes a **tunnel** section, allowed packets are encapsulated in userspace and sent to a remote VTEP/ASN instead of being L2-forwarded via the TX ring. No kernel tunnel device is created; everything is done in-process.
+
+- **tunnel_init(ctx_out, type, remote_ip, vni, dstport, key, local_ip, output_ifname)** — Resolves output interface MAC and MTU, ARPs for the remote IP (with a short UDP connect to prime the cache if needed), opens a raw AF_PACKET socket bound to the output interface. Rejects `output_ifname == "lo"`. Returns 0 on success.
+- **tunnel_send(ctx, inner, len)** — Encapsulates one inner L2 frame: VXLAN (Eth+IP+UDP+VXLAN+inner) or GRE (Eth+IP+GRE+inner). IP checksum is computed in userspace. If inner length exceeds (MTU − overhead), the packet is dropped. Thread-safe (mutex). Returns 0 on success.
+- **tunnel_flush(ctx)** — No-op for the current synchronous send path; provided for API consistency.
+- **tunnel_get_stats(ctx, packets_sent, bytes_sent)** — Returns atomic counters for packets and bytes sent.
+- **tunnel_cleanup(ctx)** — Closes the raw socket and frees the context.
+
+main.c passes **g_tunnel_ctx** into the AF_PACKET and eBPF worker configs. When tunnel is active, the stats loop uses the tunnel's sent count for the TX line and prints an additional "Tunnel (VXLAN|GRE): N packets sent, M bytes" line.
 
 ### tap.c -- eBPF Tap Module
 
@@ -180,7 +197,7 @@ struct worker_ctx {
 Design notes:
 - **Forced single-threaded**: `num_workers` is always set to 1 because the perf buffer polls events from all CPUs in a single `perf_buffer__poll()` call.
 - Worker thread is pinned to CPU 0 via `pthread_setaffinity_np`.
-- Callback `handle_sample()` receives `struct pkt_meta` (defined in `common.h`) and forwards via the **shared TX ring** (`tx_ring_write()` + flush every 32 packets for batching).
+- Callback `handle_sample()` receives `struct pkt_meta` (defined in `common.h`). When **config.tunnel_ctx** is set, allowed packets are sent via **tunnel_send()** / **tunnel_flush()**; otherwise via the **shared TX ring** (`tx_ring_write()` + flush every 32 packets).
 
 ### afpacket.c -- AF_PACKET Backend
 
@@ -195,7 +212,8 @@ struct afpacket_config {
     char input_ifname[64];
     int  input_ifindex;
     char output_ifname[64];
-    int  output_ifindex;       // 0 = drop mode
+    int  output_ifindex;       // 0 = drop mode or when tunnel is used
+    struct tunnel_ctx *tunnel_ctx;  // When set, use tunnel_send instead of tx_ring
     int  num_workers;
     bool verbose;
 };
@@ -226,7 +244,7 @@ struct afpacket_ctx {
 Internal functions:
 - `setup_rx_socket()` -- Creates AF_PACKET socket, sets TPACKET_V3, configures `PACKET_RX_RING`, binds to input interface, `mmap()`s the RX ring
 - `join_fanout()` -- Sets `PACKET_FANOUT` with `PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_DEFRAG | PACKET_FANOUT_FLAG_ROLLOVER`
-- `process_block()` -- Iterates packets in a TPACKET_V3 RX block; for each packet calls `tx_ring_write(&worker->tx, ...)` (shared module), then `tx_ring_flush(&worker->tx)` at end of block
+- `process_block()` -- Iterates packets in a TPACKET_V3 RX block; when **config.tunnel_ctx** is set, calls **tunnel_send()** / **tunnel_flush()** for allowed packets; otherwise **tx_ring_write()** + **tx_ring_flush()** per block
 - `afpacket_worker_thread()` -- Main worker loop: `poll()` -> `process_block()` -> release block
 
 RX ring buffer defaults (configurable in `afpacket.h`):
@@ -235,9 +253,9 @@ RX ring buffer defaults (configurable in `afpacket.h`):
 - Frame size: 2048 bytes
 - Block timeout: 100 ms
 
-TX is handled by the **shared** `tx_ring` module (see below).
+When **tunnel_ctx** is not set, TX is handled by the **shared** `tx_ring` module (see below). When tunnel is set, no TX ring is created (`output_ifindex` is 0).
 
-### tx_ring.c -- Shared TX Output (both modes)
+### tx_ring.c -- Shared TX Output (both modes, when no tunnel)
 
 **File:** `src/tx_ring.c`, `src/tx_ring.h`
 
@@ -338,20 +356,22 @@ Integration tests are Bash-based and require root. The runner is `tests/integrat
 | `struct afpacket_config` | `src/afpacket.h` | AF_PACKET backend configuration |
 | `struct afpacket_worker` | `src/afpacket.h` | Per-worker RX ring + `struct tx_ring_ctx tx` |
 | `struct afpacket_ctx` | `src/afpacket.h` | AF_PACKET backend runtime state |
-| `struct tap_config` / `struct filter_config` | `src/config.h` | Filter (ACL) config from YAML |
+| `struct tap_config` / `struct filter_config` | `src/config.h` | Filter (ACL) and optional tunnel config from YAML |
+| `struct tunnel_ctx` (opaque) | `src/tunnel.h` | VXLAN/GRE encap context (raw socket, MACs, stats) |
 | `struct pkt_meta` | `include/common.h` | Packet metadata passed from eBPF to userspace |
 
 ## Source File Summary
 
 | File | Lines | Description |
 |------|-------|-------------|
-| `src/main.c` | ~330 | Entry point, config load, mode dispatch, signal handling, stats loop |
+| `src/main.c` | ~440 | Entry point, config load, tunnel_init when tunnel in config, mode dispatch, signal handling, stats loop |
 | `src/cli.c` | ~85 | `parse_args()` -- extracted for testability |
-| `src/config.c` | ~350 | YAML filter config load (libyaml), validation |
-| `src/filter.c` | ~260 | `filter_packet()` -- L2/L3/L4 ACL, first-match, VLAN/L2 handling |
+| `src/config.c` | ~460 | YAML filter + tunnel config load (libyaml), validation |
+| `src/filter.c` | ~275 | `filter_packet()` -- L2/L3/L4 ACL, first-match, VLAN/L2 handling |
+| `src/tunnel.c` | ~290 | Userspace VXLAN/GRE encap: raw socket, ARP, MTU clamp, thread-safe send |
 | `src/tap.c` | ~200 | eBPF: load, attach, detach, cleanup |
-| `src/worker.c` | ~425 | eBPF: perf buffer polling, forwards via shared tx_ring |
-| `src/tx_ring.c` | ~180 | Shared TPACKET_V2 mmap TX ring (both modes) |
-| `src/afpacket.c` | ~660 | AF_PACKET: TPACKET_V3 RX, shared tx_ring per worker, FANOUT |
+| `src/worker.c` | ~425 | eBPF: perf buffer polling, forwards via tunnel_send or shared tx_ring |
+| `src/tx_ring.c` | ~180 | Shared TPACKET_V2 mmap TX ring (both modes when no tunnel) |
+| `src/afpacket.c` | ~620 | AF_PACKET: TPACKET_V3 RX, tunnel_send or tx_ring per worker, FANOUT |
 | `src/output.c` | ~107 | Legacy raw socket TX; used only by test_output unit tests |
 | `src/ebpf/tc_clone.bpf.c` | ~80 | Kernel BPF program: clone to perf buffer |

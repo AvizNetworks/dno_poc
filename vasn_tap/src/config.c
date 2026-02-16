@@ -61,7 +61,8 @@ static int parse_cidr(const char *s, uint32_t *addr_out, uint32_t *mask_out)
 		set_error("Invalid IP address: %s", s);
 		return -1;
 	}
-	*addr_out = (uint32_t)in.s_addr;  /* network byte order, for comparison with packet */
+	/* Store in same canonical form as packet (filter.c builds ip from bytes as (b0<<24)|(b1<<16)|...). */
+	*addr_out = (uint32_t)ntohl(in.s_addr);
 	if (*mask_out != 0)
 		*addr_out &= *mask_out;
 	return 0;
@@ -111,10 +112,12 @@ struct parse_ctx {
 	int in_rules;
 	int in_rule;
 	int in_match;
+	int in_tunnel;
 	int depth;                    /* mapping/sequence nesting */
 	int next_mapping_is_filter;   /* next MAPPING_START is filter block */
 	int next_sequence_is_rules;   /* next SEQUENCE_START is rules */
 	int next_mapping_is_match;    /* next MAPPING_START is match block */
+	int next_mapping_is_tunnel;   /* next MAPPING_START is tunnel block */
 	int need_value;
 	char *last_key;
 };
@@ -154,6 +157,19 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 				ctx.need_value = 0;
 				free(ctx.last_key);
 				ctx.last_key = NULL;
+			} else if (ctx.next_mapping_is_tunnel) {
+				ctx.in_tunnel = 1;
+				ctx.next_mapping_is_tunnel = 0;
+				ctx.need_value = 0;
+				free(ctx.last_key);
+				ctx.last_key = NULL;
+				ctx.cfg->tunnel.enabled = true;
+				ctx.cfg->tunnel.dstport = 4789;
+				ctx.cfg->tunnel.type = TUNNEL_TYPE_NONE;
+				ctx.cfg->tunnel.remote_ip[0] = '\0';
+				ctx.cfg->tunnel.local_ip[0] = '\0';
+				ctx.cfg->tunnel.vni = 0;
+				ctx.cfg->tunnel.key = 0;
 			} else if (ctx.next_mapping_is_match) {
 				ctx.in_match = 1;
 				ctx.next_mapping_is_match = 0;
@@ -174,7 +190,8 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 			else if (ctx.in_rule) {
 				ctx.in_rule = 0;
 				ctx.rule_idx++;
-			}
+			} else if (ctx.in_tunnel)
+				ctx.in_tunnel = 0;
 			ctx.depth--;
 			break;
 		case YAML_SEQUENCE_START_EVENT:
@@ -281,6 +298,65 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 						m->eth_type = (uint16_t)et;
 						m->has_eth_type = true;
 					}
+				} else if (ctx.in_tunnel && ctx.last_key) {
+					struct tunnel_config *tc = &ctx.cfg->tunnel;
+					if (strcmp(ctx.last_key, "type") == 0) {
+						if (strcmp(val, "vxlan") == 0)
+							tc->type = TUNNEL_TYPE_VXLAN;
+						else if (strcmp(val, "gre") == 0)
+							tc->type = TUNNEL_TYPE_GRE;
+						else {
+							set_error("Invalid tunnel type: %s (must be 'vxlan' or 'gre')", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+					} else if (strcmp(ctx.last_key, "remote_ip") == 0) {
+						if (strlen(val) >= sizeof(tc->remote_ip)) {
+							set_error("tunnel remote_ip too long");
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						strncpy(tc->remote_ip, val, sizeof(tc->remote_ip) - 1);
+						tc->remote_ip[sizeof(tc->remote_ip) - 1] = '\0';
+					} else if (strcmp(ctx.last_key, "vni") == 0) {
+						unsigned int v;
+						if (sscanf(val, "%u", &v) != 1 || v > 16777215) {
+							set_error("Invalid tunnel vni: %s (must be 0-16777215)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						tc->vni = (uint32_t)v;
+					} else if (strcmp(ctx.last_key, "dstport") == 0) {
+						unsigned int p;
+						if (sscanf(val, "%u", &p) != 1 || p > 65535) {
+							set_error("Invalid tunnel dstport: %s", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						tc->dstport = (uint16_t)p;
+					} else if (strcmp(ctx.last_key, "local_ip") == 0) {
+						if (strlen(val) >= sizeof(tc->local_ip)) {
+							set_error("tunnel local_ip too long");
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						strncpy(tc->local_ip, val, sizeof(tc->local_ip) - 1);
+						tc->local_ip[sizeof(tc->local_ip) - 1] = '\0';
+					} else if (strcmp(ctx.last_key, "key") == 0) {
+						unsigned int k;
+						if (sscanf(val, "%u", &k) != 1) {
+							set_error("Invalid tunnel key: %s", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						tc->key = (uint32_t)k;
+					}
 				}
 				free(val);
 				ctx.need_value = 0;
@@ -291,6 +367,8 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 				ctx.need_value = 1;
 				if (ctx.depth == 1 && ctx.last_key && strcmp(ctx.last_key, "filter") == 0)
 					ctx.next_mapping_is_filter = 1;
+				else if (ctx.depth == 1 && ctx.last_key && strcmp(ctx.last_key, "tunnel") == 0)
+					ctx.next_mapping_is_tunnel = 1;
 				else if (ctx.in_filter && ctx.depth == 2 && ctx.last_key && strcmp(ctx.last_key, "rules") == 0)
 					ctx.next_sequence_is_rules = 1;
 				else if (ctx.in_rule && ctx.last_key && strcmp(ctx.last_key, "match") == 0)
@@ -349,6 +427,24 @@ struct tap_config *config_load(const char *path)
 		fclose(f);
 		free(cfg);
 		return NULL;
+	}
+
+	/* Validate tunnel section if present */
+	if (cfg->tunnel.enabled) {
+		if (cfg->tunnel.type == TUNNEL_TYPE_NONE) {
+			set_error("tunnel section present but type not set (must be 'vxlan' or 'gre')");
+			yaml_parser_delete(&parser);
+			fclose(f);
+			free(cfg);
+			return NULL;
+		}
+		if (cfg->tunnel.remote_ip[0] == '\0') {
+			set_error("tunnel remote_ip is required");
+			yaml_parser_delete(&parser);
+			fclose(f);
+			free(cfg);
+			return NULL;
+		}
 	}
 
 	yaml_parser_delete(&parser);

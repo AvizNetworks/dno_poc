@@ -23,6 +23,7 @@
 #include "cli.h"
 #include "config.h"
 #include "filter.h"
+#include "tunnel.h"
 #include "../include/common.h"
 
 /* Program version */
@@ -35,6 +36,7 @@ static struct afpacket_ctx g_afpacket_ctx;
 static enum capture_mode g_capture_mode = CAPTURE_MODE_EBPF;
 static volatile bool g_running = true;
 static struct tap_config *g_tap_config = NULL;
+static struct tunnel_ctx *g_tunnel_ctx = NULL;
 
 /* Statistics interval in seconds */
 #define STATS_INTERVAL_SEC 1
@@ -156,6 +158,23 @@ static void print_stats_generic(struct worker_stats *stats, double elapsed_sec)
 }
 
 /*
+ * Print tunnel stats line when tunnel is active (called after print_stats_generic).
+ */
+static void print_tunnel_stats_if_active(void)
+{
+    uint64_t pkts = 0, bytes = 0;
+    const char *tname = "tunnel";
+
+    if (!g_tunnel_ctx)
+        return;
+    tunnel_get_stats(g_tunnel_ctx, &pkts, &bytes);
+    if (g_tap_config && g_tap_config->tunnel.enabled) {
+        tname = (g_tap_config->tunnel.type == TUNNEL_TYPE_VXLAN) ? "VXLAN" : "GRE";
+    }
+    printf("Tunnel (%s): %lu packets sent, %lu bytes\n", tname, (unsigned long)pkts, (unsigned long)bytes);
+}
+
+/*
  * Dump filter rules and per-rule counters. Only called when show_filter_stats
  * and g_filter_config are set (no aggregation/print without the flag).
  */
@@ -189,7 +208,16 @@ static void collect_and_print_stats(double elapsed_sec, bool show_filter_stats)
         workers_get_stats(&g_worker_ctx, &stats);
     }
 
+    /* When tunnel is active, TX line shows tunnel sent count (authoritative) */
+    if (g_tunnel_ctx && g_tap_config && g_tap_config->tunnel.enabled) {
+        uint64_t pkts = 0, bytes = 0;
+        tunnel_get_stats(g_tunnel_ctx, &pkts, &bytes);
+        atomic_store(&stats.packets_sent, pkts);
+        atomic_store(&stats.bytes_sent, bytes);
+    }
+
     print_stats_generic(&stats, elapsed_sec);
+    print_tunnel_stats_if_active();
 
     if (show_filter_stats && g_filter_config)
         print_filter_stats_dump();
@@ -232,6 +260,20 @@ int main(int argc, char **argv)
             filter_set_config(NULL);
             return 0;
         }
+        /* Tunnel enabled from config: require -o as underlay (cannot be loopback) */
+        if (g_tap_config->tunnel.enabled && !args.output_iface[0]) {
+            fprintf(stderr, "Config error: tunnel enabled but no output interface (-o). Specify -o for underlay.\n");
+            config_free(g_tap_config);
+            g_tap_config = NULL;
+            return 1;
+        }
+        if (g_tap_config->tunnel.enabled && args.output_iface[0] &&
+            (strcmp(args.output_iface, "lo") == 0)) {
+            fprintf(stderr, "Config error: tunnel cannot use loopback (lo) as output. Use an interface that can reach the remote VTEP (e.g. eth0).\n");
+            config_free(g_tap_config);
+            g_tap_config = NULL;
+            return 1;
+        }
     }
 
     /* Check for root privileges */
@@ -243,12 +285,29 @@ int main(int argc, char **argv)
     /* Setup signal handlers */
     setup_signals();
 
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     printf("=== vasn_tap v%s ===\n", VERSION);
     printf("Capture mode:     %s\n", g_capture_mode == CAPTURE_MODE_AFPACKET ? "afpacket" : "ebpf");
     printf("Input interface:  %s\n", args.input_iface);
     printf("Output interface: %s\n", args.output_iface[0] ? args.output_iface : "(drop mode)");
     printf("Worker threads:   %d\n", args.num_workers > 0 ? args.num_workers : get_nprocs());
     printf("Filter config:    %s\n", args.config_path[0] ? args.config_path : "(none)");
+    if (g_tap_config && g_tap_config->tunnel.enabled) {
+        err = tunnel_init(&g_tunnel_ctx,
+                         g_tap_config->tunnel.type,
+                         g_tap_config->tunnel.remote_ip,
+                         g_tap_config->tunnel.vni,
+                         g_tap_config->tunnel.dstport,
+                         g_tap_config->tunnel.key,
+                         g_tap_config->tunnel.local_ip[0] ? g_tap_config->tunnel.local_ip : NULL,
+                         args.output_iface);
+        if (err) {
+            fprintf(stderr, "Tunnel init failed: %s\n", strerror(-err));
+            return 1;
+        }
+    }
     printf("\n");
 
     /*
@@ -265,8 +324,9 @@ int main(int argc, char **argv)
         }
         if (args.output_iface[0]) {
             snprintf(aconfig.output_ifname, sizeof(aconfig.output_ifname), "%s", args.output_iface);
-            aconfig.output_ifindex = if_nametoindex(args.output_iface);
+            aconfig.output_ifindex = g_tunnel_ctx ? 0 : if_nametoindex(args.output_iface);
         }
+        aconfig.tunnel_ctx = g_tunnel_ctx;
         aconfig.num_workers = args.num_workers;
         aconfig.verbose = args.verbose;
         aconfig.debug = args.debug;
@@ -291,8 +351,9 @@ int main(int argc, char **argv)
         wconfig.debug = args.debug;
         if (args.output_iface[0]) {
             snprintf(wconfig.output_ifname, sizeof(wconfig.output_ifname), "%s", args.output_iface);
-            wconfig.output_ifindex = if_nametoindex(args.output_iface);
+            wconfig.output_ifindex = g_tunnel_ctx ? 0 : if_nametoindex(args.output_iface);
         }
+        wconfig.tunnel_ctx = g_tunnel_ctx;
 
         err = tap_init(&g_tap_ctx, args.input_iface);
         if (err) {
@@ -356,6 +417,10 @@ int main(int argc, char **argv)
 
     /* Cleanup based on mode */
     printf("Cleaning up...\n");
+    if (g_tunnel_ctx) {
+        tunnel_cleanup(g_tunnel_ctx);
+        g_tunnel_ctx = NULL;
+    }
     filter_set_config(NULL);
     if (g_tap_config) {
         config_free(g_tap_config);

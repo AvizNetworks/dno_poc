@@ -13,6 +13,7 @@
 /* Forward declarations */
 struct bpf_object;
 struct perf_buffer;
+struct tunnel_ctx;
 
 #include "tx_ring.h"
 
@@ -30,6 +31,7 @@ struct worker_config {
     int num_workers;              /* Number of worker threads (1 recommended) */
     int output_ifindex;           /* Output interface index (0 = drop mode) */
     char output_ifname[64];       /* Output interface name */
+    struct tunnel_ctx *tunnel_ctx; /* If set, use tunnel_send instead of tx_ring */
     bool verbose;                 /* Verbose logging */
     bool debug;                   /* TX debug (hex dumps) */
 };

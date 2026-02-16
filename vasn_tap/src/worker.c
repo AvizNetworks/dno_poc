@@ -24,6 +24,7 @@
 #include <bpf/libbpf.h>
 
 #include "worker.h"
+#include "tunnel.h"
 #include "tx_ring.h"
 #include "filter.h"
 #include "../include/common.h"
@@ -74,8 +75,8 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         return;
     }
 
-    /* Drop mode */
-    if (wctx->tx_ring.fd < 0) {
+    /* Drop mode (no tunnel and no tx_ring) */
+    if (!wctx->config.tunnel_ctx && wctx->tx_ring.fd < 0) {
         atomic_fetch_add(&stats->packets_dropped, 1);
         return;
     }
@@ -92,12 +93,22 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         }
     }
 
-    /* Write to shared TX ring (same path as AF_PACKET backend) */
-    if (tx_ring_write(&wctx->tx_ring, pkt_data, pkt_len) == 0) {
+    if (wctx->config.tunnel_ctx) {
+        if (tunnel_send(wctx->config.tunnel_ctx, pkt_data, pkt_len) == 0) {
+            atomic_fetch_add(&stats->packets_sent, 1);
+            atomic_fetch_add(&stats->bytes_sent, pkt_len);
+            wctx->tx_pending++;
+            if (wctx->tx_pending >= 32) {
+                tunnel_flush(wctx->config.tunnel_ctx);
+                wctx->tx_pending = 0;
+            }
+        } else {
+            atomic_fetch_add(&stats->packets_dropped, 1);
+        }
+    } else if (tx_ring_write(&wctx->tx_ring, pkt_data, pkt_len) == 0) {
         atomic_fetch_add(&stats->packets_sent, 1);
         atomic_fetch_add(&stats->bytes_sent, pkt_len);
         wctx->tx_pending++;
-        /* Flush every 32 packets to batch syscalls */
         if (wctx->tx_pending >= 32) {
             tx_ring_flush(&wctx->tx_ring);
             wctx->tx_pending = 0;

@@ -141,6 +141,66 @@ static void test_config_free_null(void **state)
 	/* no crash */
 }
 
+static void test_config_load_tunnel_gre(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"filter:\n"
+		"  default_action: allow\n"
+		"  rules: []\n"
+		"tunnel:\n"
+		"  type: gre\n"
+		"  remote_ip: 10.0.0.1\n"
+		"  key: 42\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_non_null(cfg);
+	assert_true(cfg->tunnel.enabled);
+	assert_int_equal(cfg->tunnel.type, TUNNEL_TYPE_GRE);
+	assert_string_equal(cfg->tunnel.remote_ip, "10.0.0.1");
+	assert_int_equal(cfg->tunnel.key, 42);
+	config_free(cfg);
+}
+
+static void test_config_load_tunnel_vxlan(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"filter:\n"
+		"  default_action: drop\n"
+		"  rules: []\n"
+		"tunnel:\n"
+		"  type: vxlan\n"
+		"  remote_ip: 192.168.201.2\n"
+		"  vni: 1000\n"
+		"  dstport: 4789\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_non_null(cfg);
+	assert_true(cfg->tunnel.enabled);
+	assert_int_equal(cfg->tunnel.type, TUNNEL_TYPE_VXLAN);
+	assert_string_equal(cfg->tunnel.remote_ip, "192.168.201.2");
+	assert_int_equal(cfg->tunnel.vni, 1000);
+	assert_int_equal(cfg->tunnel.dstport, 4789);
+	config_free(cfg);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -152,6 +212,8 @@ int main(void)
 		cmocka_unit_test(test_config_load_invalid_yaml),
 		cmocka_unit_test(test_config_load_invalid_default_action),
 		cmocka_unit_test(test_config_free_null),
+		cmocka_unit_test(test_config_load_tunnel_gre),
+		cmocka_unit_test(test_config_load_tunnel_vxlan),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);
