@@ -19,8 +19,8 @@ make test
 
 # Run integration tests (requires root; reports in tests/integration/reports/)
 make test-basic   # 8 cases
-make test-filter  # 2 filter cases
-make test-all     # 10 cases (full suite)
+make test-filter  # 10 filter cases
+make test-all     # 18 cases (full suite)
 # Or: sudo tests/integration/run_integ.sh [basic|filter|all]
 ```
 
@@ -197,7 +197,7 @@ Originally, CLI parsing lived inside `main()` in `main.c`. This made it impossib
 ### How to Run
 
 ```bash
-# Run full suite (sets up namespaces, runs all 10 tests, generates HTML report)
+# Run full suite (sets up namespaces, runs all 18 tests: 8 basic + 10 filter, generates HTML report)
 make test-all
 # Or: sudo tests/integration/run_integ.sh all
 ```
@@ -281,8 +281,8 @@ The HTML report includes explanatory notes on each test card clarifying this. In
 After running the integration tests, HTML reports are generated under **tests/integration/reports/**:
 
 - **test_report_basic.html** (make test-basic, 8 cases)
-- **test_report_filter.html** (make test-filter, 2 cases)
-- **test_report.html** (make test-all, 10 cases)
+- **test_report_filter.html** (make test-filter, 10 cases)
+- **test_report.html** (make test-all, 18 cases)
 
 Each report includes:
 
@@ -411,7 +411,7 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/unit/test_config.c` | 5 tests for init validation |
 | `tests/unit/test_output.c` | 8 tests for output module error paths |
 | `tests/unit/test_common.h` | Shared CMocka includes |
-| `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (2) \| all (10) |
+| `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (10) \| all (18) |
 | `tests/integration/run_all.sh` | Wrapper for `run_integ.sh all` |
 | `tests/integration/reports/` | HTML reports (test_report_basic.html, test_report_filter.html, test_report.html) |
 | `tests/integration/setup_namespaces.sh` | Create test topology |
@@ -420,8 +420,12 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/integration/generate_report.sh` | HTML report generator |
 | `tests/integration/test_basic_forward.sh` | Packet forwarding test |
 | `tests/integration/test_drop_mode.sh` | Drop mode test |
-| `tests/integration/test_filter_afpacket.sh` | Filter (ACL) test, afpacket mode |
-| `tests/integration/test_filter_ebpf.sh` | Filter (ACL) test, eBPF mode |
+| `tests/integration/test_filter_afpacket.sh` | Filter (ACL) drop-all, afpacket mode |
+| `tests/integration/test_filter_ebpf.sh` | Filter (ACL) drop-all, eBPF mode |
+| `tests/integration/test_filter_allow_all.sh` | Filter allow-all (default allow, no rules); takes mode |
+| `tests/integration/test_filter_allow_icmp_rule.sh` | Filter allow ICMP by rule; takes mode |
+| `tests/integration/test_filter_drop_icmp_rule.sh` | Filter drop ICMP by rule; takes mode |
+| `tests/integration/test_filter_ip_cidr.sh` | Filter IP/CIDR match (ip_src 192.168.200.0/24); takes mode |
 | `tests/integration/test_multiworker.sh` | Multi-worker test (afpacket only) |
 | `tests/integration/test_fanout_distribution.sh` | Fanout distribution test with iperf3 (afpacket only) |
 | `tests/integration/test_graceful_shutdown.sh` | Graceful shutdown test |

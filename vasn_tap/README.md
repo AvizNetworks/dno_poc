@@ -150,8 +150,8 @@ Runs 6 unit test suites using CMocka: CLI parsing, config validation, stats accu
 
 ```bash
 make test-basic   # 8 cases → tests/integration/reports/test_report_basic.html
-make test-filter  # 2 cases → tests/integration/reports/test_report_filter.html
-make test-all     # 10 cases → tests/integration/reports/test_report.html
+make test-filter  # 10 cases → tests/integration/reports/test_report_filter.html
+make test-all     # 18 cases → tests/integration/reports/test_report.html
 ```
 
 Or run the runner directly: `sudo tests/integration/run_integ.sh [basic|filter|all]`. Creates network namespaces with veth pairs; **basic** runs forwarding, drop mode, graceful shutdown (both modes), multiworker, and fanout; **filter** runs the ACL filter tests (afpacket + ebpf). HTML reports are written under **tests/integration/reports/**.
@@ -184,7 +184,7 @@ vasn_tap/
 │   │   ├── test_output.c     # 8 tests: send/open/close error paths
 │   │   └── test_common.h     # Shared CMocka includes
 │   └── integration/           # Bash-based integration tests
-│       ├── run_integ.sh       # Runner: basic (8) | filter (2) | all (10)
+│       ├── run_integ.sh       # Runner: basic (8) | filter (10) | all (18)
 │       ├── run_all.sh         # Wrapper for run_integ.sh all
 │       ├── reports/           # HTML reports (test_report*.html)
 │       ├── setup_namespaces.sh    # Create ns_src/ns_dst + veth pairs

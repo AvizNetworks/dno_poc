@@ -121,7 +121,7 @@ Config layout: **filter.default_action** (`allow` | `drop`), **filter.rules[]** 
 
 **File:** `src/filter.c`, `src/filter.h`
 
-Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before **tx_ring_write**, increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip TX. When **-F (--filter-stats)** is set, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without **-F**, counters are still updated but no read/print is done.
+Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. IP addresses in config (from **parse_cidr**) and in the packet are compared in **network byte order**. L2 handling supports standard Ethernet (IP at offset 14) and **802.1Q VLAN** (ethertype 0x8100, IP at offset 18), with a fallback to detect IPv4 at offset 18 when the frame layout is non-standard. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before **tx_ring_write**, increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip TX. When **-F (--filter-stats)** is set, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without **-F**, counters are still updated but no read/print is done.
 
 ### tap.c -- eBPF Tap Module
 
@@ -323,7 +323,7 @@ The eBPF perf buffer (`PERF_EVENT_ARRAY`) delivers events from all CPUs through 
 
 ### Integration Tests
 
-Integration tests are Bash-based and require root. The runner is `tests/integration/run_integ.sh [basic|filter|all]`: **basic** (8 cases), **filter** (2 ACL tests), **all** (10 cases). Make targets: `make test-basic`, `make test-filter`, `make test-all`. HTML reports are written to **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report.html). See [TESTING.md](TESTING.md) for details.
+Integration tests are Bash-based and require root. The runner is `tests/integration/run_integ.sh [basic|filter|all]`: **basic** (8 cases), **filter** (10 ACL tests), **all** (18 cases). Make targets: `make test-basic`, `make test-filter`, `make test-all`. HTML reports are written to **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report.html). See [TESTING.md](TESTING.md) for details.
 
 ## Struct Quick Reference
 
@@ -348,7 +348,7 @@ Integration tests are Bash-based and require root. The runner is `tests/integrat
 | `src/main.c` | ~330 | Entry point, config load, mode dispatch, signal handling, stats loop |
 | `src/cli.c` | ~85 | `parse_args()` -- extracted for testability |
 | `src/config.c` | ~350 | YAML filter config load (libyaml), validation |
-| `src/filter.c` | ~120 | `filter_packet()` -- L2/L3/L4 ACL, first-match |
+| `src/filter.c` | ~260 | `filter_packet()` -- L2/L3/L4 ACL, first-match, VLAN/L2 handling |
 | `src/tap.c` | ~200 | eBPF: load, attach, detach, cleanup |
 | `src/worker.c` | ~425 | eBPF: perf buffer polling, forwards via shared tx_ring |
 | `src/tx_ring.c` | ~180 | Shared TPACKET_V2 mmap TX ring (both modes) |

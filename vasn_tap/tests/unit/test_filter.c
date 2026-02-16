@@ -109,6 +109,22 @@ static void test_filter_short_packet_allows(void **state)
 	assert_int_equal(filter_packet(&cfg, buf, 8, NULL), FILTER_ACTION_ALLOW);
 }
 
+/* 192.168.200.0/24: config and filter use network byte order for IP comparison */
+static void test_filter_match_ip_src_cidr(void **state)
+{
+	(void)state;
+	struct filter_config cfg = { .default_action = FILTER_ACTION_DROP, .num_rules = 1 };
+	cfg.rules[0].action = FILTER_ACTION_ALLOW;
+	cfg.rules[0].match.has_ip_src = true;
+	cfg.rules[0].match.ip_src = 0xC0A8C800u;   /* 192.168.200.0 network order */
+	cfg.rules[0].match.ip_src_mask = 0xFFFFFF00u;
+	uint8_t buf[64];
+	size_t len;
+	/* Packet with 192.168.200.1 in network order */
+	build_ip_tcp(buf, 0xC0A8C801, 0xC0A8C802, 12345, 443, &len);
+	assert_int_equal(filter_packet(&cfg, buf, (uint32_t)len, NULL), FILTER_ACTION_ALLOW);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -118,6 +134,7 @@ int main(void)
 		cmocka_unit_test(test_filter_first_match_allow),
 		cmocka_unit_test(test_filter_match_port_dst),
 		cmocka_unit_test(test_filter_short_packet_allows),
+		cmocka_unit_test(test_filter_match_ip_src_cidr),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

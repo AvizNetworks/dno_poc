@@ -15,6 +15,7 @@
 #define ETH_ALEN      6
 #define ETH_HLEN      14
 #define ETHERTYPE_IP  0x0800
+#define ETHERTYPE_VLAN 0x8100
 #ifndef IPPROTO_TCP
 #define IPPROTO_TCP   6
 #endif
@@ -102,25 +103,44 @@ enum filter_action filter_packet(const struct filter_config *cfg,
 	if (matched_rule_index)
 		*matched_rule_index = -1;
 
+	/* Find IP header: standard Ethernet (14) or after 802.1Q VLAN (18) */
+	uint32_t ip_off = 0;
 	eth_type = get_u16(pkt + 12);
+	if (eth_type == ETHERTYPE_IP && pkt_len >= ETH_HLEN + 20u) {
+		ip_off = ETH_HLEN;
+	} else if (eth_type == ETHERTYPE_VLAN && pkt_len >= ETH_HLEN + 4u + 20u) {
+		eth_type = get_u16(pkt + 16);
+		if (eth_type == ETHERTYPE_IP)
+			ip_off = ETH_HLEN + 4;
+	}
 
-	if (eth_type == ETHERTYPE_IP && pkt_len >= (uint32_t)(ETH_HLEN + 20)) {
-		uint8_t ihl = (pkt[ETH_HLEN] & 0x0f) * 4;
-		if (ihl >= 20 && pkt_len >= (uint32_t)(ETH_HLEN + ihl)) {
-			protocol = pkt[ETH_HLEN + 9];
-			ip_src = (uint32_t)pkt[ETH_HLEN + 12] << 24 |
-			         (uint32_t)pkt[ETH_HLEN + 13] << 16 |
-			         (uint32_t)pkt[ETH_HLEN + 14] << 8 |
-			         (uint32_t)pkt[ETH_HLEN + 15];
-			ip_dst = (uint32_t)pkt[ETH_HLEN + 16] << 24 |
-			         (uint32_t)pkt[ETH_HLEN + 17] << 16 |
-			         (uint32_t)pkt[ETH_HLEN + 18] << 8 |
-			         (uint32_t)pkt[ETH_HLEN + 19];
+	/* Fallback: look for IPv4 at offset 18 in case L2 is 18 bytes (e.g. VLAN with no 0x0800/0x8100 at 12) */
+	if (ip_off == 0 && pkt_len >= 18u + 20u && (pkt[18] & 0xf0) == 0x40) {
+		uint8_t ihl = (pkt[18] & 0x0f) * 4;
+		if (ihl >= 20 && 18u + (uint32_t)ihl <= pkt_len) {
+			ip_off = 18;
+			eth_type = ETHERTYPE_IP;
+		}
+	}
+
+	if (ip_off != 0 && pkt_len >= ip_off + 20u) {
+		uint8_t ihl = (pkt[ip_off] & 0x0f) * 4;
+		if (ihl >= 20 && pkt_len >= ip_off + (uint32_t)ihl) {
+			protocol = pkt[ip_off + 9];
+			/* IP addresses in network byte order to match config (parse_cidr stores network order) */
+			ip_src = (uint32_t)pkt[ip_off + 12] << 24 |
+			         (uint32_t)pkt[ip_off + 13] << 16 |
+			         (uint32_t)pkt[ip_off + 14] << 8 |
+			         (uint32_t)pkt[ip_off + 15];
+			ip_dst = (uint32_t)pkt[ip_off + 16] << 24 |
+			         (uint32_t)pkt[ip_off + 17] << 16 |
+			         (uint32_t)pkt[ip_off + 18] << 8 |
+			         (uint32_t)pkt[ip_off + 19];
 			has_ip = true;
 
 			if ((protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) &&
-			    pkt_len >= (uint32_t)(ETH_HLEN + ihl + 4)) {
-				const uint8_t *l4 = pkt + ETH_HLEN + ihl;
+			    pkt_len >= ip_off + (uint32_t)ihl + 4u) {
+				const uint8_t *l4 = pkt + ip_off + ihl;
 				port_src = get_u16(l4 + 0);
 				port_dst = get_u16(l4 + 2);
 				has_ports = true;
@@ -218,7 +238,7 @@ void filter_format_rule(const struct filter_config *cfg, unsigned int rule_index
 		if (n > 0 && (size_t)n < left) { p += n; left -= (size_t)n; }
 	}
 	if (m->has_ip_src) {
-		a.s_addr = htonl(m->ip_src);
+		a.s_addr = (in_addr_t)m->ip_src;  /* already network order */
 		n = snprintf(p, left, " ip_src=%s", inet_ntoa(a));
 		if (n > 0 && (size_t)n < left) { p += n; left -= (size_t)n; }
 		if (m->ip_src_mask != 0 && m->ip_src_mask != 0xFFFFFFFFu) {
@@ -228,7 +248,7 @@ void filter_format_rule(const struct filter_config *cfg, unsigned int rule_index
 		}
 	}
 	if (m->has_ip_dst) {
-		a.s_addr = htonl(m->ip_dst);
+		a.s_addr = (in_addr_t)m->ip_dst;  /* already network order */
 		n = snprintf(p, left, " ip_dst=%s", inet_ntoa(a));
 		if (n > 0 && (size_t)n < left) { p += n; left -= (size_t)n; }
 		if (m->ip_dst_mask != 0 && m->ip_dst_mask != 0xFFFFFFFFu) {

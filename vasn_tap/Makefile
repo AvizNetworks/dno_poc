@@ -159,14 +159,14 @@ test-basic: $(TARGET)
 
 test-filter: $(TARGET)
 	@echo ""
-	@echo "=== Filter Integration Tests (2 cases) ==="
+	@echo "=== Filter Integration Tests (10 cases) ==="
 	@echo "(requires root)"
 	@echo ""
 	sudo $(TEST_INTEG_DIR)/run_integ.sh filter
 
 test-all: $(TARGET)
 	@echo ""
-	@echo "=== All Integration Tests (10 cases) ==="
+	@echo "=== All Integration Tests (18 cases) ==="
 	@echo "(requires root)"
 	@echo ""
 	sudo $(TEST_INTEG_DIR)/run_integ.sh all
@@ -180,8 +180,8 @@ help:
 	@echo "  clean       - Remove build artifacts"
 	@echo "  test        - Run unit tests (no root needed)"
 	@echo "  test-basic  - Run basic integration tests, 8 cases (needs root, reports in tests/integration/reports/)"
-	@echo "  test-filter - Run filter integration tests, 2 cases (needs root, reports in tests/integration/reports/)"
-	@echo "  test-all    - Run all integration tests, 10 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-filter - Run filter integration tests, 10 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-all    - Run all integration tests, 18 cases (needs root, reports in tests/integration/reports/)"
 	@echo "  vmlinux     - Generate vmlinux.h only"
 	@echo "  install     - Install to /usr/local (requires root)"
 	@echo "  help        - Show this help"

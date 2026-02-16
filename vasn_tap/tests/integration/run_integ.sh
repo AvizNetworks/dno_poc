@@ -4,8 +4,8 @@
 # Usage: sudo ./tests/integration/run_integ.sh [basic|filter|all]
 #
 # basic: 8 tests (basic_forward, drop_mode, graceful_shutdown x2 modes, multiworker, fanout)
-# filter: 2 tests (test_filter_afpacket, test_filter_ebpf)
-# all: 10 tests (one setup/teardown cycle)
+# filter: 10 tests (drop_all x2, allow_all, allow_icmp_rule, drop_icmp_rule, ip_cidr x2 modes each)
+# all: 18 tests (basic 8 + filter 10)
 #
 # Reports: tests/integration/reports/test_report_basic.html, test_report_filter.html, test_report.html
 #
@@ -78,6 +78,14 @@ if [ "$SUITE" = "basic" ] || [ "$SUITE" = "all" ]; then
                 echo ">>> Running: $ft"
                 run_one "$ft"
             fi
+            echo ">>> Running: test_filter_allow_all.sh $mode"
+            run_one "test_filter_allow_all.sh" "$mode"
+            echo ">>> Running: test_filter_allow_icmp_rule.sh $mode"
+            run_one "test_filter_allow_icmp_rule.sh" "$mode"
+            echo ">>> Running: test_filter_drop_icmp_rule.sh $mode"
+            run_one "test_filter_drop_icmp_rule.sh" "$mode"
+            echo ">>> Running: test_filter_ip_cidr.sh $mode"
+            run_one "test_filter_ip_cidr.sh" "$mode"
         fi
     done
     echo "========== AF_PACKET-only tests =========="
@@ -95,6 +103,16 @@ if [ "$SUITE" = "filter" ]; then
     run_one "test_filter_afpacket.sh"
     echo ">>> Running: test_filter_ebpf.sh"
     run_one "test_filter_ebpf.sh"
+    for mode in afpacket ebpf; do
+        echo ">>> Running: test_filter_allow_all.sh $mode"
+        run_one "test_filter_allow_all.sh" "$mode"
+        echo ">>> Running: test_filter_allow_icmp_rule.sh $mode"
+        run_one "test_filter_allow_icmp_rule.sh" "$mode"
+        echo ">>> Running: test_filter_drop_icmp_rule.sh $mode"
+        run_one "test_filter_drop_icmp_rule.sh" "$mode"
+        echo ">>> Running: test_filter_ip_cidr.sh $mode"
+        run_one "test_filter_ip_cidr.sh" "$mode"
+    done
 fi
 
 echo ">>> Tearing down test environment..."

@@ -30,7 +30,7 @@ const char *config_get_error(void)
 	return config_error;
 }
 
-/* Parse "a.b.c.d" or "a.b.c.d/prefix" into host-order addr and mask (0 = no CIDR). Return 0 on success. */
+/* Parse "a.b.c.d" or "a.b.c.d/prefix" into network-order addr and mask (0 = no CIDR). Return 0 on success. */
 static int parse_cidr(const char *s, uint32_t *addr_out, uint32_t *mask_out)
 {
 	char buf[64];
@@ -61,7 +61,7 @@ static int parse_cidr(const char *s, uint32_t *addr_out, uint32_t *mask_out)
 		set_error("Invalid IP address: %s", s);
 		return -1;
 	}
-	*addr_out = ntohl(in.s_addr);
+	*addr_out = (uint32_t)in.s_addr;  /* network byte order, for comparison with packet */
 	if (*mask_out != 0)
 		*addr_out &= *mask_out;
 	return 0;

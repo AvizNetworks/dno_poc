@@ -8,16 +8,27 @@
 filter:
   default_action: drop   # allow | drop
   rules:
-    # Allow TCP to port 443 (e.g. HTTPS)
+     # Allow TCP to port 22 (e.g. SSH)
+    - action: allow
+      match:
+        protocol: tcp
+        port_dst: 22
+
+   # Allow TCP to port 443 (e.g. HTTPS)
     - action: allow
       match:
         protocol: tcp
         port_dst: 443
 
-    # Allow TCP to port 443 (e.g. HTTPS)
+    # Allow TCP 
     - action: allow
       match:
         protocol: tcp
+
+    # Allow UDP
+    - action: allow
+      match:
+        protocol: udp
 
 
     # Allow traffic from a subnet
