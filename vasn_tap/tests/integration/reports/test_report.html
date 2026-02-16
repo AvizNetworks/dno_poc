@@ -213,7 +213,7 @@
   <h1>vasn_tap Integration Test Report</h1>
   <div class="subtitle">Automated packet tap testing results</div>
   <div class="meta">
-    <span>Date: 2026-02-15 19:30:52 UTC</span>
+    <span>Date: 2026-02-16 02:36:49 UTC</span>
     <span>Host: asn-dev-100g</span>
     <span>Kernel: 5.15.0-170-generic</span>
     <span>Arch: x86_64</span>
@@ -223,23 +223,23 @@
   <div class="summary">
     <div class="summary-card total">
       <div class="label">Total Tests</div>
-      <div class="value">12</div>
+      <div class="value">20</div>
     </div>
     <div class="summary-card passed">
       <div class="label">Passed</div>
-      <div class="value">12</div>
+      <div class="value">18</div>
     </div>
     <div class="summary-card failed">
       <div class="label">Failed</div>
-      <div class="value">0</div>
+      <div class="value">2</div>
     </div>
     <div class="summary-card">
       <div class="label">Duration</div>
-      <div class="value">76s</div>
+      <div class="value">119s</div>
     </div>
-    <div class="summary-card overall pass">
+    <div class="summary-card overall fail">
       <div class="label">Status</div>
-      <div class="value pass">ALL PASSED</div>
+      <div class="value fail">2 FAILED</div>
     </div>
   </div>
   <div class="topology">
@@ -289,12 +289,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">50</div>
+          <div class="val highlight">48</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">50</div>
+          <div class="val highlight">48</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -309,7 +309,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
       <div class="note-box">
@@ -425,7 +425,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">5s</div>
+          <div class="val">4s</div>
         </div>
       </div>
       <div class="note-box">
@@ -536,7 +536,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">3455</div>
+          <div class="val">3454</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
@@ -546,7 +546,7 @@
       </div>
       <div class="note-box">
         <div class="note-label">Why do the numbers differ from pings sent?</div>
-        <div>Fanout test sends 8 parallel UDP streams at 1M/stream, -l 1470 (iperf3 -u -P 8 -b 1M -l 1470) for 5s to create distinct 5-tuples. PACKET_FANOUT_HASH distributes flows by hashing src/dst IP + ports + protocol. Per-worker breakdown: [W0:RX=30, W1:RX=1284, W2:RX=0, W3:RX=2140]. 3 of 4 workers received packets. A single flow (e.g. one ping) always goes to one worker -- multiple flows are needed to prove distribution. captured_at_dst must be >= 80% of TX (packets seen in ns_dst via tcpdump on veth_dst_ns).</div>
+        <div>Fanout test sends 8 parallel UDP streams at 1M/stream, -l 1470 (iperf3 -u -P 8 -b 1M -l 1470) for 5s to create distinct 5-tuples. PACKET_FANOUT_HASH distributes flows by hashing src/dst IP + ports + protocol. Per-worker breakdown: [W0:RX=30, W1:RX=856, W2:RX=856, W3:RX=1712]. 4 of 4 workers received packets. A single flow (e.g. one ping) always goes to one worker -- multiple flows are needed to prove distribution. captured_at_dst must be >= 80% of TX (packets seen in ns_dst via tcpdump on veth_dst_ns).</div>
       </div>
     </div>
   </div>
@@ -567,6 +567,338 @@
       <table class="info-table">
         <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
         <tr><td>afpacket</td><td>2</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">0</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">40</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">5s</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (allow all) - afpacket</h3>
+        <div class="desc">ACL default_action=allow, rules=[]. Expect RX>0, TX>0, Dropped=0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge pass">PASS</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>afpacket</td><td>2</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">0</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">4s</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (allow all) - ebpf</h3>
+        <div class="desc">ACL default_action=allow, rules=[]. Expect RX>0, TX>0, Dropped=0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge pass">PASS</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>ebpf</td><td>1</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">0</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">5s</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card fail" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (allow ICMP rule) - afpacket</h3>
+        <div class="desc">ACL default_action=drop, one rule allow protocol=icmp. Expect RX>0, TX>0, Dropped=0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge fail">FAIL</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>afpacket</td><td>2</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">44</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">4</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">4s</div>
+        </div>
+      </div>
+      <div class="error-box">
+        <div class="error-label">Error Details</div>
+        <div>With allow-icmp rule expected RX>0, TX>0, Dropped=0; got RX=44, TX=40, Dropped=4</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card fail" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (allow ICMP rule) - ebpf</h3>
+        <div class="desc">ACL default_action=drop, one rule allow protocol=icmp. Expect RX>0, TX>0, Dropped=0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge fail">FAIL</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>ebpf</td><td>1</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">42</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">2</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">4s</div>
+        </div>
+      </div>
+      <div class="error-box">
+        <div class="error-label">Error Details</div>
+        <div>With allow-icmp rule expected RX>0, TX>0, Dropped=0; got RX=42, TX=40, Dropped=2</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (drop ICMP rule) - afpacket</h3>
+        <div class="desc">ACL default_action=allow, one rule drop protocol=icmp. Expect RX>0, TX=0, Dropped>0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge pass">PASS</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>afpacket</td><td>2</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">0</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">40</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">5s</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (drop ICMP rule) - ebpf</h3>
+        <div class="desc">ACL default_action=allow, one rule drop protocol=icmp. Expect RX>0, TX=0, Dropped>0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge pass">PASS</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>ebpf</td><td>1</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
       </table>
 
       <div class="section-title">Traffic Injected by Test</div>
@@ -648,12 +980,120 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">1</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
           <div class="val">10s</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (IP CIDR) - afpacket</h3>
+        <div class="desc">ACL default_action=drop, one rule allow ip_src 192.168.200.0/24. Expect RX>0, TX>0, Dropped=0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge pass">PASS</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>afpacket</td><td>2</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">0</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">4s</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
+    <div class="test-header">
+      <div>
+        <h3>Filter (IP CIDR) - ebpf</h3>
+        <div class="desc">ACL default_action=drop, one rule allow ip_src 192.168.200.0/24. Expect RX>0, TX>0, Dropped=0.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span class="badge pass">PASS</span>
+        <span class="toggle-icon">&#9654;</span>
+      </div>
+    </div>
+    <div class="test-body">
+      <div class="section-title">Configuration</div>
+      <table class="info-table">
+        <tr><th>Capture Mode</th><th>Workers</th><th>Input Interface</th><th>Output Interface</th></tr>
+        <tr><td>ebpf</td><td>1</td><td>veth_src_host</td><td>veth_dst_host</td></tr>
+      </table>
+
+      <div class="section-title">Traffic Injected by Test</div>
+      <table class="info-table">
+        <tr><th>Type</th><th>Pings Sent</th><th>Source</th><th>Destination</th><th>Expected Raw Frames</th></tr>
+        <tr><td>ICMP ping</td><td>20</td><td>n/a</td><td>n/a</td><td>~50 (requests + replies + ARP)</td></tr>
+      </table>
+
+      <div class="section-title">Results</div>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <div class="label">Raw Frames Captured</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">All frames on input iface (both directions + ARP)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Forwarded</div>
+          <div class="val highlight">40</div>
+          <div class="sublabel">Frames sent to output interface by vasn_tap</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Frames Dropped</div>
+          <div class="val">0</div>
+          <div class="sublabel">Captured but not forwarded (no output or error)</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Received at Destination</div>
+          <div class="val">0</div>
+          <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
+        </div>
+        <div class="detail-item">
+          <div class="label">Duration</div>
+          <div class="val">4s</div>
         </div>
       </div>
     </div>
@@ -687,7 +1127,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">42</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -753,7 +1193,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">42</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -839,7 +1279,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
       <div class="note-box">
@@ -897,7 +1337,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
       <div class="note-box">
@@ -935,12 +1375,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">61</div>
+          <div class="val highlight">64</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">61</div>
+          <div class="val highlight">64</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">

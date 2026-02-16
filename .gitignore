@@ -1,1 +1,18 @@
 dno_cloud_ui/node_modules/
+# Build
+build/
+vasn_tap/vasn_tap
+*.o
+*.bpf.o
+vasn_tap/tc_clone.bpf.o
+
+# Generated (eBPF)
+vasn_tap/src/ebpf/vmlinux.h
+
+# Test / integration
+*.pcap
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
