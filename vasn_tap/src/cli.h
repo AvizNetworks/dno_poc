@@ -29,6 +29,7 @@ struct cli_args {
     bool debug;                   /* -d / --debug (TX hex dumps) */
     bool show_stats;              /* -s / --stats */
     bool show_filter_stats;       /* -F / --filter-stats (dump rules + per-rule counters) */
+    bool show_resource_usage;     /* -M / --resource-usage (with -s: memory + per-thread CPU) */
     bool validate_config;         /* --validate-config (load and validate -c then exit) */
     bool help;                    /* -h / --help */
     bool show_version;           /* --version (show version and exit) */

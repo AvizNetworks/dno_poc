@@ -21,6 +21,7 @@ static struct option cli_long_options[] = {
     {"debug",           no_argument,       0, 'd'},
     {"stats",           no_argument,       0, 's'},
     {"filter-stats",    no_argument,       0, 'F'},
+    {"resource-usage",  no_argument,       0, 'M'},
     {"validate-config", no_argument,       0, 'V'},
     {"version",         no_argument,       0, 0},
     {"help",            no_argument,       0, 'h'},
@@ -44,7 +45,7 @@ int parse_args(int argc, char **argv, struct cli_args *args)
     optind = 1;
     opterr = 0;  /* Suppress getopt error messages in tests */
 
-    while ((opt = getopt_long(argc, argv, "i:o:c:m:w:vsdFVh", cli_long_options, &longindex)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:o:c:m:w:vsdFMVh", cli_long_options, &longindex)) != -1) {
         switch (opt) {
         case 0:
             /* Long-only option (e.g. --version) */
@@ -94,6 +95,9 @@ int parse_args(int argc, char **argv, struct cli_args *args)
             break;
         case 'F':
             args->show_filter_stats = true;
+            break;
+        case 'M':
+            args->show_resource_usage = true;
             break;
         case 'h':
             args->help = true;

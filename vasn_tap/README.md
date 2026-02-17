@@ -104,6 +104,7 @@ sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
 | `-d, --debug` | Enable TX debug (hex dump of first packet per worker; no cost when omitted) | Off |
 | `-s, --stats` | Print periodic statistics (every 1s) | Off |
 | `-F, --filter-stats` | With -s, dump filter rules and per-rule hit counts (only when -c is set) | Off |
+| `-M, --resource-usage` | With -s, show memory (RSS) and per-thread CPU% every interval (implies -s) | Off |
 | `-c, --config <path>` | Filter config (YAML). If set, missing/invalid file => exit at startup | None |
 | `-V, --validate-config` | Load and validate config only, then exit (use with `-c`) | Off |
 | `--version` | Show version, git commit, and build timestamp (UTC) then exit | -- |
@@ -264,6 +265,31 @@ sudo sysctl -w net.core.wmem_max=26214400
 ### eBPF Perf Buffer Tuning
 
 The perf buffer size is configured via `PERF_BUFFER_PAGES` in `src/worker.c`.
+
+### Memory and CPU utilization
+
+**Memory** is dominated by mmap’d ring buffers; the kernel does not report per-thread RSS, so usage is process-wide.
+
+- **AF_PACKET:** Each worker has an RX ring (default 16 MB per worker) and, when not using tunnel, a TX ring (4 MB per worker). Total scales with `-w` (e.g. 4 workers ≈ 80 MB with TX).
+- **eBPF:** One perf buffer (~256 KB) and one shared TX ring (4 MB) when forwarding.
+- **Tunnel mode:** One small encap buffer (2 KB) shared by workers.
+
+Use **`-M`** (or **`--resource-usage`**) together with **`-s`** to print **memory (RSS)** and **per-thread CPU%** every stats interval. `-M` implies `-s`. Example:
+
+```bash
+sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 4 -M
+```
+
+Output appears below the packet stats every second, for example:
+
+```
+Memory: RSS 82 MiB
+CPU (1.0s): tid 1234 0.1% tid 1235 12.3% tid 1236 11.8% ...
+```
+
+Resource data is gathered only in the **main thread** (reads from `/proc/self/status` and `/proc/self/task/*/stat`); the packet **hot path is not touched**, so there is no performance impact on capture or forwarding.
+
+**CPU** scales with the number of workers and traffic rate. Workers are pinned to CPUs; the main thread only sleeps and, when `-s` is set, prints stats (and resource usage when `-M` is set). To inspect from outside: `top` or `htop` (per-process and per-thread), or `pidstat -p <pid> -t 1` for per-thread CPU.
 
 ## Troubleshooting
 

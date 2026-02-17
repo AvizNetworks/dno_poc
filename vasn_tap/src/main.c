@@ -14,6 +14,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <time.h>
+#include <dirent.h>
 #include <net/if.h>
 #include <sys/sysinfo.h>
 
@@ -70,6 +71,7 @@ static void print_usage(const char *prog)
     printf("  -d, --debug             Enable TX debug (hex dumps of first packet per block)\n");
     printf("  -s, --stats             Print periodic statistics\n");
     printf("  -F, --filter-stats      With -s, dump filter rules and per-rule hit counts\n");
+    printf("  -M, --resource-usage    With -s, show memory (RSS) and per-thread CPU%% (implies -s)\n");
     printf("  -c, --config <path>      Filter config (YAML). If set, invalid/missing file => exit\n");
     printf("  -V, --validate-config   Load and validate config only, then exit\n");
     printf("  --version               Show version and exit\n");
@@ -204,9 +206,142 @@ static void print_filter_stats_dump(void)
 }
 
 /*
+ * Resource usage: read RSS from /proc/self/status and per-thread CPU from /proc/self/task.
+ * Runs only in the main thread; does not touch the packet hot path.
+ */
+#define MAX_RESOURCE_TASKS 128
+struct resource_task {
+    long tid;
+    unsigned long long ticks;
+};
+
+static int read_vmrss_kb(unsigned long *rss_kb_out)
+{
+    FILE *f;
+    char line[256];
+    unsigned long v;
+
+    *rss_kb_out = 0;
+    f = fopen("/proc/self/status", "r");
+    if (!f)
+        return -1;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            if (sscanf(line + 6, "%lu", &v) == 1) {
+                *rss_kb_out = v;
+                break;
+            }
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+static void print_resource_usage(void)
+{
+    static struct resource_task prev[MAX_RESOURCE_TASKS];
+    static int n_prev = 0;
+    static time_t last_ts = 0;
+    struct resource_task curr[MAX_RESOURCE_TASKS];
+    int n_curr = 0;
+    DIR *dir;
+    struct dirent *ent;
+    long clk_tck;
+    time_t now = time(NULL);
+    unsigned long rss_kb = 0;
+    char path[320];  /* /proc/self/task/<tid>/stat; tid is numeric, 320 avoids truncation warning */
+    FILE *fp;
+    char stat_line[512];
+    char *paren;
+    unsigned long utime, stime;
+    int i, j;
+    double interval_sec, pct;
+    unsigned long long delta_ticks;
+
+    /* Memory: always print RSS */
+    if (read_vmrss_kb(&rss_kb) == 0)
+        printf("Memory: RSS %lu MiB\n", rss_kb / 1024);
+    else
+        printf("Memory: (unable to read)\n");
+
+    /* Per-thread CPU: need two samples to get rate */
+    clk_tck = (long)sysconf(_SC_CLK_TCK);
+    if (clk_tck <= 0)
+        clk_tck = 100;
+
+    dir = opendir("/proc/self/task");
+    if (!dir)
+        return;
+    while ((ent = readdir(dir)) != NULL && n_curr < MAX_RESOURCE_TASKS) {
+        if (ent->d_name[0] == '.')
+            continue;
+        snprintf(path, sizeof(path), "/proc/self/task/%s/stat", ent->d_name);
+        fp = fopen(path, "r");
+        if (!fp)
+            continue;
+        if (!fgets(stat_line, sizeof(stat_line), fp)) {
+            fclose(fp);
+            continue;
+        }
+        fclose(fp);
+        paren = strrchr(stat_line, ')');
+        if (!paren || paren - stat_line >= (long)sizeof(stat_line) - 2)
+            continue;
+        /* After ')': state (1 char), then 11 numbers, then utime, stime */
+        if (sscanf(paren + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
+                   &utime, &stime) != 2)
+            continue;
+        curr[n_curr].tid = atol(ent->d_name);
+        curr[n_curr].ticks = (unsigned long long)utime + (unsigned long long)stime;
+        n_curr++;
+    }
+    closedir(dir);
+
+    if (last_ts == 0) {
+        /* First sample: store and skip CPU % */
+        last_ts = now;
+        for (i = 0; i < n_curr && i < MAX_RESOURCE_TASKS; i++) {
+            prev[i].tid = curr[i].tid;
+            prev[i].ticks = curr[i].ticks;
+        }
+        n_prev = n_curr;
+        printf("CPU (1s): (sampling next interval)\n");
+        return;
+    }
+
+    interval_sec = (double)(now - last_ts);
+    if (interval_sec < 0.5)
+        interval_sec = 1.0;
+
+    printf("CPU (%.1fs):", interval_sec);
+    for (i = 0; i < n_curr; i++) {
+        delta_ticks = 0;
+        for (j = 0; j < n_prev; j++) {
+            if (prev[j].tid == curr[i].tid) {
+                if (curr[i].ticks >= prev[j].ticks)
+                    delta_ticks = curr[i].ticks - prev[j].ticks;
+                break;
+            }
+        }
+        pct = (interval_sec > 0 && clk_tck > 0)
+              ? (100.0 * (double)delta_ticks / (interval_sec * (double)clk_tck))
+              : 0.0;
+        printf(" tid %ld %.1f%%", (long)curr[i].tid, pct);
+    }
+    printf("\n");
+
+    for (i = 0; i < n_curr && i < MAX_RESOURCE_TASKS; i++) {
+        prev[i].tid = curr[i].tid;
+        prev[i].ticks = curr[i].ticks;
+    }
+    n_prev = n_curr;
+    last_ts = now;
+}
+
+/*
  * Collect and print stats for the active capture mode
  */
-static void collect_and_print_stats(double elapsed_sec, bool show_filter_stats)
+static void collect_and_print_stats(double elapsed_sec, bool show_filter_stats, bool show_resource_usage)
 {
     struct worker_stats stats;
 
@@ -229,6 +364,9 @@ static void collect_and_print_stats(double elapsed_sec, bool show_filter_stats)
 
     if (show_filter_stats && g_filter_config)
         print_filter_stats_dump();
+
+    if (show_resource_usage)
+        print_resource_usage();
 }
 
 int main(int argc, char **argv)
@@ -257,6 +395,10 @@ int main(int argc, char **argv)
     }
 
     g_capture_mode = args.mode;
+
+    /* -M implies -s so resource usage is printed every stats interval */
+    if (args.show_resource_usage && !args.show_stats)
+        args.show_stats = true;
 
     /* Load filter config if path given */
     if (args.config_path[0]) {
@@ -412,7 +554,7 @@ int main(int argc, char **argv)
         if (args.show_stats) {
             time_t now = time(NULL);
             if (now - last_stats_time >= STATS_INTERVAL_SEC) {
-                collect_and_print_stats((double)(now - start_time), args.show_filter_stats);
+                collect_and_print_stats((double)(now - start_time), args.show_filter_stats, args.show_resource_usage);
                 last_stats_time = now;
             }
         }
@@ -421,7 +563,7 @@ int main(int argc, char **argv)
     /* Print final statistics */
     if (args.show_stats) {
         time_t now = time(NULL);
-        collect_and_print_stats((double)(now - start_time), args.show_filter_stats);
+        collect_and_print_stats((double)(now - start_time), args.show_filter_stats, args.show_resource_usage);
 
         /* Print per-worker breakdown for AF_PACKET (useful for fanout verification) */
         if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
