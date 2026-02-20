@@ -213,7 +213,7 @@
   <h1>vasn_tap Integration Test Report</h1>
   <div class="subtitle">Automated packet tap testing results</div>
   <div class="meta">
-    <span>Date: 2026-02-20 10:01:02 UTC</span>
+    <span>Date: 2026-02-20 10:16:30 UTC</span>
     <span>Host: asn-dev-100g</span>
     <span>Kernel: 5.15.0-170-generic</span>
     <span>Arch: x86_64</span>
@@ -227,19 +227,19 @@
     </div>
     <div class="summary-card passed">
       <div class="label">Passed</div>
-      <div class="value">0</div>
+      <div class="value">21</div>
     </div>
     <div class="summary-card failed">
       <div class="label">Failed</div>
-      <div class="value">22</div>
+      <div class="value">1</div>
     </div>
     <div class="summary-card">
       <div class="label">Duration</div>
-      <div class="value">76s</div>
+      <div class="value">152s</div>
     </div>
     <div class="summary-card overall fail">
       <div class="label">Status</div>
-      <div class="value fail">22 FAILED</div>
+      <div class="value fail">1 FAILED</div>
     </div>
   </div>
   <div class="topology">
@@ -261,14 +261,14 @@
     </pre>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
-        <h3>Basic Packet Forwarding</h3>
+        <h3>Basic Packet Forwarding (afpacket)</h3>
         <div class="desc">Send 20 ICMP pings from ns_src through vasn_tap to ns_dst and verify packets are forwarded</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -289,12 +289,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">49</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">49</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -304,29 +304,29 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">20</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">5s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>AF_PACKET RX counts all raw frames on the input interface (both directions: echo requests + echo replies + ARP). Sent 20 pings, but AF_PACKET sees ~20x2 ICMP frames plus ARP overhead.</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
-        <h3>Basic Packet Forwarding</h3>
+        <h3>Basic Packet Forwarding (ebpf)</h3>
         <div class="desc">Send 20 ICMP pings from ns_src through vasn_tap to ns_dst and verify packets are forwarded</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -347,12 +347,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">44</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">44</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -362,29 +362,29 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">20</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">5s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>eBPF mode uses TC hook + perf buffer. RX count reflects packets delivered by the perf buffer to userspace. Count depends on TC hook direction and kernel behavior.</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Drop Mode - afpacket</h3>
         <div class="desc">Capture 20 ICMP pings in afpacket mode with no output interface. Verify RX counts packets, TX stays zero, and dropped counter increments.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -405,7 +405,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">42</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -415,7 +415,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">0</div>
+          <div class="val">42</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
@@ -425,24 +425,24 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start in drop mode (mode=afpacket)</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>No output interface configured -- all captured frames are counted as dropped. AF_PACKET RX includes both directions (requests + replies) plus ARP overhead.</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Drop Mode - ebpf</h3>
         <div class="desc">Capture 20 ICMP pings in ebpf mode with no output interface. Verify RX counts packets, TX stays zero, and dropped counter increments.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -463,7 +463,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -473,7 +473,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">0</div>
+          <div class="val">40</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
@@ -483,24 +483,24 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start in drop mode (mode=ebpf)</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>No output interface configured -- all captured frames are counted as dropped. eBPF perf buffer delivers packets matching the TC hook.</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Fanout Distribution</h3>
-        <div class="desc">Verify PACKET_FANOUT_HASH distributes traffic across 4 worker sockets using 8 parallel UDP flows</div>
+        <div class="desc">Verify PACKET_FANOUT_HASH distributes 8 UDP flows across 4 AF_PACKET worker threads and packets reach ns_dst</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -521,12 +521,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">3454</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">3454</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -536,33 +536,29 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">3454</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">2s</div>
+          <div class="val">10s</div>
         </div>
       </div>
       <div class="note-box">
         <div class="note-label">Why do the numbers differ from pings sent?</div>
-        <div>vasn_tap could not start in afpacket mode with 4 workers.</div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap exited immediately</div>
+        <div>Fanout test sends 8 parallel UDP streams at 1M/stream, -l 1470 (iperf3 -u -P 8 -b 1M -l 1470) for 5s to create distinct 5-tuples. PACKET_FANOUT_HASH distributes flows by hashing src/dst IP + ports + protocol. Per-worker breakdown: [W0:RX=428, W1:RX=1314, W2:RX=1284, W3:RX=428]. 4 of 4 workers received packets. A single flow (e.g. one ping) always goes to one worker -- multiple flows are needed to prove distribution. captured_at_dst must be >= 80% of TX (packets seen in ns_dst via tcpdump on veth_dst_ns).</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (drop all) - AF_PACKET</h3>
         <div class="desc">ACL default_action=drop, rules=[]. Expect TX=0, Dropped>0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -583,7 +579,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -593,7 +589,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">0</div>
+          <div class="val">40</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
@@ -603,24 +599,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with filter config</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (allow all) - afpacket</h3>
         <div class="desc">ACL default_action=allow, rules=[]. Expect RX>0, TX>0, Dropped=0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -641,12 +633,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -661,24 +653,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with allow-all filter config</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (allow all) - ebpf</h3>
         <div class="desc">ACL default_action=allow, rules=[]. Expect RX>0, TX>0, Dropped=0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -699,12 +687,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -719,24 +707,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">5s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with allow-all filter config</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (allow ICMP rule) - afpacket</h3>
         <div class="desc">ACL default_action=drop, one rule allow protocol=icmp. Expect RX>0, TX>0, Dropped<=2.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -757,17 +741,17 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">41</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">0</div>
+          <div class="val">1</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
@@ -777,24 +761,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with allow-icmp filter config</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (allow ICMP rule) - ebpf</h3>
         <div class="desc">ACL default_action=drop, one rule allow protocol=icmp. Expect RX>0, TX>0, Dropped<=2.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -815,12 +795,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -835,24 +815,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with allow-icmp filter config</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (drop ICMP rule) - afpacket</h3>
         <div class="desc">ACL default_action=allow, one rule drop protocol=icmp. Expect RX>0, TX<=2, Dropped>0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -873,7 +849,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -883,7 +859,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">0</div>
+          <div class="val">40</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
@@ -893,12 +869,8 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">5s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with drop-icmp filter config</div>
       </div>
     </div>
   </div>
@@ -931,17 +903,17 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">44</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">4</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">0</div>
+          <div class="val">40</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
@@ -951,24 +923,24 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
       </div>
       <div class="error-box">
         <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with drop-icmp filter config</div>
+        <div>With drop-icmp rule expected RX>0, TX<=2, Dropped>0; got RX=44, TX=4, Dropped=40</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (drop all) - eBPF</h3>
         <div class="desc">Run with ACL config default_action=drop, rules=[]. Expect TX=0, Dropped>0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -989,7 +961,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">41</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -999,7 +971,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">0</div>
+          <div class="val">41</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
@@ -1009,24 +981,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">10s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with filter config (ebpf)</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (IP CIDR) - afpacket</h3>
         <div class="desc">ACL default_action=drop, one rule allow ip_src 192.168.200.0/24. Expect RX>0, TX>0, Dropped=0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1047,12 +1015,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1067,24 +1035,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">0s</div>
+          <div class="val">4s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>Config file failed to load (validate-config)</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (IP CIDR) - ebpf</h3>
         <div class="desc">ACL default_action=drop, one rule allow ip_src 192.168.200.0/24. Expect RX>0, TX>0, Dropped=0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1105,12 +1069,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1125,24 +1089,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">0s</div>
+          <div class="val">5s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>Config file failed to load (validate-config)</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Graceful Shutdown - afpacket</h3>
         <div class="desc">Send SIGINT in afpacket mode while 50 ICMP pings are in flight. Verify vasn_tap prints cleanup messages and exits cleanly.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1163,7 +1123,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -1183,32 +1143,32 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">4s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start (mode=afpacket)</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>SIGINT sent after 2s of traffic in afpacket mode. Clean shutdown verified by checking for Cleaning up and Done messages in output.</div>
       </div>
       <div class="section-title">Shutdown Verification</div>
       <table class="info-table">
         <tr><th>Check</th><th>Result</th></tr>
-        <tr><td>Exit code</td><td>1</td></tr>
-        <tr><td>"Cleaning up..." message</td><td>No</td></tr>
-        <tr><td>"Done." message</td><td>No</td></tr>
-        <tr><td>Final statistics printed</td><td>No</td></tr>
+        <tr><td>Exit code</td><td>0</td></tr>
+        <tr><td>"Cleaning up..." message</td><td>Yes</td></tr>
+        <tr><td>"Done." message</td><td>Yes</td></tr>
+        <tr><td>Final statistics printed</td><td>Yes</td></tr>
       </table>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Graceful Shutdown - ebpf</h3>
         <div class="desc">Send SIGINT in ebpf mode while 50 ICMP pings are in flight. Verify vasn_tap prints cleanup messages and exits cleanly.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1229,7 +1189,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -1249,32 +1209,32 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">3s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start (mode=ebpf)</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>SIGINT sent after 2s of traffic in ebpf mode. Clean shutdown verified by checking for Cleaning up and Done messages in output.</div>
       </div>
       <div class="section-title">Shutdown Verification</div>
       <table class="info-table">
         <tr><th>Check</th><th>Result</th></tr>
-        <tr><td>Exit code</td><td>1</td></tr>
-        <tr><td>"Cleaning up..." message</td><td>No</td></tr>
-        <tr><td>"Done." message</td><td>No</td></tr>
-        <tr><td>Final statistics printed</td><td>No</td></tr>
+        <tr><td>Exit code</td><td>0</td></tr>
+        <tr><td>"Cleaning up..." message</td><td>Yes</td></tr>
+        <tr><td>"Done." message</td><td>Yes</td></tr>
+        <tr><td>Final statistics printed</td><td>Yes</td></tr>
       </table>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Multi-Worker (1 workers)</h3>
         <div class="desc">AF_PACKET mode with 1 worker thread(s): send 30 ICMP pings and verify RX/TX and packets at ns_dst</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1295,12 +1255,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">60</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">60</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1310,29 +1270,29 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">60</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">2s</div>
+          <div class="val">4s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with 1 workers</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>RX counts raw frames on input (requests+replies+ARP). Pass requires packets captured in ns_dst (tcpdump on veth_dst_ns).</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Tunnel GRE</h3>
         <div class="desc">GRE tunnel encap to 192.168.201.1 (ns_dst); expect Tunnel (GRE) packets sent > 0</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1353,12 +1313,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1368,7 +1328,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">40</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
@@ -1379,25 +1339,21 @@
       <div class="detail-grid" style="margin-top:8px;">
         <div class="detail-item">
           <div class="label">Tunnel Packets Sent</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Encapsulated (VXLAN/GRE) and sent to remote</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with GRE tunnel config</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Tunnel VXLAN</h3>
         <div class="desc">VXLAN tunnel encap to 192.168.201.1 (ns_dst); expect Tunnel (VXLAN) packets sent > 0</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1418,12 +1374,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1433,36 +1389,32 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">80</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">15s</div>
+          <div class="val">16s</div>
         </div>
       </div>
       <div class="detail-grid" style="margin-top:8px;">
         <div class="detail-item">
           <div class="label">Tunnel Packets Sent</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">40</div>
           <div class="sublabel">Encapsulated (VXLAN/GRE) and sent to remote</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with VXLAN tunnel config</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Multi-Worker (2 workers)</h3>
         <div class="desc">AF_PACKET mode with 2 worker thread(s): send 30 ICMP pings and verify RX/TX and packets at ns_dst</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1483,12 +1435,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">60</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">60</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1498,29 +1450,29 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">60</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">2s</div>
+          <div class="val">5s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with 2 workers</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>RX counts raw frames on input (requests+replies+ARP). Pass requires packets captured in ns_dst (tcpdump on veth_dst_ns).</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Multi-Worker (4 workers)</h3>
         <div class="desc">AF_PACKET mode with 4 worker thread(s): send 30 ICMP pings and verify RX/TX and packets at ns_dst</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -1541,12 +1493,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">61</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">61</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1556,17 +1508,17 @@
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">60</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">1s</div>
+          <div class="val">5s</div>
         </div>
       </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>vasn_tap failed to start with 4 workers</div>
+      <div class="note-box">
+        <div class="note-label">Why do the numbers differ from pings sent?</div>
+        <div>RX counts raw frames on input (requests+replies+ARP). Pass requires packets captured in ns_dst (tcpdump on veth_dst_ns).</div>
       </div>
     </div>
   </div>

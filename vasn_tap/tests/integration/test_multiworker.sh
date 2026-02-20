@@ -31,6 +31,18 @@ for workers in 1 2 4; do
 
     STATS_FILE=$(mktemp /tmp/vasn_tap_stats_XXXXXX.txt)
     CAPTURE_FILE=$(mktemp /tmp/vasn_tap_multiworker_XXXXXX.pcap)
+    CONFIG_FILE=$(mktemp /tmp/vasn_tap_multiworker_XXXXXX.yaml)
+    cat > "$CONFIG_FILE" <<EOF
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: afpacket
+  workers: $workers
+  stats: true
+filter:
+  default_action: allow
+  rules: []
+EOF
 
     # Start packet capture in ns_dst (verify packets actually reach destination)
     ip netns exec ns_dst timeout $TIMEOUT tcpdump -i veth_dst_ns -c $((NUM_PINGS * 2)) -w "$CAPTURE_FILE" 2>/dev/null &
@@ -38,7 +50,7 @@ for workers in 1 2 4; do
     sleep 0.5
 
     # Start vasn_tap
-    $VASN_TAP -m afpacket -i veth_src_host -o veth_dst_host -w $workers -s > "$STATS_FILE" 2>&1 &
+    $VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
     VASN_PID=$!
     sleep 1
 
@@ -47,7 +59,7 @@ for workers in 1 2 4; do
         SUB_ERROR="vasn_tap failed to start with $workers workers"
         echo "  FAIL: $SUB_ERROR"
         cat "$STATS_FILE"
-        rm -f "$STATS_FILE" "$CAPTURE_FILE"
+        rm -f "$STATS_FILE" "$CAPTURE_FILE" "$CONFIG_FILE"
         FAIL=$((FAIL + 1))
         SUB_DURATION=$(($(date +%s) - SUB_START))
         JSON=$(build_result_json \
@@ -91,7 +103,7 @@ for workers in 1 2 4; do
 
     echo "  Workers=$workers: RX=${RX_COUNT:-0}, TX=${TX_COUNT:-0}, captured_at_dst=$CAPTURED"
 
-    rm -f "$STATS_FILE" "$CAPTURE_FILE"
+    rm -f "$STATS_FILE" "$CAPTURE_FILE" "$CONFIG_FILE"
 
     SUB_DURATION=$(($(date +%s) - SUB_START))
 

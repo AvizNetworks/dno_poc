@@ -33,6 +33,12 @@ DROP_COUNT=0
 
 CONFIG_FILE=$(mktemp /tmp/vasn_tap_filter_XXXXXX.yaml)
 cat > "$CONFIG_FILE" << 'EOF'
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: afpacket
+  workers: 2
+  stats: true
 filter:
   default_action: allow
   rules:
@@ -40,10 +46,12 @@ filter:
       match:
         protocol: icmp
 EOF
+sed -i "s/mode: afpacket/mode: ${MODE}/" "$CONFIG_FILE"
+sed -i "s/workers: 2/workers: ${WORKERS}/" "$CONFIG_FILE"
 
 STATS_FILE=$(mktemp /tmp/vasn_tap_stats_XXXXXX.txt)
 
-$VASN_TAP -m "$MODE" -i veth_src_host -o veth_dst_host -w $WORKERS -s -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 

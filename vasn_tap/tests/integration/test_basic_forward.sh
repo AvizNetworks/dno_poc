@@ -85,9 +85,24 @@ ip netns exec ns_dst timeout $TIMEOUT tcpdump -i veth_dst_ns -c $NUM_PINGS -w "$
 TCPDUMP_PID=$!
 sleep 0.5
 
+# Build runtime+filter config
+CONFIG_FILE=$(mktemp /tmp/vasn_tap_basic_XXXXXX.yaml)
+cat > "$CONFIG_FILE" <<EOF
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: $MODE
+  workers: $WORKERS
+  verbose: true
+  stats: true
+filter:
+  default_action: allow
+  rules: []
+EOF
+
 # Start vasn_tap
 STATS_FILE=$(mktemp /tmp/vasn_tap_stats_XXXXXX.txt)
-$VASN_TAP -m "$MODE" -i veth_src_host -o veth_dst_host -w $WORKERS -s -v > "$STATS_FILE" 2>&1 &
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 
@@ -96,7 +111,7 @@ if ! kill -0 $VASN_PID 2>/dev/null; then
     ERROR_MSG="vasn_tap failed to start"
     echo "FAIL: $ERROR_MSG"
     cat "$STATS_FILE"
-    rm -f "$CAPTURE_FILE" "$STATS_FILE"
+    rm -f "$CAPTURE_FILE" "$STATS_FILE" "$CONFIG_FILE"
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Basic Packet Forwarding" \
@@ -145,7 +160,7 @@ echo "  vasn_tap TX: ${TX_COUNT:-0}"
 echo "  Packets captured in ns_dst: $CAPTURED"
 
 # Cleanup temp files
-rm -f "$CAPTURE_FILE" "$STATS_FILE"
+rm -f "$CAPTURE_FILE" "$STATS_FILE" "$CONFIG_FILE"
 
 DURATION=$(($(date +%s) - START_TIME))
 

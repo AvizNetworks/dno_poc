@@ -90,7 +90,7 @@ cleanup() {
     # Also kill any stray iperf3 on our bind address
     pkill -f "iperf3 -s -B 192.168.200.2" 2>/dev/null || true
     # Clean up temp files
-    rm -f "$STATS_FILE" "$IPERF_LOG" "$CAPTURE_FILE"
+    rm -f "$STATS_FILE" "$IPERF_LOG" "$CAPTURE_FILE" "$CONFIG_FILE"
 }
 trap cleanup EXIT
 
@@ -168,7 +168,20 @@ sleep 0.5
 
 # --- Start vasn_tap ---
 STATS_FILE=$(mktemp /tmp/vasn_tap_fanout_XXXXXX.txt)
-$VASN_TAP -m afpacket -i veth_src_host -o veth_dst_host -w "$NUM_WORKERS" -v -s > "$STATS_FILE" 2>&1 &
+CONFIG_FILE=$(mktemp /tmp/vasn_tap_fanout_cfg_XXXXXX.yaml)
+cat > "$CONFIG_FILE" <<EOF
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: afpacket
+  workers: $NUM_WORKERS
+  verbose: true
+  stats: true
+filter:
+  default_action: allow
+  rules: []
+EOF
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 

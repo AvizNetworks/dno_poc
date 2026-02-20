@@ -32,17 +32,25 @@ TX_COUNT=0
 DROP_COUNT=0
 
 CONFIG_FILE=$(mktemp /tmp/vasn_tap_filter_XXXXXX.yaml)
-echo "filter:" > "$CONFIG_FILE"
-echo "  default_action: drop" >> "$CONFIG_FILE"
-echo "  rules:" >> "$CONFIG_FILE"
-echo "    - action: allow" >> "$CONFIG_FILE"
-echo "      match:" >> "$CONFIG_FILE"
-echo "        ip_src: 192.168.200.0/24" >> "$CONFIG_FILE"
+cat > "$CONFIG_FILE" <<EOF
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: $MODE
+  workers: $WORKERS
+  stats: true
+filter:
+  default_action: drop
+  rules:
+    - action: allow
+      match:
+        ip_src: 192.168.200.0/24
+EOF
 
-if ! $VASN_TAP -c "$CONFIG_FILE" -i lo --validate-config > /dev/null 2>&1; then
+if ! $VASN_TAP -V -c "$CONFIG_FILE" > /dev/null 2>&1; then
     ERROR_MSG="Config file failed to load (validate-config)"
     echo "FAIL: $ERROR_MSG"
-    $VASN_TAP -c "$CONFIG_FILE" -i lo --validate-config 2>&1 || true
+    $VASN_TAP -V -c "$CONFIG_FILE" 2>&1 || true
     rm -f "$CONFIG_FILE"
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json "test_name" "Filter (IP CIDR) - $MODE" "description" "ACL default_action=drop, one rule allow ip_src 192.168.200.0/24. Expect RX>0, TX>0, Dropped=0." "result" "$RESULT" "mode" "$MODE" "workers" "$WORKERS" "input_iface" "veth_src_host" "output_iface" "veth_dst_host" "traffic_type" "ICMP ping" "traffic_count" "$NUM_PINGS" "rx_packets" "0" "tx_packets" "0" "dropped_packets" "0" "captured_at_dst" "0" "duration_sec" "$DURATION" "error_msg" "$ERROR_MSG")
@@ -52,7 +60,7 @@ fi
 
 STATS_FILE=$(mktemp /tmp/vasn_tap_stats_XXXXXX.txt)
 
-$VASN_TAP -m "$MODE" -i veth_src_host -o veth_dst_host -w $WORKERS -s -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 

@@ -27,6 +27,12 @@ CAPTURED=0
 
 CONFIG_FILE=$(mktemp /tmp/vasn_tap_filter_XXXXXX.yaml)
 cat > "$CONFIG_FILE" << 'EOF'
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: ebpf
+  workers: 1
+  stats: true
 filter:
   default_action: drop
   rules: []
@@ -39,7 +45,7 @@ ip netns exec ns_dst timeout $TIMEOUT tcpdump -i veth_dst_ns -c $NUM_PINGS -w "$
 TCPDUMP_PID=$!
 sleep 0.5
 
-$VASN_TAP -m ebpf -i veth_src_host -o veth_dst_host -s -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 

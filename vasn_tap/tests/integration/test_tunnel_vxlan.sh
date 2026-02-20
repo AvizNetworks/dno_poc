@@ -73,6 +73,12 @@ fi
 
 CONFIG_FILE=$(mktemp /tmp/vasn_tap_tunnel_XXXXXX.yaml)
 cat > "$CONFIG_FILE" << 'YAML'
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: afpacket
+  workers: 2
+  stats: true
 filter:
   default_action: allow
   rules: []
@@ -82,6 +88,7 @@ tunnel:
   vni: 1000
   dstport: 4789
 YAML
+sed -i "s/workers: 2/workers: $WORKERS/" "$CONFIG_FILE"
 
 # Prime ARP cache for tunnel remote (veth peer) so tunnel_init can resolve MAC
 ping -c 1 -W 2 -I veth_dst_host 192.168.201.1 > /dev/null 2>&1 || true
@@ -94,7 +101,7 @@ TCPDUMP_PID=$!
 sleep 0.5
 
 STATS_FILE=$(mktemp /tmp/vasn_tap_stats_XXXXXX.txt)
-$VASN_TAP -m afpacket -i veth_src_host -o veth_dst_host -w $WORKERS -s -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 

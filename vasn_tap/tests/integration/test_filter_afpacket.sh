@@ -26,13 +26,21 @@ TX_COUNT=0
 DROP_COUNT=0
 
 CONFIG_FILE=$(mktemp /tmp/vasn_tap_filter_XXXXXX.yaml)
-echo "filter:" > "$CONFIG_FILE"
-echo "  default_action: drop" >> "$CONFIG_FILE"
-echo "  rules: []" >> "$CONFIG_FILE"
+cat > "$CONFIG_FILE" <<EOF
+runtime:
+  input_iface: veth_src_host
+  output_iface: veth_dst_host
+  mode: afpacket
+  workers: $WORKERS
+  stats: true
+filter:
+  default_action: drop
+  rules: []
+EOF
 
 STATS_FILE=$(mktemp /tmp/vasn_tap_stats_XXXXXX.txt)
 
-$VASN_TAP -m afpacket -i veth_src_host -o veth_dst_host -w $WORKERS -s -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 

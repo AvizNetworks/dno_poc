@@ -26,9 +26,20 @@ TX_COUNT=0
 DROP_COUNT=0
 
 STATS_FILE=$(mktemp /tmp/vasn_tap_stats_XXXXXX.txt)
+CONFIG_FILE=$(mktemp /tmp/vasn_tap_drop_XXXXXX.yaml)
+cat > "$CONFIG_FILE" <<EOF
+runtime:
+  input_iface: veth_src_host
+  mode: $MODE
+  workers: $WORKERS
+  stats: true
+filter:
+  default_action: allow
+  rules: []
+EOF
 
 # Start vasn_tap WITHOUT -o (drop mode)
-$VASN_TAP -m "$MODE" -i veth_src_host -w $WORKERS -s > "$STATS_FILE" 2>&1 &
+$VASN_TAP -c "$CONFIG_FILE" > "$STATS_FILE" 2>&1 &
 VASN_PID=$!
 sleep 1
 
@@ -36,7 +47,7 @@ if ! kill -0 $VASN_PID 2>/dev/null; then
     ERROR_MSG="vasn_tap failed to start in drop mode (mode=$MODE)"
     echo "FAIL: $ERROR_MSG"
     cat "$STATS_FILE"
-    rm -f "$STATS_FILE"
+    rm -f "$STATS_FILE" "$CONFIG_FILE"
     DURATION=$(($(date +%s) - START_TIME))
     JSON=$(build_result_json \
         "test_name"         "Drop Mode - $MODE" \
@@ -75,7 +86,7 @@ DROP_COUNT=$(grep -oP 'Dropped: \K[0-9]+' "$STATS_FILE" | tail -1)
 
 echo "  RX=${RX_COUNT:-0}, TX=${TX_COUNT:-0}, Dropped=${DROP_COUNT:-0}"
 
-rm -f "$STATS_FILE"
+rm -f "$STATS_FILE" "$CONFIG_FILE"
 
 DURATION=$(($(date +%s) - START_TIME))
 
