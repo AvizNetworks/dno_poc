@@ -1,9 +1,21 @@
-# vasn_tap - Example filter (ACL) config
-# Use: vasn_tap -i <iface> -o <iface> -c config.example.yaml
-# Validate only: vasn_tap -i lo -c config.example.yaml --validate-config
+# vasn_tap - Example runtime + filter/tunnel config
+# Use: vasn_tap -c config.example.yaml
+# Validate only: vasn_tap -V -c config.example.yaml
 #
-# Phase 1: filter section only. default_action applies when no rule matches.
+# Runtime section is mandatory. filter section is mandatory.
+# default_action applies when no rule matches.
 # Rules are evaluated first-match; empty rules => default_action for every packet.
+
+runtime:
+  input_iface: ens34
+  output_iface: ens34        # optional unless tunnel section is enabled
+  mode: afpacket             # afpacket | ebpf
+  workers: 4                 # 0 = auto (num CPUs)
+  verbose: false
+  debug: false
+  stats: true
+  filter_stats: false
+  resource_usage: false
 
 filter:
   default_action: drop   # allow | drop

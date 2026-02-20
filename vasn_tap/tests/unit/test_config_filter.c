@@ -44,7 +44,13 @@ static void test_config_load_missing_file(void **state)
 static void test_config_load_valid_minimal(void **state)
 {
 	(void)state;
-	const char *yaml = "filter:\n  default_action: drop\n  rules: []\n";
+	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  mode: afpacket\n"
+		"filter:\n"
+		"  default_action: drop\n"
+		"  rules: []\n";
 	char path[] = "/tmp/vasn_tap_test_XXXXXX";
 	int fd = mkstemp(path);
 	assert_true(fd >= 0);
@@ -65,6 +71,13 @@ static void test_config_load_valid_with_rules(void **state)
 {
 	(void)state;
 	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  output_iface: eth1\n"
+		"  mode: afpacket\n"
+		"  workers: 4\n"
+		"  verbose: true\n"
+		"  stats: true\n"
 		"filter:\n"
 		"  default_action: drop\n"
 		"  rules:\n"
@@ -119,7 +132,13 @@ static void test_config_load_invalid_yaml(void **state)
 static void test_config_load_invalid_default_action(void **state)
 {
 	(void)state;
-	const char *yaml = "filter:\n  default_action: invalid\n  rules: []\n";
+	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  mode: ebpf\n"
+		"filter:\n"
+		"  default_action: invalid\n"
+		"  rules: []\n";
 	char path[] = "/tmp/vasn_tap_test_XXXXXX";
 	int fd = mkstemp(path);
 	assert_true(fd >= 0);
@@ -145,6 +164,10 @@ static void test_config_load_tunnel_gre(void **state)
 {
 	(void)state;
 	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  output_iface: eth1\n"
+		"  mode: afpacket\n"
 		"filter:\n"
 		"  default_action: allow\n"
 		"  rules: []\n"
@@ -174,6 +197,10 @@ static void test_config_load_tunnel_vxlan(void **state)
 {
 	(void)state;
 	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  output_iface: eth1\n"
+		"  mode: afpacket\n"
 		"filter:\n"
 		"  default_action: drop\n"
 		"  rules: []\n"
@@ -201,6 +228,80 @@ static void test_config_load_tunnel_vxlan(void **state)
 	config_free(cfg);
 }
 
+static void test_config_load_missing_runtime_input(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"runtime:\n"
+		"  mode: afpacket\n"
+		"filter:\n"
+		"  default_action: drop\n"
+		"  rules: []\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_null(cfg);
+	assert_non_null(strstr(config_get_error(), "runtime input_iface"));
+}
+
+static void test_config_load_missing_runtime_mode(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"filter:\n"
+		"  default_action: drop\n"
+		"  rules: []\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_null(cfg);
+	assert_non_null(strstr(config_get_error(), "runtime mode"));
+}
+
+static void test_config_load_tunnel_requires_runtime_output(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  mode: afpacket\n"
+		"filter:\n"
+		"  default_action: allow\n"
+		"  rules: []\n"
+		"tunnel:\n"
+		"  type: vxlan\n"
+		"  remote_ip: 10.0.0.1\n"
+		"  vni: 1000\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_null(cfg);
+	assert_non_null(strstr(config_get_error(), "runtime output_iface"));
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -214,6 +315,9 @@ int main(void)
 		cmocka_unit_test(test_config_free_null),
 		cmocka_unit_test(test_config_load_tunnel_gre),
 		cmocka_unit_test(test_config_load_tunnel_vxlan),
+		cmocka_unit_test(test_config_load_missing_runtime_input),
+		cmocka_unit_test(test_config_load_missing_runtime_mode),
+		cmocka_unit_test(test_config_load_tunnel_requires_runtime_output),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);

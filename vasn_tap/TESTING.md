@@ -44,30 +44,21 @@ make build/test_cli
 
 ### Test Suites
 
-#### test_cli.c -- CLI Argument Parsing (18 tests)
+#### test_cli.c -- CLI-lite Argument Parsing
 
-Tests the `parse_args()` function extracted into `src/cli.c`. This function was extracted from `main.c` specifically to enable unit testing. It resets `optind = 1` before each call so that `getopt_long()` works correctly across multiple test invocations.
+Tests the `parse_args()` function in `src/cli.c` after moving runtime options into YAML.
+Only `-c/-V/-h/--version` are accepted; deprecated runtime flags (`-i/-o/-m/-w/-v/-d/-s/-F/-M`) return `-1` with a migration hint.
 
 | Test | What it verifies |
 |------|-----------------|
-| `test_parse_mode_ebpf` | `-m ebpf` sets `mode` to `CAPTURE_MODE_EBPF` |
-| `test_parse_mode_afpacket` | `-m afpacket` sets `mode` to `CAPTURE_MODE_AFPACKET` |
-| `test_parse_mode_invalid` | `-m xdp` (invalid) returns `-1` |
-| `test_parse_mode_default_is_ebpf` | Omitting `-m` defaults to `CAPTURE_MODE_EBPF` |
-| `test_parse_input_interface` | `-i ens34` populates `input_iface` |
-| `test_parse_output_interface` | `-i eth0 -o eth1` populates both interfaces |
-| `test_parse_missing_input` | Missing `-i` returns `-1` (required argument) |
-| `test_parse_workers_valid` | `-w 4` sets `num_workers` to 4 |
-| `test_parse_workers_one` | `-w 1` accepted as minimum |
-| `test_parse_workers_zero` | `-w 0` returns `-1` (invalid) |
-| `test_parse_workers_negative` | `-w -1` returns `-1` (invalid) |
-| `test_parse_workers_too_many` | `-w 999` returns `-1` (exceeds MAX_CPUS=128) |
-| `test_parse_workers_default_zero` | Default `num_workers` is 0 (meaning auto-detect) |
-| `test_parse_verbose` | `-v` sets `verbose = true` |
-| `test_parse_stats` | `-s` sets `show_stats = true` |
+| `test_parse_config_required` | Missing `-c` returns `-1` |
+| `test_parse_config_path` | `-c /path` parses config path |
+| `test_parse_validate_config` | `-V -c /path` sets validate mode |
 | `test_parse_help` | `-h` returns `1` and sets `help = true` |
-| `test_parse_full_commandline` | All options combined: `-m afpacket -i eth0 -o eth1 -w 8 -v -s` |
-| `test_parse_null_args` | `args == NULL` returns `-1` (does not crash) |
+| `test_parse_version` | `--version` returns `1` and sets `show_version = true` |
+| `test_parse_deprecated_input_flag` | `-i ...` returns `-1` |
+| `test_parse_deprecated_mode_flag` | `-m ...` returns `-1` |
+| `test_parse_null_args` | `args == NULL` returns `-1` |
 
 #### test_stats.c -- Stats Accumulation and Reset (10 tests)
 
@@ -90,14 +81,17 @@ Tests the stats aggregation functions for both the AF_PACKET and eBPF backends.
 
 Tests parameter validation in init functions.
 
-#### test_config_filter.c -- YAML Load and Tunnel Parsing (10 tests)
+#### test_config_filter.c -- YAML Runtime/Filter/Tunnel Parsing
 
-Tests `config_load()`: null/empty path, missing file, valid minimal, valid with rules, invalid YAML, invalid default_action, config_free null, and tunnel section parsing.
+Tests `config_load()` with runtime + filter + optional tunnel validation.
 
 | Test | What it verifies |
 |------|-----------------|
-| `test_config_load_tunnel_gre` | YAML with `tunnel: { type: gre, remote_ip: ... }` loads and GRE fields are correct |
-| `test_config_load_tunnel_vxlan` | YAML with `tunnel: { type: vxlan, remote_ip: ..., vni: ..., dstport: ... }` loads and VXLAN fields are correct |
+| `test_config_load_tunnel_gre` | YAML with GRE tunnel and runtime output loads correctly |
+| `test_config_load_tunnel_vxlan` | YAML with VXLAN tunnel and runtime output loads correctly |
+| `test_config_load_missing_runtime_input` | Missing `runtime.input_iface` fails validation |
+| `test_config_load_missing_runtime_mode` | Missing `runtime.mode` fails validation |
+| `test_config_load_tunnel_requires_runtime_output` | Tunnel enabled without `runtime.output_iface` fails validation |
 
 (Other tests in this file cover general config load/free; see file for full list.)
 

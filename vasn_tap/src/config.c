@@ -88,6 +88,28 @@ static int parse_protocol(const char *s, uint8_t *out)
 	return -1;
 }
 
+static int parse_bool(const char *s, bool *out)
+{
+	if (strcmp(s, "true") == 0 || strcmp(s, "yes") == 0 || strcmp(s, "on") == 0 || strcmp(s, "1") == 0) {
+		*out = true;
+		return 0;
+	}
+	if (strcmp(s, "false") == 0 || strcmp(s, "no") == 0 || strcmp(s, "off") == 0 || strcmp(s, "0") == 0) {
+		*out = false;
+		return 0;
+	}
+	return -1;
+}
+
+static enum runtime_mode parse_runtime_mode(const char *s)
+{
+	if (strcmp(s, "ebpf") == 0)
+		return RUNTIME_MODE_EBPF;
+	if (strcmp(s, "afpacket") == 0)
+		return RUNTIME_MODE_AFPACKET;
+	return RUNTIME_MODE_UNSET;
+}
+
 static void match_init(struct filter_match *m)
 {
 	memset(m, 0, sizeof(*m));
@@ -112,8 +134,10 @@ struct parse_ctx {
 	int in_rules;
 	int in_rule;
 	int in_match;
+	int in_runtime;
 	int in_tunnel;
 	int depth;                    /* mapping/sequence nesting */
+	int next_mapping_is_runtime;  /* next MAPPING_START is runtime block */
 	int next_mapping_is_filter;   /* next MAPPING_START is filter block */
 	int next_sequence_is_rules;   /* next SEQUENCE_START is rules */
 	int next_mapping_is_match;    /* next MAPPING_START is match block */
@@ -151,7 +175,16 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 			break;
 		case YAML_MAPPING_START_EVENT:
 			ctx.depth++;
-			if (ctx.next_mapping_is_filter) {
+			if (ctx.next_mapping_is_runtime) {
+				ctx.in_runtime = 1;
+				ctx.next_mapping_is_runtime = 0;
+				ctx.need_value = 0;
+				free(ctx.last_key);
+				ctx.last_key = NULL;
+				ctx.cfg->runtime.configured = true;
+				ctx.cfg->runtime.workers = 0;
+				ctx.cfg->runtime.mode = RUNTIME_MODE_UNSET;
+			} else if (ctx.next_mapping_is_filter) {
 				ctx.in_filter = 1;
 				ctx.next_mapping_is_filter = 0;
 				ctx.need_value = 0;
@@ -192,6 +225,8 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 				ctx.rule_idx++;
 			} else if (ctx.in_tunnel)
 				ctx.in_tunnel = 0;
+			else if (ctx.in_runtime)
+				ctx.in_runtime = 0;
 			ctx.depth--;
 			break;
 		case YAML_SEQUENCE_START_EVENT:
@@ -218,7 +253,81 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 					yaml_event_delete(&event);
 					return -1;
 				}
-				if (ctx.in_filter && strcmp(ctx.last_key, "default_action") == 0) {
+				if (ctx.in_runtime && ctx.last_key) {
+					struct runtime_config *rc = &ctx.cfg->runtime;
+					if (strcmp(ctx.last_key, "input_iface") == 0) {
+						if (strlen(val) >= sizeof(rc->input_iface)) {
+							set_error("runtime input_iface too long");
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						strncpy(rc->input_iface, val, sizeof(rc->input_iface) - 1);
+						rc->input_iface[sizeof(rc->input_iface) - 1] = '\0';
+					} else if (strcmp(ctx.last_key, "output_iface") == 0) {
+						if (strlen(val) >= sizeof(rc->output_iface)) {
+							set_error("runtime output_iface too long");
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						strncpy(rc->output_iface, val, sizeof(rc->output_iface) - 1);
+						rc->output_iface[sizeof(rc->output_iface) - 1] = '\0';
+					} else if (strcmp(ctx.last_key, "mode") == 0) {
+						enum runtime_mode m = parse_runtime_mode(val);
+						if (m == RUNTIME_MODE_UNSET) {
+							set_error("Invalid runtime mode: %s (must be 'ebpf' or 'afpacket')", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						rc->mode = m;
+					} else if (strcmp(ctx.last_key, "workers") == 0) {
+						int w;
+						if (sscanf(val, "%d", &w) != 1 || w < 0 || w > 128) {
+							set_error("Invalid runtime workers: %s (must be 0-128)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						rc->workers = w;
+					} else if (strcmp(ctx.last_key, "verbose") == 0) {
+						if (parse_bool(val, &rc->verbose) != 0) {
+							set_error("Invalid runtime verbose: %s (must be true/false)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+					} else if (strcmp(ctx.last_key, "debug") == 0) {
+						if (parse_bool(val, &rc->debug) != 0) {
+							set_error("Invalid runtime debug: %s (must be true/false)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+					} else if (strcmp(ctx.last_key, "stats") == 0) {
+						if (parse_bool(val, &rc->show_stats) != 0) {
+							set_error("Invalid runtime stats: %s (must be true/false)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+					} else if (strcmp(ctx.last_key, "filter_stats") == 0) {
+						if (parse_bool(val, &rc->show_filter_stats) != 0) {
+							set_error("Invalid runtime filter_stats: %s (must be true/false)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+					} else if (strcmp(ctx.last_key, "resource_usage") == 0) {
+						if (parse_bool(val, &rc->show_resource_usage) != 0) {
+							set_error("Invalid runtime resource_usage: %s (must be true/false)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+					}
+				} else if (ctx.in_filter && strcmp(ctx.last_key, "default_action") == 0) {
 					enum filter_action a = parse_action(val);
 					if ((int)a < 0) {
 						set_error("Invalid default_action: %s (must be 'allow' or 'drop')", val);
@@ -365,7 +474,9 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 			} else {
 				ctx.last_key = scalar_dup(&event);
 				ctx.need_value = 1;
-				if (ctx.depth == 1 && ctx.last_key && strcmp(ctx.last_key, "filter") == 0)
+				if (ctx.depth == 1 && ctx.last_key && strcmp(ctx.last_key, "runtime") == 0)
+					ctx.next_mapping_is_runtime = 1;
+				else if (ctx.depth == 1 && ctx.last_key && strcmp(ctx.last_key, "filter") == 0)
 					ctx.next_mapping_is_filter = 1;
 				else if (ctx.depth == 1 && ctx.last_key && strcmp(ctx.last_key, "tunnel") == 0)
 					ctx.next_mapping_is_tunnel = 1;
@@ -429,6 +540,29 @@ struct tap_config *config_load(const char *path)
 		return NULL;
 	}
 
+	/* Validate runtime section (required) */
+	if (!cfg->runtime.configured) {
+		set_error("runtime section is required");
+		yaml_parser_delete(&parser);
+		fclose(f);
+		free(cfg);
+		return NULL;
+	}
+	if (cfg->runtime.input_iface[0] == '\0') {
+		set_error("runtime input_iface is required");
+		yaml_parser_delete(&parser);
+		fclose(f);
+		free(cfg);
+		return NULL;
+	}
+	if (cfg->runtime.mode == RUNTIME_MODE_UNSET) {
+		set_error("runtime mode is required (must be 'ebpf' or 'afpacket')");
+		yaml_parser_delete(&parser);
+		fclose(f);
+		free(cfg);
+		return NULL;
+	}
+
 	/* Validate tunnel section if present */
 	if (cfg->tunnel.enabled) {
 		if (cfg->tunnel.type == TUNNEL_TYPE_NONE) {
@@ -440,6 +574,13 @@ struct tap_config *config_load(const char *path)
 		}
 		if (cfg->tunnel.remote_ip[0] == '\0') {
 			set_error("tunnel remote_ip is required");
+			yaml_parser_delete(&parser);
+			fclose(f);
+			free(cfg);
+			return NULL;
+		}
+		if (cfg->runtime.output_iface[0] == '\0') {
+			set_error("runtime output_iface is required when tunnel is enabled");
 			yaml_parser_delete(&parser);
 			fclose(f);
 			free(cfg);

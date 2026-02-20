@@ -41,7 +41,7 @@
 static struct tap_ctx g_tap_ctx;
 static struct worker_ctx g_worker_ctx;
 static struct afpacket_ctx g_afpacket_ctx;
-static enum capture_mode g_capture_mode = CAPTURE_MODE_EBPF;
+static enum runtime_mode g_capture_mode = RUNTIME_MODE_EBPF;
 static volatile bool g_running = true;
 static struct tap_config *g_tap_config = NULL;
 static struct tunnel_ctx *g_tunnel_ctx = NULL;
@@ -57,32 +57,16 @@ static void print_usage(const char *prog)
     printf("vasn_tap - High Performance Packet Tap v%s\n\n", VERSION);
     printf("Usage: %s [OPTIONS]\n\n", prog);
     printf("Required:\n");
-    printf("  -i, --input <iface>     Input interface for packet capture (e.g., eth0)\n\n");
+    printf("  -c, --config <path>     YAML config path (runtime + filter + tunnel)\n\n");
     printf("Optional:\n");
-    printf("  -m, --mode <mode>       Capture mode: 'ebpf' (default) or 'afpacket'\n");
-    printf("                          ebpf:     TC BPF + perf buffer (requires kernel 5.x+)\n");
-    printf("                          afpacket: AF_PACKET TPACKET_V3 + FANOUT_HASH\n");
-    printf("                                    (portable, multi-worker, kernel 3.2+)\n");
-    printf("  -o, --output <iface>    Output interface for packet forwarding\n");
-    printf("                          If not specified, packets are dropped (benchmark mode)\n");
-    printf("  -w, --workers <count>   Number of worker threads (default: num CPUs)\n");
-    printf("                          Note: in ebpf mode, forced to 1 (perf buffer limitation)\n");
-    printf("  -v, --verbose           Enable verbose logging\n");
-    printf("  -d, --debug             Enable TX debug (hex dumps of first packet per block)\n");
-    printf("  -s, --stats             Print periodic statistics\n");
-    printf("  -F, --filter-stats      With -s, dump filter rules and per-rule hit counts\n");
-    printf("  -M, --resource-usage    With -s, show memory (RSS) and per-thread CPU%% (implies -s)\n");
-    printf("  -c, --config <path>      Filter config (YAML). If set, invalid/missing file => exit\n");
     printf("  -V, --validate-config   Load and validate config only, then exit\n");
     printf("  --version               Show version and exit\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nExamples:\n");
-    printf("  # AF_PACKET mode: 4 workers, capture from eth0, forward to eth1\n");
-    printf("  sudo %s -m afpacket -i eth0 -o eth1 -w 4 -s\n\n", prog);
-    printf("  # eBPF mode (default): capture from eth0, forward to eth1\n");
-    printf("  sudo %s -i eth0 -o eth1 -s\n\n", prog);
-    printf("  # AF_PACKET benchmark mode (drop, no output)\n");
-    printf("  sudo %s -m afpacket -i eth0 -w 4 -s\n", prog);
+    printf("  # Run using runtime settings from YAML\n");
+    printf("  sudo %s -c /etc/vasn_tap/config.yaml\n\n", prog);
+    printf("  # Validate config only\n");
+    printf("  sudo %s -V -c /etc/vasn_tap/config.yaml\n", prog);
 }
 
 /* Signal counter for force exit */
@@ -345,7 +329,7 @@ static void collect_and_print_stats(double elapsed_sec, bool show_filter_stats, 
 {
     struct worker_stats stats;
 
-    if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+    if (g_capture_mode == RUNTIME_MODE_AFPACKET) {
         afpacket_get_stats(&g_afpacket_ctx, &stats);
     } else {
         workers_get_stats(&g_worker_ctx, &stats);
@@ -394,42 +378,33 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    g_capture_mode = args.mode;
+    g_tap_config = config_load(args.config_path);
+    if (!g_tap_config) {
+        fprintf(stderr, "Config error: %s\n", config_get_error());
+        return 1;
+    }
+    filter_set_config(&g_tap_config->filter);
+    filter_stats_reset(g_tap_config->filter.num_rules);
+    if (args.validate_config) {
+        printf("Config valid.\n");
+        config_free(g_tap_config);
+        g_tap_config = NULL;
+        filter_set_config(NULL);
+        return 0;
+    }
 
-    /* -M implies -s so resource usage is printed every stats interval */
-    if (args.show_resource_usage && !args.show_stats)
-        args.show_stats = true;
+    g_capture_mode = g_tap_config->runtime.mode;
 
-    /* Load filter config if path given */
-    if (args.config_path[0]) {
-        g_tap_config = config_load(args.config_path);
-        if (!g_tap_config) {
-            fprintf(stderr, "Config error: %s\n", config_get_error());
-            return 1;
-        }
-        filter_set_config(&g_tap_config->filter);
-        filter_stats_reset(g_tap_config->filter.num_rules);
-        if (args.validate_config) {
-            printf("Config valid.\n");
-            config_free(g_tap_config);
-            g_tap_config = NULL;
-            filter_set_config(NULL);
-            return 0;
-        }
-        /* Tunnel enabled from config: require -o as underlay (cannot be loopback) */
-        if (g_tap_config->tunnel.enabled && !args.output_iface[0]) {
-            fprintf(stderr, "Config error: tunnel enabled but no output interface (-o). Specify -o for underlay.\n");
-            config_free(g_tap_config);
-            g_tap_config = NULL;
-            return 1;
-        }
-        if (g_tap_config->tunnel.enabled && args.output_iface[0] &&
-            (strcmp(args.output_iface, "lo") == 0)) {
-            fprintf(stderr, "Config error: tunnel cannot use loopback (lo) as output. Use an interface that can reach the remote VTEP (e.g. eth0).\n");
-            config_free(g_tap_config);
-            g_tap_config = NULL;
-            return 1;
-        }
+    /* runtime.resource_usage implies runtime.stats */
+    if (g_tap_config->runtime.show_resource_usage && !g_tap_config->runtime.show_stats)
+        g_tap_config->runtime.show_stats = true;
+
+    if (g_tap_config->tunnel.enabled &&
+        (strcmp(g_tap_config->runtime.output_iface, "lo") == 0)) {
+        fprintf(stderr, "Config error: tunnel cannot use loopback (lo) as output. Use an interface that can reach the remote VTEP (e.g. eth0).\n");
+        config_free(g_tap_config);
+        g_tap_config = NULL;
+        return 1;
     }
 
     /* Check for root privileges */
@@ -445,11 +420,13 @@ int main(int argc, char **argv)
     setvbuf(stderr, NULL, _IONBF, 0);
 
     printf("=== vasn_tap v%s (%s %s) ===\n", VERSION, VASN_TAP_GIT_COMMIT, VASN_TAP_BUILD_DATETIME);
-    printf("Capture mode:     %s\n", g_capture_mode == CAPTURE_MODE_AFPACKET ? "afpacket" : "ebpf");
-    printf("Input interface:  %s\n", args.input_iface);
-    printf("Output interface: %s\n", args.output_iface[0] ? args.output_iface : "(drop mode)");
-    printf("Worker threads:   %d\n", args.num_workers > 0 ? args.num_workers : get_nprocs());
-    printf("Filter config:    %s\n", args.config_path[0] ? args.config_path : "(none)");
+    printf("Capture mode:     %s\n", g_capture_mode == RUNTIME_MODE_AFPACKET ? "afpacket" : "ebpf");
+    printf("Input interface:  %s\n", g_tap_config->runtime.input_iface);
+    printf("Output interface: %s\n",
+           g_tap_config->runtime.output_iface[0] ? g_tap_config->runtime.output_iface : "(drop mode)");
+    printf("Worker threads:   %d\n",
+           g_tap_config->runtime.workers > 0 ? g_tap_config->runtime.workers : get_nprocs());
+    printf("Filter config:    %s\n", args.config_path);
     if (g_tap_config && g_tap_config->tunnel.enabled) {
         err = tunnel_init(&g_tunnel_ctx,
                          g_tap_config->tunnel.type,
@@ -458,7 +435,7 @@ int main(int argc, char **argv)
                          g_tap_config->tunnel.dstport,
                          g_tap_config->tunnel.key,
                          g_tap_config->tunnel.local_ip[0] ? g_tap_config->tunnel.local_ip : NULL,
-                         args.output_iface);
+                         g_tap_config->runtime.output_iface);
         if (err) {
             fprintf(stderr, "Tunnel init failed: %s\n", strerror(-err));
             return 1;
@@ -469,23 +446,23 @@ int main(int argc, char **argv)
     /*
      * Initialize and start based on capture mode
      */
-    if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+    if (g_capture_mode == RUNTIME_MODE_AFPACKET) {
         /* --- AF_PACKET mode --- */
         struct afpacket_config aconfig = {0};
-        snprintf(aconfig.input_ifname, sizeof(aconfig.input_ifname), "%s", args.input_iface);
-        aconfig.input_ifindex = if_nametoindex(args.input_iface);
+        snprintf(aconfig.input_ifname, sizeof(aconfig.input_ifname), "%s", g_tap_config->runtime.input_iface);
+        aconfig.input_ifindex = if_nametoindex(g_tap_config->runtime.input_iface);
         if (aconfig.input_ifindex == 0) {
-            fprintf(stderr, "Error: Input interface %s not found\n", args.input_iface);
+            fprintf(stderr, "Error: Input interface %s not found\n", g_tap_config->runtime.input_iface);
             return 1;
         }
-        if (args.output_iface[0]) {
-            snprintf(aconfig.output_ifname, sizeof(aconfig.output_ifname), "%s", args.output_iface);
-            aconfig.output_ifindex = g_tunnel_ctx ? 0 : if_nametoindex(args.output_iface);
+        if (g_tap_config->runtime.output_iface[0]) {
+            snprintf(aconfig.output_ifname, sizeof(aconfig.output_ifname), "%s", g_tap_config->runtime.output_iface);
+            aconfig.output_ifindex = g_tunnel_ctx ? 0 : if_nametoindex(g_tap_config->runtime.output_iface);
         }
         aconfig.tunnel_ctx = g_tunnel_ctx;
-        aconfig.num_workers = args.num_workers;
-        aconfig.verbose = args.verbose;
-        aconfig.debug = args.debug;
+        aconfig.num_workers = g_tap_config->runtime.workers;
+        aconfig.verbose = g_tap_config->runtime.verbose;
+        aconfig.debug = g_tap_config->runtime.debug;
 
         err = afpacket_init(&g_afpacket_ctx, &aconfig);
         if (err) {
@@ -502,16 +479,16 @@ int main(int argc, char **argv)
     } else {
         /* --- eBPF mode --- */
         struct worker_config wconfig = {0};
-        wconfig.num_workers = args.num_workers;
-        wconfig.verbose = args.verbose;
-        wconfig.debug = args.debug;
-        if (args.output_iface[0]) {
-            snprintf(wconfig.output_ifname, sizeof(wconfig.output_ifname), "%s", args.output_iface);
-            wconfig.output_ifindex = g_tunnel_ctx ? 0 : if_nametoindex(args.output_iface);
+        wconfig.num_workers = g_tap_config->runtime.workers;
+        wconfig.verbose = g_tap_config->runtime.verbose;
+        wconfig.debug = g_tap_config->runtime.debug;
+        if (g_tap_config->runtime.output_iface[0]) {
+            snprintf(wconfig.output_ifname, sizeof(wconfig.output_ifname), "%s", g_tap_config->runtime.output_iface);
+            wconfig.output_ifindex = g_tunnel_ctx ? 0 : if_nametoindex(g_tap_config->runtime.output_iface);
         }
         wconfig.tunnel_ctx = g_tunnel_ctx;
 
-        err = tap_init(&g_tap_ctx, args.input_iface);
+        err = tap_init(&g_tap_ctx, g_tap_config->runtime.input_iface);
         if (err) {
             fprintf(stderr, "Failed to initialize tap: %s\n", strerror(-err));
             return 1;
@@ -551,22 +528,26 @@ int main(int argc, char **argv)
     while (g_running) {
         sleep(1);
 
-        if (args.show_stats) {
+        if (g_tap_config->runtime.show_stats) {
             time_t now = time(NULL);
             if (now - last_stats_time >= STATS_INTERVAL_SEC) {
-                collect_and_print_stats((double)(now - start_time), args.show_filter_stats, args.show_resource_usage);
+                collect_and_print_stats((double)(now - start_time),
+                                        g_tap_config->runtime.show_filter_stats,
+                                        g_tap_config->runtime.show_resource_usage);
                 last_stats_time = now;
             }
         }
     }
 
     /* Print final statistics */
-    if (args.show_stats) {
+    if (g_tap_config->runtime.show_stats) {
         time_t now = time(NULL);
-        collect_and_print_stats((double)(now - start_time), args.show_filter_stats, args.show_resource_usage);
+        collect_and_print_stats((double)(now - start_time),
+                                g_tap_config->runtime.show_filter_stats,
+                                g_tap_config->runtime.show_resource_usage);
 
         /* Print per-worker breakdown for AF_PACKET (useful for fanout verification) */
-        if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+        if (g_capture_mode == RUNTIME_MODE_AFPACKET) {
             afpacket_print_per_worker_stats(&g_afpacket_ctx);
         }
     }
@@ -582,7 +563,7 @@ int main(int argc, char **argv)
         config_free(g_tap_config);
         g_tap_config = NULL;
     }
-    if (g_capture_mode == CAPTURE_MODE_AFPACKET) {
+    if (g_capture_mode == RUNTIME_MODE_AFPACKET) {
         afpacket_stop(&g_afpacket_ctx);
         afpacket_cleanup(&g_afpacket_ctx);
     } else {

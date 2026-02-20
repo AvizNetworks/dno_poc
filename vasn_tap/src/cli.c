@@ -39,7 +39,6 @@ int parse_args(int argc, char **argv, struct cli_args *args)
 
     /* Initialize defaults */
     memset(args, 0, sizeof(*args));
-    args->mode = CAPTURE_MODE_EBPF;
 
     /* Reset getopt for re-entrant use (important for tests) */
     optind = 1;
@@ -54,51 +53,23 @@ int parse_args(int argc, char **argv, struct cli_args *args)
                 return 1;
             }
             return -1;
-        case 'i':
-            snprintf(args->input_iface, sizeof(args->input_iface), "%s", optarg);
-            break;
-        case 'o':
-            snprintf(args->output_iface, sizeof(args->output_iface), "%s", optarg);
-            break;
         case 'c':
             snprintf(args->config_path, sizeof(args->config_path), "%s", optarg);
             break;
         case 'V':
             args->validate_config = true;
             break;
+        case 'i':
+        case 'o':
         case 'm':
-            if (strcmp(optarg, "ebpf") == 0) {
-                args->mode = CAPTURE_MODE_EBPF;
-            } else if (strcmp(optarg, "afpacket") == 0) {
-                args->mode = CAPTURE_MODE_AFPACKET;
-            } else {
-                fprintf(stderr, "Invalid mode: %s (must be 'ebpf' or 'afpacket')\n", optarg);
-                return -1;
-            }
-            break;
         case 'w':
-            args->num_workers = atoi(optarg);
-            if (args->num_workers <= 0 || args->num_workers > MAX_CPUS) {
-                fprintf(stderr, "Invalid worker count: %s (must be 1-%d)\n",
-                        optarg, MAX_CPUS);
-                return -1;
-            }
-            break;
         case 'v':
-            args->verbose = true;
-            break;
         case 'd':
-            args->debug = true;
-            break;
         case 's':
-            args->show_stats = true;
-            break;
         case 'F':
-            args->show_filter_stats = true;
-            break;
         case 'M':
-            args->show_resource_usage = true;
-            break;
+            fprintf(stderr, "Option '-%c' is deprecated. Move runtime settings to YAML under 'runtime:'.\n", opt);
+            return -1;
         case 'h':
             args->help = true;
             return 1;
@@ -108,8 +79,8 @@ int parse_args(int argc, char **argv, struct cli_args *args)
     }
 
     /* Validate required arguments (unless help or version was requested) */
-    if (!args->help && !args->show_version && args->input_iface[0] == '\0') {
-        fprintf(stderr, "Error: Input interface (-i) is required\n");
+    if (!args->help && !args->show_version && args->config_path[0] == '\0') {
+        fprintf(stderr, "Error: Config path (-c) is required\n");
         return -1;
     }
 

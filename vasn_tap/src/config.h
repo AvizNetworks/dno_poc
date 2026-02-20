@@ -70,8 +70,29 @@ struct tunnel_config {
 	bool enabled;                    /* true if tunnel section was present and valid */
 };
 
+/* Runtime startup config from YAML (required). */
+enum runtime_mode {
+	RUNTIME_MODE_UNSET = 0,
+	RUNTIME_MODE_EBPF,
+	RUNTIME_MODE_AFPACKET,
+};
+
+struct runtime_config {
+	bool configured;                 /* true if runtime section was present */
+	char input_iface[64];            /* required */
+	char output_iface[64];           /* optional unless tunnel enabled */
+	enum runtime_mode mode;          /* required: ebpf or afpacket */
+	int workers;                     /* optional, 0 = auto */
+	bool verbose;                    /* optional */
+	bool debug;                      /* optional */
+	bool show_stats;                 /* optional */
+	bool show_filter_stats;          /* optional */
+	bool show_resource_usage;        /* optional */
+};
+
 /* Top-level config: filter and optional tunnel */
 struct tap_config {
+	struct runtime_config runtime;
 	struct filter_config filter;
 	struct tunnel_config tunnel;
 };

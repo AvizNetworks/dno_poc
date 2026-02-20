@@ -14,7 +14,7 @@
 
 #include "../../src/afpacket.h"
 #include "../../src/worker.h"
-#include "../../src/cli.h"
+#include "../../src/config.h"
 
 /* ---- afpacket_init validation tests ---- */
 
@@ -48,13 +48,14 @@ static void test_workers_init_null_config(void **state)
     assert_int_equal(workers_init(&ctx, NULL, NULL), -EINVAL);
 }
 
-/* ---- capture_mode enum tests ---- */
+/* ---- runtime_mode enum tests ---- */
 
-static void test_capture_mode_values(void **state)
+static void test_runtime_mode_values(void **state)
 {
     (void)state;
-    assert_int_equal(CAPTURE_MODE_EBPF, 0);
-    assert_int_equal(CAPTURE_MODE_AFPACKET, 1);
+    assert_int_equal(RUNTIME_MODE_UNSET, 0);
+    assert_int_equal(RUNTIME_MODE_EBPF, 1);
+    assert_int_equal(RUNTIME_MODE_AFPACKET, 2);
 }
 
 /* ---- main ---- */
@@ -66,7 +67,7 @@ int main(void)
         cmocka_unit_test(test_afpacket_init_null_config),
         cmocka_unit_test(test_workers_init_null_ctx),
         cmocka_unit_test(test_workers_init_null_config),
-        cmocka_unit_test(test_capture_mode_values),
+        cmocka_unit_test(test_runtime_mode_values),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

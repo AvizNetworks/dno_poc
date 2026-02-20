@@ -8,7 +8,7 @@ vasn_tap is designed to run on customer operating systems with minimal dependenc
 
 ### Two Capture Modes
 
-| Feature | eBPF Mode (`-m ebpf`) | AF_PACKET Mode (`-m afpacket`) |
+| Feature | eBPF Mode (`runtime.mode: ebpf`) | AF_PACKET Mode (`runtime.mode: afpacket`) |
 |---------|----------------------|-------------------------------|
 | **RX Mechanism** | TC BPF hook + perf buffer | TPACKET_V3 mmap ring buffer |
 | **TX Mechanism** | TX ring or userspace tunnel (VXLAN/GRE) when configured | TX ring or userspace tunnel (VXLAN/GRE) when configured |
@@ -71,59 +71,45 @@ The build produces:
 ## Usage
 
 vasn_tap requires **root privileges** (for raw socket access and eBPF).
+Runtime startup settings are loaded from the YAML `runtime:` section.
 
 ```bash
-# AF_PACKET mode: 4 workers, capture from eth0, forward to eth1, show stats
-sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 4 -s
-
-# eBPF mode (default): capture from eth0, forward to eth1
-sudo ./vasn_tap -i eth0 -o eth1 -s
-
-# AF_PACKET benchmark mode (capture only, no forwarding)
-sudo ./vasn_tap -m afpacket -i eth0 -w 4 -s
-
-# With filter config (YAML): only allowed traffic is forwarded
-sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -c /etc/vasn_tap/filter.yaml -s
+# Run with a YAML config (runtime + filter + optional tunnel)
+sudo ./vasn_tap -c /etc/vasn_tap/config.yaml
 
 # Validate config only (load and exit)
-sudo ./vasn_tap -i lo -c /path/to/config.yaml --validate-config
-
-# Verbose output for debugging
-sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 2 -v -s
+sudo ./vasn_tap -V -c /etc/vasn_tap/config.yaml
 ```
 
 ### Command Line Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-i, --input <iface>` | Input interface for packet capture | **Required** |
-| `-o, --output <iface>` | Output interface for forwarding | None (drop mode) |
-| `-m, --mode <mode>` | Capture mode: `ebpf` or `afpacket` | `ebpf` |
-| `-w, --workers <n>` | Number of worker threads (1-128) | Auto (num CPUs) |
-| `-v, --verbose` | Enable verbose logging | Off |
-| `-d, --debug` | Enable TX debug (hex dump of first packet per worker; no cost when omitted) | Off |
-| `-s, --stats` | Print periodic statistics (every 1s) | Off |
-| `-F, --filter-stats` | With -s, dump filter rules and per-rule hit counts (only when -c is set) | Off |
-| `-M, --resource-usage` | With -s, show memory (RSS) and per-thread CPU% every interval (implies -s) | Off |
-| `-c, --config <path>` | Filter config (YAML). If set, missing/invalid file => exit at startup | None |
+| `-c, --config <path>` | YAML config path (runtime + filter + optional tunnel) | **Required** |
 | `-V, --validate-config` | Load and validate config only, then exit (use with `-c`) | Off |
 | `--version` | Show version, git commit, and build timestamp (UTC) then exit | -- |
 | `-h, --help` | Show help message and exit | -- |
 
 **Notes:**
-- In **ebpf** mode, worker count is forced to 1 regardless of `-w` (perf buffer limitation).
+- Runtime keys (input/output/mode/workers/stats/etc.) are defined in YAML under `runtime:`.
+- In **ebpf** mode, worker count is forced to 1 regardless of `runtime.workers` (perf buffer limitation).
 - In **afpacket** mode, workers are distributed via PACKET_FANOUT_HASH for per-flow affinity.
-- If `-o` is omitted, packets are captured and counted but not forwarded (useful for benchmarking).
+- If `runtime.output_iface` is omitted, packets are captured and counted but not forwarded (drop mode).
 - TX packet length is clamped to the output interface MTU (avoids kernel "packet size is too long" and stuck ring). Oversize packets are truncated; use UDP or jumbo MTU on the path to avoid truncation.
-- If **`-c` is set** but the config file is missing or invalid, vasn_tap **exits at startup** with an error (no "allow all" fallback). Use **`--validate-config`** to check a config file without running the tap. Config is read once at startup; **restart is required** for config changes. For long-running deployments, run as a systemd service and reload by restarting the unit.
+- If mandatory config fields are missing/invalid (e.g. `runtime.input_iface` or `runtime.mode`), vasn_tap **does not start**.
+- Use **`-V -c <path>`** to validate config before restart/apply. Config is read once at startup; **restart is required** for config changes.
 
 ### Filter (ACL) config
 
-When `-c <path>` is given, a YAML file defines an ACL: **default_action** (`allow` or `drop`) and a list of **rules**. Each rule has an **action** and an optional **match** (L2/L3/L4 criteria). Packets are evaluated **first-match**: the first rule whose match criteria fit the packet determines allow/drop; if no rule matches, **default_action** applies. No rule match fields => match-all rule.
+When `-c <path>` is given, the YAML defines **runtime** startup options and ACL policy. Filter ACL is under `filter:`: **default_action** (`allow` or `drop`) and a list of **rules**. Packets are evaluated **first-match**: the first rule whose match criteria fit the packet determines allow/drop; if no rule matches, **default_action** applies. No rule match fields => match-all rule.
 
 Example (see `config.example.yaml`):
 
 ```yaml
+runtime:
+  input_iface: eth0
+  output_iface: eth1
+  mode: afpacket
 filter:
   default_action: drop
   rules:
@@ -140,11 +126,15 @@ Match fields: **protocol** (tcp, udp, icmp, icmpv6 or number), **port_src**, **p
 
 ### Tunnel (optional)
 
-When the YAML config includes a top-level **tunnel** section, allowed packets are encapsulated in userspace (VXLAN or GRE) and sent to a remote IP instead of being L2-forwarded. No kernel tunnel device is created. **`-o` is required** when tunnel is enabled; **`-o lo` is rejected**.
+When the YAML config includes a top-level **tunnel** section, allowed packets are encapsulated in userspace (VXLAN or GRE) and sent to a remote IP instead of being L2-forwarded. No kernel tunnel device is created. **`runtime.output_iface` is required** when tunnel is enabled; **`runtime.output_iface: lo` is rejected**.
 
 Example (see `config.example.yaml`):
 
 ```yaml
+runtime:
+  input_iface: eth0
+  output_iface: eth1
+  mode: afpacket
 filter:
   default_action: allow
   rules: []
@@ -152,7 +142,7 @@ tunnel:
   type: gre
   remote_ip: 10.4.5.187
   key: 1000
-#  local_ip: optional; else derived from output interface (-o)
+#  local_ip: optional; else derived from runtime.output_iface
 ```
 
 For VXLAN: **type: vxlan**, **remote_ip** (required), **vni** (e.g. 1000), **dstport** (default 4789), optional **local_ip**. For GRE: **type: gre**, **remote_ip** (required), optional **key** and **local_ip**. With **-s**, stats show a line: `Tunnel (VXLAN): N packets sent, M bytes` or `Tunnel (GRE): ...`.
@@ -189,7 +179,7 @@ vasn_tap/
 ├── src/
 │   ├── main.c                # Entry point, CLI dispatch, tunnel init, signal handling
 │   ├── cli.c / cli.h         # Argument parsing (extracted for testability)
-│   ├── config.c / config.h   # YAML filter + tunnel config load
+│   ├── config.c / config.h   # YAML runtime + filter + tunnel config load
 │   ├── filter.c / filter.h   # ACL filter_packet (L2/L3/L4)
 │   ├── tunnel.c / tunnel.h   # Optional VXLAN/GRE encap (userspace raw socket)
 │   ├── tap.c / tap.h         # eBPF mode: load BPF, attach/detach TC hooks
@@ -203,9 +193,9 @@ vasn_tap/
 │       └── vmlinux.h          # Auto-generated kernel type definitions
 ├── tests/
 │   ├── unit/                  # CMocka unit tests
-│   │   ├── test_cli.c        # 18 tests: mode, interface, workers, flags
+│   │   ├── test_cli.c        # CLI-lite tests: config path, validate, help/version, deprecated flags
 │   │   ├── test_config.c     # 5 tests: init validation, enum values
-│   │   ├── test_config_filter.c  # 10 tests: YAML load, filter + tunnel section
+│   │   ├── test_config_filter.c  # YAML load tests including runtime validation
 │   │   ├── test_stats.c      # 10 tests: stats accumulation, reset, NULL safety
 │   │   ├── test_output.c     # 8 tests: send/open/close error paths
 │   │   └── test_common.h     # Shared CMocka includes
