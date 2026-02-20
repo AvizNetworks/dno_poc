@@ -74,7 +74,8 @@ The repository includes first-release packaging and service-control scripts unde
 
 - `scripts/build-package.sh` -- builds and creates `vasn_tap-v<version>-<date>-<sha>.tar.gz`
 - `scripts/install.sh` -- installs binary, BPF object, config template, control script, and systemd unit
-- `scripts/vasn_tapctl.sh` -- control helper: `start|stop|restart|status|validate|apply`
+- `scripts/uninstall.sh` -- uninstall helper (`--purge-config` optional)
+- `scripts/vasn_tapctl.sh` -- control helper: `start|stop|restart|status|counters|logs|validate|apply`
 - `scripts/vasn_tap.service` -- systemd unit (`ExecStart=/usr/local/bin/vasn_tap -c /etc/vasn_tap/config.yaml`)
 - `scripts/INSTALL.txt` -- quick install/run instructions for QA
 
@@ -115,11 +116,13 @@ sudo ./vasn_tap -V -c /etc/vasn_tap/config.yaml
 
 **Notes:**
 - Runtime keys (input/output/mode/workers/stats/etc.) are defined in YAML under `runtime:`.
+- Optional post-filter truncation is configured under `runtime.truncate` (`enabled` + `length`).
 - In **ebpf** mode, worker count is forced to 1 regardless of `runtime.workers` (perf buffer limitation).
 - In **afpacket** mode, workers are distributed via PACKET_FANOUT_HASH for per-flow affinity.
 - If `runtime.output_iface` is omitted, packets are captured and counted but not forwarded (drop mode).
 - If tunnel is disabled and input/output are the same interface (especially `lo`), self-forwarding loops are possible. Use different interfaces or drop mode.
 - TX packet length is clamped to the output interface MTU (avoids kernel "packet size is too long" and stuck ring). Oversize packets are truncated; use UDP or jumbo MTU on the path to avoid truncation.
+- When `runtime.truncate.enabled: true`, packets that pass filter are truncated to `runtime.truncate.length` before output/tunnel send. For ETH+IPv4 and ETH+VLAN+IPv4 frames, IPv4 total length and header checksum are updated.
 - If mandatory config fields are missing/invalid (e.g. `runtime.input_iface` or `runtime.mode`), vasn_tap **does not start**.
 - Use **`-V -c <path>`** to validate config before restart/apply. Config is read once at startup; **restart is required** for config changes.
 
@@ -134,6 +137,9 @@ runtime:
   input_iface: eth0
   output_iface: eth1
   mode: afpacket
+  truncate:
+    enabled: true
+    length: 128
 filter:
   default_action: drop
   rules:
@@ -179,7 +185,7 @@ For VXLAN: **type: vxlan**, **remote_ip** (required), **vni** (e.g. 1000), **dst
 make test
 ```
 
-Runs 6 unit test suites using CMocka: CLI parsing, config validation, stats accumulation, output error paths, filter logic, and YAML config load.
+Runs 7 unit test suites using CMocka: CLI parsing, config validation, stats accumulation, output error paths, filter logic, YAML config load, and truncation helper behavior.
 
 ### Integration Tests (requires root)
 
@@ -206,6 +212,7 @@ vasn_tap/
 │   ├── config.c / config.h   # YAML runtime + filter + tunnel config load
 │   ├── filter.c / filter.h   # ACL filter_packet (L2/L3/L4)
 │   ├── tunnel.c / tunnel.h   # Optional VXLAN/GRE encap (userspace raw socket)
+│   ├── truncate.c / truncate.h # Post-filter truncate + IPv4 checksum fixup
 │   ├── tap.c / tap.h         # eBPF mode: load BPF, attach/detach TC hooks
 │   ├── worker.c / worker.h   # eBPF mode: perf buffer consumer, stats
 │   ├── tx_ring.c / tx_ring.h     # Shared TPACKET_V2 mmap TX ring (when no tunnel)
@@ -218,7 +225,8 @@ vasn_tap/
 ├── scripts/
 │   ├── build-package.sh       # Build + stage + tarball for QA
 │   ├── install.sh             # Install binary/BPF/config/systemd unit
-│   ├── vasn_tapctl.sh         # start|stop|restart|status|validate|apply
+│   ├── uninstall.sh           # Remove installed service/binary (optional config purge)
+│   ├── vasn_tapctl.sh         # start|stop|restart|status|counters|logs|validate|apply
 │   ├── vasn_tap.service       # systemd unit (YAML-driven startup)
 │   └── INSTALL.txt            # Packaging install quick guide
 ├── tests/
@@ -228,6 +236,7 @@ vasn_tap/
 │   │   ├── test_config_filter.c  # YAML load tests including runtime validation
 │   │   ├── test_stats.c      # 10 tests: stats accumulation, reset, NULL safety
 │   │   ├── test_output.c     # 8 tests: send/open/close error paths
+│   │   ├── test_truncate.c   # Truncation helper tests (IPv4/VLAN-IPv4 fixup)
 │   │   └── test_common.h     # Shared CMocka includes
 │   └── integration/           # Bash-based integration tests
 │       ├── run_integ.sh       # Runner: basic (8) | filter (10) | tunnel (2) | all (20)
@@ -308,6 +317,12 @@ Output appears below the packet stats every second, for example:
 ```
 Memory: RSS 82 MiB
 CPU (1.0s): tid 1234 0.1% tid 1235 12.3% tid 1236 11.8% ...
+```
+
+When truncation is enabled, stats also include:
+
+```
+Truncated: 4895 total, 1457930 bytes removed
 ```
 
 Resource data is gathered only in the **main thread** (reads from `/proc/self/status` and `/proc/self/task/*/stat`); the packet **hot path is not touched**, so there is no performance impact on capture or forwarding.

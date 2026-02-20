@@ -44,7 +44,8 @@ SRCS := $(SRC_DIR)/main.c \
         $(SRC_DIR)/cli.c \
         $(SRC_DIR)/config.c \
         $(SRC_DIR)/filter.c \
-        $(SRC_DIR)/tunnel.c
+        $(SRC_DIR)/tunnel.c \
+        $(SRC_DIR)/truncate.c
 
 # Test directories
 TEST_UNIT_DIR := tests/unit
@@ -54,7 +55,7 @@ TEST_INTEG_DIR := tests/integration
 TEST_LDFLAGS := -lcmocka
 
 # Object files used by tests (everything except main.o, tap.o; output.o only for test_output)
-TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/tx_ring.o $(BUILD_DIR)/cli.o $(BUILD_DIR)/config.o $(BUILD_DIR)/filter.o $(BUILD_DIR)/tunnel.o
+TEST_OBJS := $(BUILD_DIR)/afpacket.o $(BUILD_DIR)/worker.o $(BUILD_DIR)/tx_ring.o $(BUILD_DIR)/cli.o $(BUILD_DIR)/config.o $(BUILD_DIR)/filter.o $(BUILD_DIR)/tunnel.o $(BUILD_DIR)/truncate.o
 
 # Object files
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
@@ -88,7 +89,7 @@ $(BPF_OBJ): $(BPF_SRC) $(VMLINUX_H) $(EBPF_DIR)/tc_clone.h
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # Compile userspace objects
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/tx_ring.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(SRC_DIR)/config.h $(SRC_DIR)/filter.h $(SRC_DIR)/tunnel.h $(INCLUDE_DIR)/common.h
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(SRC_DIR)/tap.h $(SRC_DIR)/worker.h $(SRC_DIR)/output.h $(SRC_DIR)/tx_ring.h $(SRC_DIR)/afpacket.h $(SRC_DIR)/cli.h $(SRC_DIR)/config.h $(SRC_DIR)/filter.h $(SRC_DIR)/tunnel.h $(SRC_DIR)/truncate.h $(INCLUDE_DIR)/common.h
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -142,13 +143,17 @@ $(BUILD_DIR)/test_config_filter: $(TEST_UNIT_DIR)/test_config_filter.c $(BUILD_D
 	@echo "Building test_config_filter..."
 	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $< $(BUILD_DIR)/config.o $(TEST_LDFLAGS) -lyaml
 
+$(BUILD_DIR)/test_truncate: $(TEST_UNIT_DIR)/test_truncate.c $(BUILD_DIR)/truncate.o
+	@echo "Building test_truncate..."
+	$(CC) $(CFLAGS) -I$(SRC_DIR) -o $@ $< $(BUILD_DIR)/truncate.o $(TEST_LDFLAGS)
+
 # Run all unit tests (no root required)
-test: $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output $(BUILD_DIR)/test_filter $(BUILD_DIR)/test_config_filter
+test: $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output $(BUILD_DIR)/test_filter $(BUILD_DIR)/test_config_filter $(BUILD_DIR)/test_truncate
 	@echo ""
 	@echo "=== Running Unit Tests ==="
 	@echo ""
 	@PASS=0; FAIL=0; \
-	for t in $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output $(BUILD_DIR)/test_filter $(BUILD_DIR)/test_config_filter; do \
+	for t in $(BUILD_DIR)/test_stats $(BUILD_DIR)/test_config $(BUILD_DIR)/test_cli $(BUILD_DIR)/test_output $(BUILD_DIR)/test_filter $(BUILD_DIR)/test_config_filter $(BUILD_DIR)/test_truncate; do \
 		echo "--- $$t ---"; \
 		if $$t; then PASS=$$((PASS+1)); else FAIL=$$((FAIL+1)); fi; \
 		echo ""; \

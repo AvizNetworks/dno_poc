@@ -302,6 +302,89 @@ static void test_config_load_tunnel_requires_runtime_output(void **state)
 	assert_non_null(strstr(config_get_error(), "runtime output_iface"));
 }
 
+static void test_config_load_runtime_truncate_valid(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  output_iface: eth1\n"
+		"  mode: afpacket\n"
+		"  truncate:\n"
+		"    enabled: true\n"
+		"    length: 128\n"
+		"filter:\n"
+		"  default_action: allow\n"
+		"  rules: []\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_non_null(cfg);
+	assert_true(cfg->runtime.truncate.enabled);
+	assert_int_equal(cfg->runtime.truncate.length, 128);
+	config_free(cfg);
+}
+
+static void test_config_load_runtime_truncate_enabled_missing_length(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  mode: afpacket\n"
+		"  truncate:\n"
+		"    enabled: true\n"
+		"filter:\n"
+		"  default_action: allow\n"
+		"  rules: []\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_null(cfg);
+	assert_non_null(strstr(config_get_error(), "truncate.length is required"));
+}
+
+static void test_config_load_runtime_truncate_length_out_of_range(void **state)
+{
+	(void)state;
+	const char *yaml =
+		"runtime:\n"
+		"  input_iface: eth0\n"
+		"  mode: afpacket\n"
+		"  truncate:\n"
+		"    enabled: true\n"
+		"    length: 32\n"
+		"filter:\n"
+		"  default_action: allow\n"
+		"  rules: []\n";
+	char path[] = "/tmp/vasn_tap_test_XXXXXX";
+	int fd = mkstemp(path);
+	assert_true(fd >= 0);
+	FILE *f = fdopen(fd, "w");
+	assert_non_null(f);
+	assert_true(fwrite(yaml, 1, strlen(yaml), f) == (size_t)strlen(yaml));
+	fclose(f);
+
+	struct tap_config *cfg = config_load(path);
+	unlink(path);
+	assert_null(cfg);
+	assert_non_null(strstr(config_get_error(), "truncate.length must be in range 64-9000"));
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -318,6 +401,9 @@ int main(void)
 		cmocka_unit_test(test_config_load_missing_runtime_input),
 		cmocka_unit_test(test_config_load_missing_runtime_mode),
 		cmocka_unit_test(test_config_load_tunnel_requires_runtime_output),
+		cmocka_unit_test(test_config_load_runtime_truncate_valid),
+		cmocka_unit_test(test_config_load_runtime_truncate_enabled_missing_length),
+		cmocka_unit_test(test_config_load_runtime_truncate_length_out_of_range),
 	};
 
 	return cmocka_run_group_tests(tests, NULL, NULL);

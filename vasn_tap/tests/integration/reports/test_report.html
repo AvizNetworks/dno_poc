@@ -213,7 +213,7 @@
   <h1>vasn_tap Integration Test Report</h1>
   <div class="subtitle">Automated packet tap testing results</div>
   <div class="meta">
-    <span>Date: 2026-02-20 10:16:30 UTC</span>
+    <span>Date: 2026-02-20 14:39:45 UTC</span>
     <span>Host: asn-dev-100g</span>
     <span>Kernel: 5.15.0-170-generic</span>
     <span>Arch: x86_64</span>
@@ -289,12 +289,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">49</div>
+          <div class="val highlight">51</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">49</div>
+          <div class="val highlight">51</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -347,12 +347,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">44</div>
+          <div class="val highlight">42</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">44</div>
+          <div class="val highlight">42</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -367,7 +367,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">5s</div>
+          <div class="val">4s</div>
         </div>
       </div>
       <div class="note-box">
@@ -483,7 +483,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
       <div class="note-box">
@@ -541,12 +541,12 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">10s</div>
+          <div class="val">11s</div>
         </div>
       </div>
       <div class="note-box">
         <div class="note-label">Why do the numbers differ from pings sent?</div>
-        <div>Fanout test sends 8 parallel UDP streams at 1M/stream, -l 1470 (iperf3 -u -P 8 -b 1M -l 1470) for 5s to create distinct 5-tuples. PACKET_FANOUT_HASH distributes flows by hashing src/dst IP + ports + protocol. Per-worker breakdown: [W0:RX=428, W1:RX=1314, W2:RX=1284, W3:RX=428]. 4 of 4 workers received packets. A single flow (e.g. one ping) always goes to one worker -- multiple flows are needed to prove distribution. captured_at_dst must be >= 80% of TX (packets seen in ns_dst via tcpdump on veth_dst_ns).</div>
+        <div>Fanout test sends 8 parallel UDP streams at 1M/stream, -l 1470 (iperf3 -u -P 8 -b 1M -l 1470) for 5s to create distinct 5-tuples. PACKET_FANOUT_HASH distributes flows by hashing src/dst IP + ports + protocol. Per-worker breakdown: [W0:RX=428, W1:RX=1284, W2:RX=0, W3:RX=1742]. 3 of 4 workers received packets. A single flow (e.g. one ping) always goes to one worker -- multiple flows are needed to prove distribution. captured_at_dst must be >= 80% of TX (packets seen in ns_dst via tcpdump on veth_dst_ns).</div>
       </div>
     </div>
   </div>
@@ -653,7 +653,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
     </div>
@@ -687,12 +687,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">40</div>
+          <div class="val highlight">41</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">40</div>
+          <div class="val highlight">41</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -707,7 +707,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">5s</div>
+          <div class="val">4s</div>
         </div>
       </div>
     </div>
@@ -815,20 +815,20 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
     </div>
   </div>
 
-  <div class="test-card pass" onclick="this.classList.toggle('open')">
+  <div class="test-card fail" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (drop ICMP rule) - afpacket</h3>
         <div class="desc">ACL default_action=allow, one rule drop protocol=icmp. Expect RX>0, TX<=2, Dropped>0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge pass">PASS</span>
+        <span class="badge fail">FAIL</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -849,12 +849,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">40</div>
+          <div class="val highlight">43</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">0</div>
+          <div class="val highlight">3</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -869,20 +869,24 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">5s</div>
+          <div class="val">4s</div>
         </div>
+      </div>
+      <div class="error-box">
+        <div class="error-label">Error Details</div>
+        <div>With drop-icmp rule expected RX>0, TX<=2, Dropped>0; got RX=43, TX=3, Dropped=40</div>
       </div>
     </div>
   </div>
 
-  <div class="test-card fail" onclick="this.classList.toggle('open')">
+  <div class="test-card pass" onclick="this.classList.toggle('open')">
     <div class="test-header">
       <div>
         <h3>Filter (drop ICMP rule) - ebpf</h3>
         <div class="desc">ACL default_action=allow, one rule drop protocol=icmp. Expect RX>0, TX<=2, Dropped>0.</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <span class="badge fail">FAIL</span>
+        <span class="badge pass">PASS</span>
         <span class="toggle-icon">&#9654;</span>
       </div>
     </div>
@@ -903,12 +907,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">44</div>
+          <div class="val highlight">42</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">4</div>
+          <div class="val highlight">2</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -925,10 +929,6 @@
           <div class="label">Duration</div>
           <div class="val">4s</div>
         </div>
-      </div>
-      <div class="error-box">
-        <div class="error-label">Error Details</div>
-        <div>With drop-icmp rule expected RX>0, TX<=2, Dropped>0; got RX=44, TX=4, Dropped=40</div>
       </div>
     </div>
   </div>
@@ -961,7 +961,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">41</div>
+          <div class="val highlight">42</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -971,12 +971,12 @@
         </div>
         <div class="detail-item">
           <div class="label">Frames Dropped</div>
-          <div class="val">41</div>
+          <div class="val">42</div>
           <div class="sublabel">Captured but not forwarded (no output or error)</div>
         </div>
         <div class="detail-item">
           <div class="label">Received at Destination</div>
-          <div class="val">0</div>
+          <div class="val">2</div>
           <div class="sublabel">Packets verified by tcpdump in ns_dst</div>
         </div>
         <div class="detail-item">
@@ -1035,7 +1035,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
     </div>
@@ -1089,7 +1089,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">5s</div>
+          <div class="val">4s</div>
         </div>
       </div>
     </div>
@@ -1123,7 +1123,7 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">40</div>
+          <div class="val highlight">39</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
@@ -1143,7 +1143,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">3s</div>
         </div>
       </div>
       <div class="note-box">
@@ -1255,12 +1255,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">60</div>
+          <div class="val highlight">62</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">60</div>
+          <div class="val highlight">62</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">
@@ -1275,7 +1275,7 @@
         </div>
         <div class="detail-item">
           <div class="label">Duration</div>
-          <div class="val">4s</div>
+          <div class="val">5s</div>
         </div>
       </div>
       <div class="note-box">
@@ -1493,12 +1493,12 @@
       <div class="detail-grid">
         <div class="detail-item">
           <div class="label">Raw Frames Captured</div>
-          <div class="val highlight">61</div>
+          <div class="val highlight">60</div>
           <div class="sublabel">All frames on input iface (both directions + ARP)</div>
         </div>
         <div class="detail-item">
           <div class="label">Frames Forwarded</div>
-          <div class="val highlight">61</div>
+          <div class="val highlight">60</div>
           <div class="sublabel">Frames sent to output interface by vasn_tap</div>
         </div>
         <div class="detail-item">

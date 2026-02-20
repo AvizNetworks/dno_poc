@@ -36,6 +36,7 @@
 #include "tunnel.h"
 #include "tx_ring.h"
 #include "filter.h"
+#include "truncate.h"
 #include "../include/common.h"
 
 /* Poll timeout in milliseconds */
@@ -195,7 +196,9 @@ static int pin_to_cpu(int cpu_id)
 static void process_block(struct afpacket_worker *worker,
                           struct tpacket_block_desc *block,
                           int worker_id,
-                          struct tunnel_ctx *tunnel_ctx)
+                          struct tunnel_ctx *tunnel_ctx,
+                          bool truncate_enabled,
+                          uint32_t truncate_length)
 {
     uint32_t num_pkts = block->hdr.bh1.num_pkts;
     struct tpacket3_hdr *pkt;
@@ -245,19 +248,33 @@ static void process_block(struct afpacket_worker *worker,
                 atomic_fetch_add(&filter_rule_hits[slot], 1);
                 if (fa == FILTER_ACTION_DROP) {
                     atomic_fetch_add(&worker->stats.packets_dropped, 1);
-                } else if (tunnel_send(tunnel_ctx, pkt_data, pkt_len) == 0) {
+                } else {
+                    uint32_t send_len = truncate_apply(pkt_data, pkt_len, truncate_enabled, truncate_length);
+                    if (send_len < pkt_len) {
+                        atomic_fetch_add(&worker->stats.packets_truncated, 1);
+                        atomic_fetch_add(&worker->stats.bytes_truncated, (uint64_t)(pkt_len - send_len));
+                    }
+                    if (tunnel_send(tunnel_ctx, pkt_data, send_len) == 0) {
+                        atomic_fetch_add(&worker->stats.packets_sent, 1);
+                        atomic_fetch_add(&worker->stats.bytes_sent, send_len);
+                        queued++;
+                    } else {
+                        atomic_fetch_add(&worker->stats.packets_dropped, 1);
+                    }
+                }
+            } else {
+                uint32_t send_len = truncate_apply(pkt_data, pkt_len, truncate_enabled, truncate_length);
+                if (send_len < pkt_len) {
+                    atomic_fetch_add(&worker->stats.packets_truncated, 1);
+                    atomic_fetch_add(&worker->stats.bytes_truncated, (uint64_t)(pkt_len - send_len));
+                }
+                if (tunnel_send(tunnel_ctx, pkt_data, send_len) == 0) {
                     atomic_fetch_add(&worker->stats.packets_sent, 1);
-                    atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
+                    atomic_fetch_add(&worker->stats.bytes_sent, send_len);
                     queued++;
                 } else {
                     atomic_fetch_add(&worker->stats.packets_dropped, 1);
                 }
-            } else if (tunnel_send(tunnel_ctx, pkt_data, pkt_len) == 0) {
-                atomic_fetch_add(&worker->stats.packets_sent, 1);
-                atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
-                queued++;
-            } else {
-                atomic_fetch_add(&worker->stats.packets_dropped, 1);
             }
         } else if (worker->tx.fd >= 0) {
             if (g_filter_config) {
@@ -267,19 +284,33 @@ static void process_block(struct afpacket_worker *worker,
                 atomic_fetch_add(&filter_rule_hits[slot], 1);
                 if (fa == FILTER_ACTION_DROP) {
                     atomic_fetch_add(&worker->stats.packets_dropped, 1);
-                } else if (tx_ring_write(&worker->tx, pkt_data, pkt_len) == 0) {
+                } else {
+                    uint32_t send_len = truncate_apply(pkt_data, pkt_len, truncate_enabled, truncate_length);
+                    if (send_len < pkt_len) {
+                        atomic_fetch_add(&worker->stats.packets_truncated, 1);
+                        atomic_fetch_add(&worker->stats.bytes_truncated, (uint64_t)(pkt_len - send_len));
+                    }
+                    if (tx_ring_write(&worker->tx, pkt_data, send_len) == 0) {
+                        atomic_fetch_add(&worker->stats.packets_sent, 1);
+                        atomic_fetch_add(&worker->stats.bytes_sent, send_len);
+                        queued++;
+                    } else {
+                        atomic_fetch_add(&worker->stats.packets_dropped, 1);
+                    }
+                }
+            } else {
+                uint32_t send_len = truncate_apply(pkt_data, pkt_len, truncate_enabled, truncate_length);
+                if (send_len < pkt_len) {
+                    atomic_fetch_add(&worker->stats.packets_truncated, 1);
+                    atomic_fetch_add(&worker->stats.bytes_truncated, (uint64_t)(pkt_len - send_len));
+                }
+                if (tx_ring_write(&worker->tx, pkt_data, send_len) == 0) {
                     atomic_fetch_add(&worker->stats.packets_sent, 1);
-                    atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
+                    atomic_fetch_add(&worker->stats.bytes_sent, send_len);
                     queued++;
                 } else {
                     atomic_fetch_add(&worker->stats.packets_dropped, 1);
                 }
-            } else if (tx_ring_write(&worker->tx, pkt_data, pkt_len) == 0) {
-                atomic_fetch_add(&worker->stats.packets_sent, 1);
-                atomic_fetch_add(&worker->stats.bytes_sent, pkt_len);
-                queued++;
-            } else {
-                atomic_fetch_add(&worker->stats.packets_dropped, 1);
             }
         } else {
             atomic_fetch_add(&worker->stats.packets_dropped, 1);
@@ -351,7 +382,8 @@ static void *afpacket_worker_thread(void *arg)
         }
 
         /* Process all packets in the block */
-        process_block(worker, block, worker_id, ctx->config.tunnel_ctx);
+        process_block(worker, block, worker_id, ctx->config.tunnel_ctx,
+                      ctx->config.truncate_enabled, ctx->config.truncate_length);
 
         /* Release block back to kernel */
         block->hdr.bh1.block_status = TP_STATUS_KERNEL;
@@ -584,6 +616,8 @@ void afpacket_get_stats(struct afpacket_ctx *ctx, struct worker_stats *total)
         total->packets_dropped  += atomic_load(&ctx->workers[i].stats.packets_dropped);
         total->bytes_received   += atomic_load(&ctx->workers[i].stats.bytes_received);
         total->bytes_sent       += atomic_load(&ctx->workers[i].stats.bytes_sent);
+        total->packets_truncated += atomic_load(&ctx->workers[i].stats.packets_truncated);
+        total->bytes_truncated   += atomic_load(&ctx->workers[i].stats.bytes_truncated);
     }
 }
 
@@ -601,6 +635,8 @@ void afpacket_reset_stats(struct afpacket_ctx *ctx)
         atomic_store(&ctx->workers[i].stats.packets_dropped, 0);
         atomic_store(&ctx->workers[i].stats.bytes_received, 0);
         atomic_store(&ctx->workers[i].stats.bytes_sent, 0);
+        atomic_store(&ctx->workers[i].stats.packets_truncated, 0);
+        atomic_store(&ctx->workers[i].stats.bytes_truncated, 0);
     }
 }
 

@@ -27,6 +27,7 @@
 #include "tunnel.h"
 #include "tx_ring.h"
 #include "filter.h"
+#include "truncate.h"
 #include "../include/common.h"
 
 /* Perf buffer configuration */
@@ -68,6 +69,7 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
     /* Get packet data pointer (after metadata) */
     __u8 *pkt_data = meta->data;
     __u32 pkt_len = meta->len;
+    __u32 send_len = pkt_len;
 
     /* Validate packet length */
     if (size < sizeof(struct pkt_meta) + pkt_len) {
@@ -97,11 +99,19 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         }
     }
 
+    send_len = truncate_apply(pkt_data, pkt_len,
+                              wctx->config.truncate_enabled,
+                              wctx->config.truncate_length);
+    if (send_len < pkt_len) {
+        atomic_fetch_add(&stats->packets_truncated, 1);
+        atomic_fetch_add(&stats->bytes_truncated, (uint64_t)(pkt_len - send_len));
+    }
+
     if (wctx->config.tunnel_ctx) {
         tunnel_debug_own_mismatch(wctx->config.tunnel_ctx, pkt_data, pkt_len);
-        if (tunnel_send(wctx->config.tunnel_ctx, pkt_data, pkt_len) == 0) {
+        if (tunnel_send(wctx->config.tunnel_ctx, pkt_data, send_len) == 0) {
             atomic_fetch_add(&stats->packets_sent, 1);
-            atomic_fetch_add(&stats->bytes_sent, pkt_len);
+            atomic_fetch_add(&stats->bytes_sent, send_len);
             wctx->tx_pending++;
             if (wctx->tx_pending >= 32) {
                 tunnel_flush(wctx->config.tunnel_ctx);
@@ -110,9 +120,9 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         } else {
             atomic_fetch_add(&stats->packets_dropped, 1);
         }
-    } else if (tx_ring_write(&wctx->tx_ring, pkt_data, pkt_len) == 0) {
+    } else if (tx_ring_write(&wctx->tx_ring, pkt_data, send_len) == 0) {
         atomic_fetch_add(&stats->packets_sent, 1);
-        atomic_fetch_add(&stats->bytes_sent, pkt_len);
+        atomic_fetch_add(&stats->bytes_sent, send_len);
         wctx->tx_pending++;
         if (wctx->tx_pending >= 32) {
             tx_ring_flush(&wctx->tx_ring);
@@ -412,6 +422,8 @@ void workers_get_stats(struct worker_ctx *ctx, struct worker_stats *total)
         total->packets_dropped += atomic_load(&ctx->stats[i].packets_dropped);
         total->bytes_received += atomic_load(&ctx->stats[i].bytes_received);
         total->bytes_sent += atomic_load(&ctx->stats[i].bytes_sent);
+        total->packets_truncated += atomic_load(&ctx->stats[i].packets_truncated);
+        total->bytes_truncated += atomic_load(&ctx->stats[i].bytes_truncated);
     }
 }
 
@@ -429,5 +441,7 @@ void workers_reset_stats(struct worker_ctx *ctx)
         atomic_store(&ctx->stats[i].packets_dropped, 0);
         atomic_store(&ctx->stats[i].bytes_received, 0);
         atomic_store(&ctx->stats[i].bytes_sent, 0);
+        atomic_store(&ctx->stats[i].packets_truncated, 0);
+        atomic_store(&ctx->stats[i].bytes_truncated, 0);
     }
 }

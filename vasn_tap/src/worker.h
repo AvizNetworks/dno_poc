@@ -24,6 +24,8 @@ struct worker_stats {
     _Atomic uint64_t packets_dropped;
     _Atomic uint64_t bytes_received;
     _Atomic uint64_t bytes_sent;
+    _Atomic uint64_t packets_truncated;
+    _Atomic uint64_t bytes_truncated;
 };
 
 /* Worker configuration */
@@ -34,6 +36,8 @@ struct worker_config {
     struct tunnel_ctx *tunnel_ctx; /* If set, use tunnel_send instead of tx_ring */
     bool verbose;                 /* Verbose logging */
     bool debug;                   /* TX debug (hex dumps) */
+    bool truncate_enabled;        /* Truncate allowed packets before send */
+    uint32_t truncate_length;     /* Truncate length when enabled (64..9000) */
 };
 
 /* Worker context */

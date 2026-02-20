@@ -88,6 +88,11 @@ struct runtime_config {
 	bool show_stats;                 /* optional */
 	bool show_filter_stats;          /* optional */
 	bool show_resource_usage;        /* optional */
+	struct {
+		bool enabled;              /* optional, default false */
+		uint32_t length;           /* required when enabled: 64..9000 */
+		bool length_set;           /* parser helper for validation */
+	} truncate;
 };
 
 /* Top-level config: filter and optional tunnel */

@@ -33,8 +33,9 @@ The application supports **two capture backends** selected from YAML (`runtime.m
                           +------------------+
                           |  main.c          |  Entry point, signal handling
                           |  cli.c           |  Argument parsing
-                          |  config.c       |  YAML filter + optional tunnel config load
+                          |  config.c       |  YAML runtime/filter/tunnel config load
                           |  filter.c       |  ACL filter_packet (L2/L3/L4)
+                          |  truncate.c     |  Post-filter truncate + IPv4 fixup
                           |  tunnel.c       |  Optional VXLAN/GRE encap (userspace raw socket)
                           +--------+---------+
                                    |
@@ -115,13 +116,26 @@ Loads runtime + filter + optional tunnel configuration from YAML (used with `-c`
 - **config_load(path)** — Opens file, parses YAML, fills `struct tap_config` (runtime + filter + tunnel). On error returns NULL and sets a static error message (retrievable via **config_get_error()**).
 - **config_free(cfg)** — Frees the config. Safe to call with NULL.
 
-Config layout: mandatory **runtime** section (`input_iface`, `mode`, `workers`, `verbose`, `stats`, etc.), mandatory **filter** section, and optional **tunnel** section. When tunnel is present, `runtime.output_iface` is required and loopback output is rejected. Validation is done at load; invalid files cause startup failure. Config is read once at startup; restart required for changes.
+Config layout: mandatory **runtime** section (`input_iface`, `output_iface`, `mode`, workers/stats flags, `truncate.enabled`, `truncate.length`), mandatory **filter** section, and optional **tunnel** section. When tunnel is present, `runtime.output_iface` is required and loopback output is rejected. Validation is done at load; invalid files cause startup failure. Config is read once at startup; restart required for changes.
 
 ### filter.c -- Packet Filter (ACL)
 
 **File:** `src/filter.c`, `src/filter.h`
 
-Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. IP addresses in config (from **parse_cidr**) and in the packet are compared in **network byte order**. L2 handling supports standard Ethernet (IP at offset 14) and **802.1Q VLAN** (ethertype 0x8100, IP at offset 18), with a fallback to detect IPv4 at offset 18 when the frame layout is non-standard. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before output: when **tunnel_ctx** is set they call **tunnel_send()** (and **tunnel_flush()** per block) instead of **tx_ring_write()**; otherwise they use the shared TX ring. Workers increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip output. When `runtime.filter_stats` is true, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without it, counters are still updated but no read/print is done.
+Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. IP addresses in config (from **parse_cidr**) and in the packet are compared in **network byte order**. L2 handling supports standard Ethernet (IP at offset 14) and **802.1Q VLAN** (ethertype 0x8100, IP at offset 18), with a fallback to detect IPv4 at offset 18 when the frame layout is non-standard. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before output and then apply optional runtime truncation. When **tunnel_ctx** is set they call **tunnel_send()** (and **tunnel_flush()** per block) instead of **tx_ring_write()**; otherwise they use the shared TX ring. Workers increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip output. When `runtime.filter_stats` is true, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without it, counters are still updated but no read/print is done.
+
+### truncate.c -- Post-filter Truncation (Optional)
+
+**File:** `src/truncate.c`, `src/truncate.h`
+
+When `runtime.truncate.enabled` is true, packets that pass filtering are truncated to `runtime.truncate.length` before forwarding/tunneling.
+
+- `truncate_apply(pkt_data, pkt_len, enabled, truncate_len)`:
+  - no-op when disabled or packet length is already below threshold
+  - truncates to configured length when larger
+  - for ETH+IPv4 and ETH+VLAN+IPv4, updates IPv4 total length and recomputes IPv4 header checksum
+
+This helper is called from both eBPF (`worker.c`) and AF_PACKET (`afpacket.c`) post-filter send paths, and truncation counters are reflected in runtime stats.
 
 ### tunnel.c -- VXLAN/GRE Encapsulation (Optional)
 
@@ -177,6 +191,8 @@ struct worker_stats {
     _Atomic uint64_t packets_dropped;
     _Atomic uint64_t bytes_received;
     _Atomic uint64_t bytes_sent;
+    _Atomic uint64_t packets_truncated;
+    _Atomic uint64_t bytes_truncated;
 };
 
 struct worker_ctx {
@@ -194,7 +210,7 @@ struct worker_ctx {
 Design notes:
 - **Forced single-threaded**: `num_workers` is always set to 1 because the perf buffer polls events from all CPUs in a single `perf_buffer__poll()` call.
 - Worker thread is pinned to CPU 0 via `pthread_setaffinity_np`.
-- Callback `handle_sample()` receives `struct pkt_meta` (defined in `common.h`). When **config.tunnel_ctx** is set, allowed packets are sent via **tunnel_send()** / **tunnel_flush()**; otherwise via the **shared TX ring** (`tx_ring_write()` + flush every 32 packets).
+- Callback `handle_sample()` receives `struct pkt_meta` (defined in `common.h`). After filter allow, optional `truncate_apply()` runs. When **config.tunnel_ctx** is set, allowed packets are sent via **tunnel_send()** / **tunnel_flush()**; otherwise via the **shared TX ring** (`tx_ring_write()` + flush every 32 packets).
 
 ### afpacket.c -- AF_PACKET Backend
 
@@ -213,6 +229,9 @@ struct afpacket_config {
     struct tunnel_ctx *tunnel_ctx;  // When set, use tunnel_send instead of tx_ring
     int  num_workers;
     bool verbose;
+    bool debug;
+    bool truncate_enabled;
+    uint32_t truncate_length;
 };
 
 struct afpacket_worker {
@@ -241,7 +260,7 @@ struct afpacket_ctx {
 Internal functions:
 - `setup_rx_socket()` -- Creates AF_PACKET socket, sets TPACKET_V3, configures `PACKET_RX_RING`, binds to input interface, `mmap()`s the RX ring
 - `join_fanout()` -- Sets `PACKET_FANOUT` with `PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_DEFRAG | PACKET_FANOUT_FLAG_ROLLOVER`
-- `process_block()` -- Iterates packets in a TPACKET_V3 RX block; when **config.tunnel_ctx** is set, calls **tunnel_send()** / **tunnel_flush()** for allowed packets; otherwise **tx_ring_write()** + **tx_ring_flush()** per block
+- `process_block()` -- Iterates packets in a TPACKET_V3 RX block; for allow-path packets applies `truncate_apply()`, then sends via tunnel or TX ring, then flushes per block
 - `afpacket_worker_thread()` -- Main worker loop: `poll()` -> `process_block()` -> release block
 
 RX ring buffer defaults (configurable in `afpacket.h`):
@@ -348,7 +367,7 @@ Integration tests are Bash-based and require root. The runner is `tests/integrat
 | `struct tap_ctx` | `src/tap.h` | eBPF object and TC hook state |
 | `struct worker_config` | `src/worker.h` | eBPF worker configuration |
 | `struct worker_ctx` | `src/worker.h` | eBPF worker runtime state (includes `tx_ring`) |
-| `struct worker_stats` | `src/worker.h` | Atomic packet/byte counters (shared by both modes) |
+| `struct worker_stats` | `src/worker.h` | Atomic packet/byte counters incl. truncation counters (shared by both modes) |
 | `struct tx_ring_ctx` | `src/tx_ring.h` | Shared TPACKET_V2 TX ring state (used by both modes) |
 | `struct afpacket_config` | `src/afpacket.h` | AF_PACKET backend configuration |
 | `struct afpacket_worker` | `src/afpacket.h` | Per-worker RX ring + `struct tx_ring_ctx tx` |
@@ -365,6 +384,7 @@ Integration tests are Bash-based and require root. The runner is `tests/integrat
 | `src/cli.c` | ~85 | `parse_args()` -- extracted for testability |
 | `src/config.c` | ~460 | YAML filter + tunnel config load (libyaml), validation |
 | `src/filter.c` | ~275 | `filter_packet()` -- L2/L3/L4 ACL, first-match, VLAN/L2 handling |
+| `src/truncate.c` | ~90 | `truncate_apply()` -- post-filter truncation + IPv4 header/checksum fix |
 | `src/tunnel.c` | ~290 | Userspace VXLAN/GRE encap: raw socket, ARP, MTU clamp, thread-safe send |
 | `src/tap.c` | ~200 | eBPF: load, attach, detach, cleanup |
 | `src/worker.c` | ~425 | eBPF: perf buffer polling, forwards via tunnel_send or shared tx_ring |

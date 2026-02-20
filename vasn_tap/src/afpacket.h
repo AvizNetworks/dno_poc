@@ -37,6 +37,8 @@ struct afpacket_config {
     int  num_workers;             /* Number of worker threads */
     bool verbose;                 /* Verbose logging */
     bool debug;                   /* TX debug (hex dumps) */
+    bool truncate_enabled;        /* Truncate allowed packets before send */
+    uint32_t truncate_length;     /* Truncate length when enabled (64..9000) */
 };
 
 /* Per-worker state for AF_PACKET mode */

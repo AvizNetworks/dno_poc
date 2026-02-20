@@ -144,6 +144,9 @@ static void print_stats_generic(struct worker_stats *stats, double elapsed_sec)
     printf("TX: %lu total (%.0f pps, %.2f Mbps)\n",
            (unsigned long)stats->packets_sent, pps_tx, mbps_tx);
     printf("Dropped: %lu total\n", (unsigned long)stats->packets_dropped);
+    printf("Truncated: %lu total, %lu bytes removed\n",
+           (unsigned long)stats->packets_truncated,
+           (unsigned long)stats->bytes_truncated);
     printf("----------------------------------\n");
 
     /* Save current stats for next interval */
@@ -426,6 +429,11 @@ int main(int argc, char **argv)
            g_tap_config->runtime.output_iface[0] ? g_tap_config->runtime.output_iface : "(drop mode)");
     printf("Worker threads:   %d\n",
            g_tap_config->runtime.workers > 0 ? g_tap_config->runtime.workers : get_nprocs());
+    printf("Truncate:         %s\n",
+           g_tap_config->runtime.truncate.enabled ? "enabled" : "disabled");
+    if (g_tap_config->runtime.truncate.enabled) {
+        printf("Truncate length:  %u\n", (unsigned)g_tap_config->runtime.truncate.length);
+    }
     printf("Filter config:    %s\n", args.config_path);
     if (g_tap_config && g_tap_config->tunnel.enabled) {
         err = tunnel_init(&g_tunnel_ctx,
@@ -463,6 +471,8 @@ int main(int argc, char **argv)
         aconfig.num_workers = g_tap_config->runtime.workers;
         aconfig.verbose = g_tap_config->runtime.verbose;
         aconfig.debug = g_tap_config->runtime.debug;
+        aconfig.truncate_enabled = g_tap_config->runtime.truncate.enabled;
+        aconfig.truncate_length = g_tap_config->runtime.truncate.length;
 
         err = afpacket_init(&g_afpacket_ctx, &aconfig);
         if (err) {
@@ -482,6 +492,8 @@ int main(int argc, char **argv)
         wconfig.num_workers = g_tap_config->runtime.workers;
         wconfig.verbose = g_tap_config->runtime.verbose;
         wconfig.debug = g_tap_config->runtime.debug;
+        wconfig.truncate_enabled = g_tap_config->runtime.truncate.enabled;
+        wconfig.truncate_length = g_tap_config->runtime.truncate.length;
         if (g_tap_config->runtime.output_iface[0]) {
             snprintf(wconfig.output_ifname, sizeof(wconfig.output_ifname), "%s", g_tap_config->runtime.output_iface);
             wconfig.output_ifindex = g_tunnel_ctx ? 0 : if_nametoindex(g_tap_config->runtime.output_iface);

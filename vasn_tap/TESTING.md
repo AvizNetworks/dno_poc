@@ -118,6 +118,17 @@ Tests the `output_open()`, `output_send()`, and `output_close()` functions.
 | `test_output_close_negative_fd` | `output_close(-1)` does not crash |
 | `test_output_close_invalid_fd` | `output_close(9999)` does not crash |
 
+#### test_truncate.c -- Post-filter Truncation Helper
+
+Tests truncation helper behavior used by both backends after filter-allow and before send.
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_truncate_disabled_no_change` | Disabled truncation leaves packet length unchanged |
+| `test_truncate_eth_ipv4_updates_total_len_and_checksum` | ETH+IPv4 truncation updates IPv4 total length and header checksum |
+| `test_truncate_eth_vlan_ipv4_updates_total_len_and_checksum` | ETH+VLAN+IPv4 truncation updates IPv4 total length and header checksum |
+| `test_truncate_non_ipv4_only_len_changes` | Non-IPv4 frames are length-capped without IPv4 fixup |
+
 ### How to Add a New Unit Test
 
 **Step 1:** Create a new test file in `tests/unit/`:
@@ -424,8 +435,9 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/unit/test_cli.c` | 8 tests for `parse_args()` (CLI-lite + deprecated flags) |
 | `tests/unit/test_stats.c` | 10 tests for stats accumulation/reset |
 | `tests/unit/test_config.c` | 5 tests for init validation |
-| `tests/unit/test_config_filter.c` | 10 tests for YAML load and tunnel (GRE/VXLAN) parsing |
+| `tests/unit/test_config_filter.c` | YAML load tests incl. runtime/tunnel/truncate validation |
 | `tests/unit/test_output.c` | 8 tests for output module error paths |
+| `tests/unit/test_truncate.c` | Truncation helper tests (IPv4/VLAN IPv4 length + checksum fixup) |
 | `tests/unit/test_common.h` | Shared CMocka includes |
 | `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (10) \| tunnel (2) \| all (20) |
 | `tests/integration/run_all.sh` | Wrapper for `run_integ.sh all` |

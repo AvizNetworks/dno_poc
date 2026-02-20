@@ -135,9 +135,11 @@ struct parse_ctx {
 	int in_rule;
 	int in_match;
 	int in_runtime;
+	int in_runtime_truncate;
 	int in_tunnel;
 	int depth;                    /* mapping/sequence nesting */
 	int next_mapping_is_runtime;  /* next MAPPING_START is runtime block */
+	int next_mapping_is_runtime_truncate; /* next MAPPING_START is runtime.truncate block */
 	int next_mapping_is_filter;   /* next MAPPING_START is filter block */
 	int next_sequence_is_rules;   /* next SEQUENCE_START is rules */
 	int next_mapping_is_match;    /* next MAPPING_START is match block */
@@ -184,6 +186,15 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 				ctx.cfg->runtime.configured = true;
 				ctx.cfg->runtime.workers = 0;
 				ctx.cfg->runtime.mode = RUNTIME_MODE_UNSET;
+				ctx.cfg->runtime.truncate.enabled = false;
+				ctx.cfg->runtime.truncate.length = 0;
+				ctx.cfg->runtime.truncate.length_set = false;
+			} else if (ctx.next_mapping_is_runtime_truncate) {
+				ctx.in_runtime_truncate = 1;
+				ctx.next_mapping_is_runtime_truncate = 0;
+				ctx.need_value = 0;
+				free(ctx.last_key);
+				ctx.last_key = NULL;
 			} else if (ctx.next_mapping_is_filter) {
 				ctx.in_filter = 1;
 				ctx.next_mapping_is_filter = 0;
@@ -223,7 +234,9 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 			else if (ctx.in_rule) {
 				ctx.in_rule = 0;
 				ctx.rule_idx++;
-			} else if (ctx.in_tunnel)
+			} else if (ctx.in_runtime_truncate)
+				ctx.in_runtime_truncate = 0;
+			else if (ctx.in_tunnel)
 				ctx.in_tunnel = 0;
 			else if (ctx.in_runtime)
 				ctx.in_runtime = 0;
@@ -253,7 +266,27 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 					yaml_event_delete(&event);
 					return -1;
 				}
-				if (ctx.in_runtime && ctx.last_key) {
+				if (ctx.in_runtime_truncate && ctx.last_key) {
+					struct runtime_config *rc = &ctx.cfg->runtime;
+					if (strcmp(ctx.last_key, "enabled") == 0) {
+						if (parse_bool(val, &rc->truncate.enabled) != 0) {
+							set_error("Invalid runtime truncate.enabled: %s (must be true/false)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+					} else if (strcmp(ctx.last_key, "length") == 0) {
+						unsigned int tlen;
+						if (sscanf(val, "%u", &tlen) != 1 || tlen > 9000u) {
+							set_error("Invalid runtime truncate.length: %s (must be 0-9000)", val);
+							free(val);
+							yaml_event_delete(&event);
+							return -1;
+						}
+						rc->truncate.length = (uint32_t)tlen;
+						rc->truncate.length_set = true;
+					}
+				} else if (ctx.in_runtime && ctx.last_key) {
 					struct runtime_config *rc = &ctx.cfg->runtime;
 					if (strcmp(ctx.last_key, "input_iface") == 0) {
 						if (strlen(val) >= sizeof(rc->input_iface)) {
@@ -326,6 +359,8 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 							yaml_event_delete(&event);
 							return -1;
 						}
+					} else if (strcmp(ctx.last_key, "truncate") == 0) {
+						/* runtime.truncate is a mapping, scalar value ignored if present */
 					}
 				} else if (ctx.in_filter && strcmp(ctx.last_key, "default_action") == 0) {
 					enum filter_action a = parse_action(val);
@@ -482,6 +517,8 @@ static int parse_yaml_events(yaml_parser_t *parser, struct tap_config *cfg)
 					ctx.next_mapping_is_tunnel = 1;
 				else if (ctx.in_filter && ctx.depth == 2 && ctx.last_key && strcmp(ctx.last_key, "rules") == 0)
 					ctx.next_sequence_is_rules = 1;
+				else if (ctx.in_runtime && ctx.depth == 2 && ctx.last_key && strcmp(ctx.last_key, "truncate") == 0)
+					ctx.next_mapping_is_runtime_truncate = 1;
 				else if (ctx.in_rule && ctx.last_key && strcmp(ctx.last_key, "match") == 0)
 					ctx.next_mapping_is_match = 1;
 			}
@@ -561,6 +598,22 @@ struct tap_config *config_load(const char *path)
 		fclose(f);
 		free(cfg);
 		return NULL;
+	}
+	if (cfg->runtime.truncate.enabled) {
+		if (!cfg->runtime.truncate.length_set) {
+			set_error("runtime truncate.length is required when truncate.enabled is true");
+			yaml_parser_delete(&parser);
+			fclose(f);
+			free(cfg);
+			return NULL;
+		}
+		if (cfg->runtime.truncate.length < 64u || cfg->runtime.truncate.length > 9000u) {
+			set_error("runtime truncate.length must be in range 64-9000 when enabled");
+			yaml_parser_delete(&parser);
+			fclose(f);
+			free(cfg);
+			return NULL;
+		}
 	}
 
 	/* Validate tunnel section if present */
