@@ -28,6 +28,19 @@ int tunnel_init(struct tunnel_ctx **ctx_out,
                 const char *output_ifname);
 
 /*
+ * Returns 1 if the packet looks like our own tunnel output (VXLAN/GRE to remote).
+ * Used when -i and -o are the same interface to avoid re-capturing and re-encapsulating.
+ * Safe to call with NULL ctx (returns 0). Thread-safe (read-only on ctx).
+ */
+int tunnel_is_own_packet(const struct tunnel_ctx *ctx, const void *pkt_data, uint32_t pkt_len);
+
+/*
+ * When ctx->verbose: log once if a packet has our tunnel IPs but was not skipped (UDP/VNI mismatch).
+ * No-op if ctx is NULL or !ctx->verbose. Thread-safe (uses static for one-time message).
+ */
+void tunnel_debug_own_mismatch(const struct tunnel_ctx *ctx, const void *pkt_data, uint32_t pkt_len);
+
+/*
  * Send one inner L2 frame (encapsulated and sent). Clamps to MTU; drops if too large.
  * Thread-safe. Returns 0 on success, -1 on drop/error.
  */

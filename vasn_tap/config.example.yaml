@@ -9,30 +9,36 @@ filter:
   default_action: drop   # allow | drop
   rules:
      # Allow TCP to port 22 (e.g. SSH)
-    - action: drop
+    - action: allow
       match:
         protocol: tcp
         port_dst: 22
 
    # Allow TCP to port 443 (e.g. HTTPS)
-    - action: drop
+    - action: allow
       match:
         protocol: tcp
         port_dst: 443
 
+    - action: allow
+      match:
+        protocol: tcp
+        port_dst: 8080
+
+
     # Allow TCP 
-    - action: drop
+    - action: allow
       match:
         protocol: tcp
 
     # Allow UDP
-    - action: drop
+    - action: allow
       match:
         protocol: udp
 
 
     # Allow traffic from a subnet
-    - action: drop
+    - action: allow
       match:
         ip_src: 192.168.200.0/24
 
@@ -48,15 +54,15 @@ filter:
 #   eth_type: 0x0800 (IPv4) or decimal
 #
 # Tunnel (optional): when present, encapsulate allowed packets and send to remote VTEP
-#tunnel:
-#  type: vxlan
-#  remote_ip: 10.4.5.187
-#  vni: 1000
-#  dstport: 4789
+tunnel:
+  type: vxlan
+  remote_ip: 10.4.5.187
+  vni: 1000
+  dstport: 4789
 #   local_ip: optional; else from output interface (-o)
 # For GRE: type: gre, remote_ip (required), key (optional), local_ip (optional)
-tunnel:
-  type: gre
-  remote_ip: 10.4.5.187
-  key: 1000
+#tunnel:
+#  type: gre
+#  remote_ip: 10.4.5.187
+#  key: 1000
 #  local_ip: optional; else from output interface (-o)

@@ -232,7 +232,12 @@ static void process_block(struct afpacket_worker *worker,
         atomic_fetch_add(&worker->stats.packets_received, 1);
         atomic_fetch_add(&worker->stats.bytes_received, pkt_len);
 
+        /* Skip our own tunnel output when -i and -o are the same (avoid re-encapsulation loop) */
+        if (tunnel_ctx && tunnel_is_own_packet(tunnel_ctx, pkt_data, pkt_len))
+            goto next_pkt;
+
         if (tunnel_ctx) {
+            //tunnel_debug_own_mismatch(tunnel_ctx, pkt_data, pkt_len);
             if (g_filter_config) {
                 int matched;
                 enum filter_action fa = filter_packet(g_filter_config, pkt_data, pkt_len, &matched);
@@ -280,6 +285,7 @@ static void process_block(struct afpacket_worker *worker,
             atomic_fetch_add(&worker->stats.packets_dropped, 1);
         }
 
+next_pkt:
         pkt = (struct tpacket3_hdr *)((uint8_t *)pkt + pkt->tp_next_offset);
     }
 

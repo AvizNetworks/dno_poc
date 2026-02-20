@@ -220,7 +220,16 @@ static int send_vxlan(struct tunnel_ctx *ctx, const void *inner, uint32_t len)
 	udp = (struct udphdr *)p;
 	udp->source=0; udp->dest=htons(ctx->dstport); udp->len=htons(OUTER_UDP_LEN+VXLAN_HDR_LEN+len); udp->check=0;
 	p += OUTER_UDP_LEN;
-	vx = (struct vxlanhdr *)p; vx->vx_flags=htonl(0x08000000); vx->vx_vni=htonl(ctx->vni<<8);
+	vx = (struct vxlanhdr *)p;
+	vx->vx_flags = htonl(0x08000000);
+	/* RFC 7348: VNI 24 bits in bytes 4-6 (big-endian); write explicitly for portability */
+	{
+		uint8_t *vni_b = (uint8_t *)&vx->vx_vni;
+		vni_b[0] = (ctx->vni >> 16) & 0xff;
+		vni_b[1] = (ctx->vni >> 8) & 0xff;
+		vni_b[2] = (ctx->vni) & 0xff;
+		vni_b[3] = 0;
+	}
 	p += VXLAN_HDR_LEN;
 	memcpy(p, inner, len);
 	total = (uint32_t)(p - ctx->encap_buf) + len;
@@ -254,6 +263,162 @@ static int send_gre(struct tunnel_ctx *ctx, const void *inner, uint32_t len)
 	atomic_fetch_add(&ctx->packets_sent, 1);
 	atomic_fetch_add(&ctx->bytes_sent, (uint64_t)total);
 	return 0;
+}
+
+#define ETHERTYPE_IP   0x0800
+#define ETHERTYPE_VLAN 0x8100
+#define GRE_ETH        0x6558  /* Transparent Ethernet Bridging (GRE) */
+
+/* Returns 1 if at l2_off we see our tunnel (IP pair, UDP port, VNI). */
+static int is_our_tunnel_at(const struct tunnel_ctx *ctx, const uint8_t *pkt,
+                            uint32_t pkt_len, uint32_t l2_off)
+{
+	uint32_t ip_off;
+	uint16_t eth_type;
+	uint8_t ihl, protocol;
+	uint32_t ip_src_be, ip_dst_be;
+
+	if (pkt_len < l2_off + ETH_HLEN + 20u)
+		return 0;
+
+	eth_type = (uint16_t)((pkt[l2_off + 12] << 8) | pkt[l2_off + 13]);
+	if (eth_type == ETHERTYPE_IP)
+		ip_off = l2_off + ETH_HLEN;
+	else if (eth_type == ETHERTYPE_VLAN && pkt_len >= l2_off + ETH_HLEN + 4u + 20u) {
+		eth_type = (uint16_t)((pkt[l2_off + 16] << 8) | pkt[l2_off + 17]);
+		if (eth_type != ETHERTYPE_IP)
+			return 0;
+		ip_off = l2_off + ETH_HLEN + 4;
+	} else
+		return 0;
+
+	if (pkt_len < ip_off + 20u)
+		return 0;
+	ihl = (pkt[ip_off] & 0x0f) * 4;
+	if (ihl < 20 || pkt_len < ip_off + (uint32_t)ihl)
+		return 0;
+
+	protocol = pkt[ip_off + 9];
+	ip_src_be = (uint32_t)pkt[ip_off + 12] << 24 | (uint32_t)pkt[ip_off + 13] << 16 |
+	            (uint32_t)pkt[ip_off + 14] << 8 | (uint32_t)pkt[ip_off + 15];
+	ip_dst_be = (uint32_t)pkt[ip_off + 16] << 24 | (uint32_t)pkt[ip_off + 17] << 16 |
+	            (uint32_t)pkt[ip_off + 18] << 8 | (uint32_t)pkt[ip_off + 19];
+
+	if (ip_src_be != ctx->local_ip_be || ip_dst_be != ctx->remote_ip_be)
+		return 0;
+
+	if (ctx->type == TUNNEL_TYPE_VXLAN) {
+		uint16_t udp_dst;
+		uint32_t vni_from_pkt;
+		if (protocol != IPPROTO_UDP || pkt_len < ip_off + (uint32_t)ihl + 8u + 8u)
+			return 0;
+		udp_dst = (uint16_t)((pkt[ip_off + ihl + 2] << 8) | pkt[ip_off + ihl + 3]);
+		if (udp_dst != htons(ctx->dstport))
+			return 0;
+		vni_from_pkt = (uint32_t)pkt[ip_off + ihl + 8 + 4] << 16 |
+		               (uint32_t)pkt[ip_off + ihl + 8 + 5] << 8 |
+		               (uint32_t)pkt[ip_off + ihl + 8 + 6];
+		if (vni_from_pkt != ctx->vni)
+			return 0;
+		return 1;
+	}
+
+	if (ctx->type == TUNNEL_TYPE_GRE) {
+		uint16_t gre_proto;
+		if (protocol != IPPROTO_GRE || pkt_len < ip_off + (uint32_t)ihl + 4u)
+			return 0;
+		gre_proto = (uint16_t)((pkt[ip_off + ihl + 2] << 8) | pkt[ip_off + ihl + 3]);
+		if (gre_proto != GRE_ETH)
+			return 0;
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * Returns 1 if pkt looks like our own tunnel output (skip when -i and -o are the same).
+ * Also skips if the packet already contains our encapsulation (e.g. inner after one VXLAN).
+ */
+int tunnel_is_own_packet(const struct tunnel_ctx *ctx, const void *pkt_data, uint32_t pkt_len)
+{
+	const uint8_t *pkt = (const uint8_t *)pkt_data;
+	uint32_t outer_len;
+
+	if (!ctx || !pkt || pkt_len < ETH_HLEN)
+		return 0;
+
+	/* Check outer encapsulation at start of packet */
+	if (is_our_tunnel_at(ctx, pkt, pkt_len, 0))
+		return 1;
+
+	/* If packet is already encapsulated (outer Eth+IP+UDP+VXLAN = 50 bytes), check inner */
+	outer_len = ETH_HLEN + 20 + 8 + 8;  /* eth + ip + udp + vxlan */
+	if (pkt_len >= outer_len + ETH_HLEN + 20u && is_our_tunnel_at(ctx, pkt, pkt_len, outer_len))
+		return 1;
+
+	return 0;
+}
+
+/*
+ * When ctx->verbose: log once when we're about to encapsulate a packet whose outer
+ * IP pair matches our tunnel (local->remote) but we didn't skip it, so we can see
+ * UDP port / VNI mismatch. No-op if ctx is NULL or !ctx->verbose.
+ */
+void tunnel_debug_own_mismatch(const struct tunnel_ctx *ctx, const void *pkt_data, uint32_t pkt_len)
+{
+	const uint8_t *pkt = (const uint8_t *)pkt_data;
+	uint32_t ip_off = 0;
+	uint16_t eth_type;
+	uint8_t ihl, protocol;
+	uint32_t ip_src_be, ip_dst_be;
+	static int logged;
+
+	if (!ctx || !ctx->verbose || !pkt || pkt_len < ETH_HLEN || logged)
+		return;
+
+	eth_type = (uint16_t)((pkt[12] << 8) | pkt[13]);
+	if (eth_type == ETHERTYPE_IP)
+		ip_off = ETH_HLEN;
+	else if (eth_type == ETHERTYPE_VLAN && pkt_len >= ETH_HLEN + 4u + 20u) {
+		eth_type = (uint16_t)((pkt[16] << 8) | pkt[17]);
+		if (eth_type == ETHERTYPE_IP)
+			ip_off = ETH_HLEN + 4;
+		else
+			return;
+	} else
+		return;
+
+	if (pkt_len < ip_off + 20u)
+		return;
+	ihl = (pkt[ip_off] & 0x0f) * 4;
+	if (ihl < 20 || pkt_len < ip_off + (uint32_t)ihl)
+		return;
+
+	protocol = pkt[ip_off + 9];
+	ip_src_be = (uint32_t)pkt[ip_off + 12] << 24 | (uint32_t)pkt[ip_off + 13] << 16 |
+	            (uint32_t)pkt[ip_off + 14] << 8 | (uint32_t)pkt[ip_off + 15];
+	ip_dst_be = (uint32_t)pkt[ip_off + 16] << 24 | (uint32_t)pkt[ip_off + 17] << 16 |
+	            (uint32_t)pkt[ip_off + 18] << 8 | (uint32_t)pkt[ip_off + 19];
+
+	if (ip_src_be != ctx->local_ip_be || ip_dst_be != ctx->remote_ip_be)
+		return;
+
+	/* Packet has our tunnel IPs but we didn't skip - log why (UDP/VNI) */
+	logged = 1;
+	if (ctx->type == TUNNEL_TYPE_VXLAN && protocol == IPPROTO_UDP &&
+	    pkt_len >= ip_off + (uint32_t)ihl + 8u + 8u) {
+		uint16_t udp_dst = (uint16_t)((pkt[ip_off + ihl + 2] << 8) | pkt[ip_off + ihl + 3]);
+		uint32_t vni_pkt = (uint32_t)pkt[ip_off + ihl + 8 + 4] << 16 |
+		                   (uint32_t)pkt[ip_off + ihl + 8 + 5] << 8 |
+		                   (uint32_t)pkt[ip_off + ihl + 8 + 6];
+		fprintf(stderr, "vasn_tap: packet with our tunnel IPs was not skipped (re-encap?): "
+		        "pkt udp_dst=%u vni=%u, ctx dstport=%u vni=%u\n",
+		        (unsigned)ntohs(udp_dst), (unsigned)vni_pkt,
+		        (unsigned)ctx->dstport, (unsigned)ctx->vni);
+	} else {
+		fprintf(stderr, "vasn_tap: packet with our tunnel IPs was not skipped: "
+		        "protocol=%u (expected UDP 17)\n", (unsigned)protocol);
+	}
 }
 
 int tunnel_send(struct tunnel_ctx *ctx, const void *inner, uint32_t len)

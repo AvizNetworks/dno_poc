@@ -75,6 +75,10 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         return;
     }
 
+    /* Skip our own tunnel output when -i and -o are the same (avoid re-encapsulation loop) */
+    if (wctx->config.tunnel_ctx && tunnel_is_own_packet(wctx->config.tunnel_ctx, pkt_data, pkt_len))
+        return;
+
     /* Drop mode (no tunnel and no tx_ring) */
     if (!wctx->config.tunnel_ctx && wctx->tx_ring.fd < 0) {
         atomic_fetch_add(&stats->packets_dropped, 1);
@@ -94,6 +98,7 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
     }
 
     if (wctx->config.tunnel_ctx) {
+        tunnel_debug_own_mismatch(wctx->config.tunnel_ctx, pkt_data, pkt_len);
         if (tunnel_send(wctx->config.tunnel_ctx, pkt_data, pkt_len) == 0) {
             atomic_fetch_add(&stats->packets_sent, 1);
             atomic_fetch_add(&stats->bytes_sent, pkt_len);
