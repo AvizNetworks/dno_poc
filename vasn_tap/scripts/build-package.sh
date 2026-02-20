@@ -42,9 +42,11 @@ required_files=(
   "${REPO_ROOT}/tc_clone.bpf.o"
   "${REPO_ROOT}/config.example.yaml"
   "${REPO_ROOT}/scripts/install.sh"
+  "${REPO_ROOT}/scripts/uninstall.sh"
   "${REPO_ROOT}/scripts/vasn_tapctl.sh"
   "${REPO_ROOT}/scripts/vasn_tap.service"
   "${REPO_ROOT}/scripts/INSTALL.txt"
+  "${REPO_ROOT}/README.md"
 )
 
 for file_path in "${required_files[@]}"; do
@@ -58,12 +60,14 @@ cp "${REPO_ROOT}/vasn_tap" "${STAGE_DIR}/vasn_tap"
 cp "${REPO_ROOT}/tc_clone.bpf.o" "${STAGE_DIR}/tc_clone.bpf.o"
 cp "${REPO_ROOT}/config.example.yaml" "${STAGE_DIR}/config.example.yaml"
 cp "${REPO_ROOT}/scripts/install.sh" "${STAGE_DIR}/install.sh"
+cp "${REPO_ROOT}/scripts/uninstall.sh" "${STAGE_DIR}/uninstall.sh"
 cp "${REPO_ROOT}/scripts/vasn_tapctl.sh" "${STAGE_DIR}/vasn_tapctl.sh"
 cp "${REPO_ROOT}/scripts/vasn_tap.service" "${STAGE_DIR}/vasn_tap.service"
 cp "${REPO_ROOT}/scripts/INSTALL.txt" "${STAGE_DIR}/INSTALL.txt"
+cp "${REPO_ROOT}/README.md" "${STAGE_DIR}/README.md"
 
-chmod 755 "${STAGE_DIR}/install.sh" "${STAGE_DIR}/vasn_tapctl.sh"
-chmod 644 "${STAGE_DIR}/vasn_tap.service" "${STAGE_DIR}/INSTALL.txt" "${STAGE_DIR}/config.example.yaml"
+chmod 755 "${STAGE_DIR}/install.sh" "${STAGE_DIR}/uninstall.sh" "${STAGE_DIR}/vasn_tapctl.sh"
+chmod 644 "${STAGE_DIR}/vasn_tap.service" "${STAGE_DIR}/INSTALL.txt" "${STAGE_DIR}/README.md" "${STAGE_DIR}/config.example.yaml"
 chmod 644 "${STAGE_DIR}/tc_clone.bpf.o"
 chmod 755 "${STAGE_DIR}/vasn_tap"
 

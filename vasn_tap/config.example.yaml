@@ -7,8 +7,8 @@
 # Rules are evaluated first-match; empty rules => default_action for every packet.
 
 runtime:
-  input_iface: ens34
-  output_iface: ens34        # optional unless tunnel section is enabled
+  input_iface: 
+  output_iface:         # optional unless tunnel section is enabled
   mode: afpacket             # afpacket | ebpf
   workers: 4                 # 0 = auto (num CPUs)
   verbose: false
@@ -66,11 +66,11 @@ filter:
 #   eth_type: 0x0800 (IPv4) or decimal
 #
 # Tunnel (optional): when present, encapsulate allowed packets and send to remote VTEP
-tunnel:
-  type: vxlan
-  remote_ip: 10.4.5.187
-  vni: 1000
-  dstport: 4789
+#tunnel:
+#  type: vxlan
+#  remote_ip: 127.0.0.1
+#  vni: 1000
+#  dstport: 4789
 #   local_ip: optional; else from output interface (-o)
 # For GRE: type: gre, remote_ip (required), key (optional), local_ip (optional)
 #tunnel:

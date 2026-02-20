@@ -6,6 +6,8 @@ vasn_tap packaging/install quick guide
 
 2) Install (root required):
    sudo ./install.sh
+   # Optional: force prompt for both input/output interfaces
+   sudo ./install.sh -i
 
 3) Edit runtime YAML:
    /etc/vasn_tap/config.yaml
@@ -23,6 +25,8 @@ vasn_tap packaging/install quick guide
 5) Start and check service:
    vasn_tapctl start
    vasn_tapctl status
+   vasn_tapctl counters
+   vasn_tapctl logs
 
 6) Validate-before-apply flow:
    vasn_tapctl apply /path/to/new.yaml
@@ -30,3 +34,8 @@ vasn_tap packaging/install quick guide
 
 Logs:
    journalctl -u vasn_tap -f
+
+Uninstall:
+   sudo ./uninstall.sh
+   # Optional: remove /etc/vasn_tap too
+   sudo ./uninstall.sh --purge-config
