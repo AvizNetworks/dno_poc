@@ -1,0 +1,32 @@
+vasn_tap packaging/install quick guide
+
+1) Untar package:
+   tar -xzf vasn_tap-<version>.tar.gz
+   cd vasn_tap-<version>
+
+2) Install (root required):
+   sudo ./install.sh
+
+3) Edit runtime YAML:
+   /etc/vasn_tap/config.yaml
+
+   Required runtime keys:
+   - runtime.input_iface
+   - runtime.mode (ebpf or afpacket)
+   - runtime.output_iface (required when tunnel.enabled=true)
+
+4) Validate configuration:
+   vasn_tapctl validate
+   # or validate an external file first:
+   vasn_tapctl validate /path/to/new.yaml
+
+5) Start and check service:
+   vasn_tapctl start
+   vasn_tapctl status
+
+6) Validate-before-apply flow:
+   vasn_tapctl apply /path/to/new.yaml
+   # validates first; only applies and restarts when valid
+
+Logs:
+   journalctl -u vasn_tap -f

@@ -222,8 +222,10 @@ The integration tests create an isolated network topology using Linux network na
   | veth_src_ns  |--veth-->| veth_src_host    |          | veth_dst_ns  |
   +--------------+         |                  |          +--------------+
                            |    vasn_tap      |                ^
-                           |  -i veth_src_host|                |
-                           |  -o veth_dst_host|          +-----+--------+
+                           |  runtime.input=  |                |
+                           |  veth_src_host   |          +-----+--------+
+                           |  runtime.output= |
+                           |  veth_dst_host   |
                            |                  |--veth-->| veth_dst_host |
                            +------------------+          +--------------+
 
@@ -265,8 +267,12 @@ To manually stress-test with higher rates:
 # Setup namespaces first
 sudo bash tests/integration/setup_namespaces.sh
 
-# Start vasn_tap
-sudo ./vasn_tap -m afpacket -i veth_src_host -o veth_dst_host -w 4 -v -s
+# Create/edit YAML with runtime.mode=afpacket, input/output interfaces, workers, stats
+cp config.example.yaml /tmp/vasn_tap_test.yaml
+# (edit /tmp/vasn_tap_test.yaml as needed)
+
+# Start vasn_tap using YAML runtime config
+sudo ./vasn_tap -c /tmp/vasn_tap_test.yaml
 
 # In another terminal — adjust -b rate to find drop threshold
 sudo ip netns exec ns_src iperf3 -c 192.168.200.2 -P 8 -b 100M -t 10
@@ -415,7 +421,7 @@ Defined in `tests/integration/test_helpers.sh`:
 
 | File | Purpose |
 |------|---------|
-| `tests/unit/test_cli.c` | 18 tests for `parse_args()` |
+| `tests/unit/test_cli.c` | 8 tests for `parse_args()` (CLI-lite + deprecated flags) |
 | `tests/unit/test_stats.c` | 10 tests for stats accumulation/reset |
 | `tests/unit/test_config.c` | 5 tests for init validation |
 | `tests/unit/test_config_filter.c` | 10 tests for YAML load and tunnel (GRE/VXLAN) parsing |

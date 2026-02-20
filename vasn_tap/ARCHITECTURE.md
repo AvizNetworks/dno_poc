@@ -14,7 +14,7 @@ vasn_tap is a lightweight packet tap that runs on customer operating systems. It
   | Customer  |   raw traffic    |  capture         |  forwarded |                  |
   | Interface |  ------------->  |  optional filter |  --------> |  ASN (on-prem)   |
   | (eth0)    |  (not modified)  |  (YAML -c)       |  (eth1)   |                  |
-  +-----------+                  |  stats / -F dump |            +------------------+
+  +-----------+                  |  stats / logging |            +------------------+
        |                         +------------------+
        |  original traffic              |
        |  continues normally            | L2/L3/L4 ACL (filter.c), then tx_ring or tunnel (VXLAN/GRE)
@@ -22,10 +22,10 @@ vasn_tap is a lightweight packet tap that runs on customer operating systems. It
    [Normal stack]                  [Stats, logging]
 ```
 
-The application supports **two capture backends** selected at startup via the `-m` flag:
+The application supports **two capture backends** selected from YAML (`runtime.mode`):
 
-1. **eBPF mode** (`-m ebpf`): Uses TC BPF hooks in the kernel to clone packets into a perf buffer, consumed by a single worker thread.
-2. **AF_PACKET mode** (`-m afpacket`): Uses TPACKET_V3 mmap'd ring buffers with PACKET_FANOUT_HASH for multi-worker distribution.
+1. **eBPF mode** (`runtime.mode: ebpf`): Uses TC BPF hooks in the kernel to clone packets into a perf buffer, consumed by a single worker thread.
+2. **AF_PACKET mode** (`runtime.mode: afpacket`): Uses TPACKET_V3 mmap'd ring buffers with PACKET_FANOUT_HASH for multi-worker distribution.
 
 ## Module Map
 
@@ -54,8 +54,8 @@ The application supports **two capture backends** selected at startup via the `-
                      v                         v
                +------------------------------------------+
                |  tx_ring.c / tx_ring.h   OR  tunnel.c    |
-               |  TX: mmap ring when -o set; when YAML    |
-               |  has tunnel: userspace VXLAN/GRE encap  |
+               |  TX: mmap ring when runtime.output_iface |
+               |  is set; with tunnel: userspace encap    |
                +------------------------------------------+
 ```
 
@@ -70,7 +70,7 @@ The application supports **two capture backends** selected at startup via the `-
 Responsibilities:
 - Parses CLI arguments via `parse_args()` from `cli.c`
 - Sets up signal handlers (SIGINT, SIGTERM) for graceful shutdown
-- Selects capture mode and initializes the appropriate backend
+- Loads YAML config, then selects capture mode and initializes the appropriate backend
 - Runs the main loop: periodic stats printing, wait for signal
 - On shutdown: stops workers, detaches hooks, cleans up resources
 
@@ -79,11 +79,11 @@ Key globals:
 - `g_worker_ctx` -- eBPF worker context
 - `g_afpacket_ctx` -- AF_PACKET context
 - `g_tunnel_ctx` -- tunnel context (when YAML has tunnel section; used for VXLAN/GRE encap)
-- `g_tap_config` -- loaded filter + tunnel config
-- `g_capture_mode` -- selected mode (from CLI)
+- `g_tap_config` -- loaded runtime + filter + optional tunnel config
+- `g_capture_mode` -- selected mode (from YAML runtime)
 - `g_running` -- volatile flag, set to false on SIGINT
 
-When tunnel is enabled, main calls **tunnel_init()** after config load (requires `-o`; `-o lo` is rejected). The TX line in stats and the "Tunnel (VXLAN|GRE): N packets sent" line use the tunnel's own counters when tunnel is active.
+When tunnel is enabled, main calls **tunnel_init()** after config load (`runtime.output_iface` is required; `runtime.output_iface: lo` is rejected). The TX line in stats and the "Tunnel (VXLAN|GRE): N packets sent" line use the tunnel's own counters when tunnel is active.
 
 ### cli.c -- Argument Parsing
 
@@ -95,36 +95,33 @@ Key struct:
 
 ```c
 struct cli_args {
-    char input_iface[64];    // -i / --input
-    char output_iface[64];   // -o / --output
-    enum capture_mode mode;  // -m / --mode (CAPTURE_MODE_EBPF or CAPTURE_MODE_AFPACKET)
-    int num_workers;         // -w / --workers (0 = auto-detect)
-    bool verbose;            // -v
-    bool show_stats;         // -s
-    bool help;               // -h
+    char config_path[256];   // -c / --config
+    bool validate_config;    // -V / --validate-config
+    bool help;               // -h / --help
+    bool show_version;       // --version
 };
 ```
 
 Return values: `0` = success, `1` = help requested, `-1` = error.
 
-CLI also supports `-c, --config <path>` (filter config YAML), `--validate-config` (load/validate and exit), and `-F, --filter-stats` (periodically dump filter rules and per-rule hit counts when a filter config is loaded).
+Only `-c`, `-V`, `-h`, and `--version` are active. Runtime behavior (`mode`, interfaces, workers, stats flags) is configured in YAML under `runtime:`.
 
-### config.c -- Filter Config (YAML)
+### config.c -- Runtime/Filter/Tunnel Config (YAML)
 
 **File:** `src/config.c`, `src/config.h`
 
-Loads the filter (ACL) configuration from a YAML file. Used when `-c` is set. Parsing is a single-pass libyaml event stream: top-level key **filter**, then **default_action** (scalar) and **rules** (sequence of mappings); each rule has **action** and an optional **match** mapping (protocol, port_src, port_dst, ip_src, ip_dst, eth_type).
+Loads runtime + filter + optional tunnel configuration from YAML (used with `-c`). Parsing is a single-pass libyaml event stream over top-level keys: **runtime**, **filter**, and optional **tunnel**.
 
-- **config_load(path)** — Opens file, parses YAML, fills `struct tap_config` (filter section). On error returns NULL and sets a static error message (retrievable via **config_get_error()**).
+- **config_load(path)** — Opens file, parses YAML, fills `struct tap_config` (runtime + filter + tunnel). On error returns NULL and sets a static error message (retrievable via **config_get_error()**).
 - **config_free(cfg)** — Frees the config. Safe to call with NULL.
 
-Config layout: **filter.default_action** (`allow` | `drop`), **filter.rules[]** — each rule has **action** and optional **match** (protocol, port_src, port_dst, ip_src, ip_dst, eth_type). Optional top-level **tunnel** section: **type** (`vxlan` | `gre`), **remote_ip** (required), **vni** (VXLAN), **dstport** (VXLAN, default 4789), **key** (GRE), **local_ip** (optional). When tunnel is present, `-o` is required and `-o lo` is rejected. Validation is done at load; invalid files cause startup failure. Config is read once at startup; restart required for changes.
+Config layout: mandatory **runtime** section (`input_iface`, `mode`, `workers`, `verbose`, `stats`, etc.), mandatory **filter** section, and optional **tunnel** section. When tunnel is present, `runtime.output_iface` is required and loopback output is rejected. Validation is done at load; invalid files cause startup failure. Config is read once at startup; restart required for changes.
 
 ### filter.c -- Packet Filter (ACL)
 
 **File:** `src/filter.c`, `src/filter.h`
 
-Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. IP addresses in config (from **parse_cidr**) and in the packet are compared in **network byte order**. L2 handling supports standard Ethernet (IP at offset 14) and **802.1Q VLAN** (ethertype 0x8100, IP at offset 18), with a fallback to detect IPv4 at offset 18 when the frame layout is non-standard. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before output: when **tunnel_ctx** is set they call **tunnel_send()** (and **tunnel_flush()** per block) instead of **tx_ring_write()**; otherwise they use the shared TX ring. Workers increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip output. When **-F (--filter-stats)** is set, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without **-F**, counters are still updated but no read/print is done.
+Implements first-match ACL: for each packet, **filter_packet(cfg, pkt_data, pkt_len, matched_rule_index)** parses L2 (ethertype), L3 (IPv4 src/dst, protocol), L4 (TCP/UDP ports) and returns **FILTER_ACTION_ALLOW** or **FILTER_ACTION_DROP**. IP addresses in config (from **parse_cidr**) and in the packet are compared in **network byte order**. L2 handling supports standard Ethernet (IP at offset 14) and **802.1Q VLAN** (ethertype 0x8100, IP at offset 18), with a fallback to detect IPv4 at offset 18 when the frame layout is non-standard. The optional **matched_rule_index** out-parameter is set to the rule index (0..num_rules-1) or -1 for default_action. No packet copy; first matching rule wins, else **default_action**. Main sets **g_filter_config** after load and calls **filter_stats_reset()**; AF_PACKET and eBPF workers call **filter_packet** before output: when **tunnel_ctx** is set they call **tunnel_send()** (and **tunnel_flush()** per block) instead of **tx_ring_write()**; otherwise they use the shared TX ring. Workers increment **filter_rule_hits[slot]** (per-rule or default slot), and on DROP skip output. When `runtime.filter_stats` is true, the stats loop aggregates these atomics and prints a rule dump (rule text plus hit counts); without it, counters are still updated but no read/print is done.
 
 ### tunnel.c -- VXLAN/GRE Encapsulation (Optional)
 
@@ -341,7 +338,7 @@ The eBPF perf buffer (`PERF_EVENT_ARRAY`) delivers events from all CPUs through 
 
 ### Integration Tests
 
-Integration tests are Bash-based and require root. The runner is `tests/integration/run_integ.sh [basic|filter|all]`: **basic** (8 cases), **filter** (10 ACL tests), **all** (18 cases). Make targets: `make test-basic`, `make test-filter`, `make test-all`. HTML reports are written to **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report.html). See [TESTING.md](TESTING.md) for details.
+Integration tests are Bash-based and require root. The runner is `tests/integration/run_integ.sh [basic|filter|tunnel|all]`: **basic** (8 cases), **filter** (10 ACL tests), **tunnel** (2 cases), **all** (20 cases). Make targets: `make test-basic`, `make test-filter`, `make test-tunnel`, `make test-all`. HTML reports are written to **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report.html). See [TESTING.md](TESTING.md) for details.
 
 ## Struct Quick Reference
 

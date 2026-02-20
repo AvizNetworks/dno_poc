@@ -1,0 +1,15 @@
+[Unit]
+Description=vasn_tap packet tap service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/share/vasn_tap
+ExecStart=/usr/local/bin/vasn_tap -c /etc/vasn_tap/config.yaml
+Restart=on-failure
+RestartSec=2
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

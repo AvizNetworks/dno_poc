@@ -68,6 +68,29 @@ The build produces:
 - `vasn_tap` -- the main binary
 - `tc_clone.bpf.o` -- the compiled eBPF program (used by ebpf mode)
 
+## Packaging and Systemd Deployment
+
+The repository includes first-release packaging and service-control scripts under `scripts/`:
+
+- `scripts/build-package.sh` -- builds and creates `vasn_tap-v<version>-<date>-<sha>.tar.gz`
+- `scripts/install.sh` -- installs binary, BPF object, config template, control script, and systemd unit
+- `scripts/vasn_tapctl.sh` -- control helper: `start|stop|restart|status|validate|apply`
+- `scripts/vasn_tap.service` -- systemd unit (`ExecStart=/usr/local/bin/vasn_tap -c /etc/vasn_tap/config.yaml`)
+- `scripts/INSTALL.txt` -- quick install/run instructions for QA
+
+Typical flow:
+
+```bash
+# Build package tarball
+./scripts/build-package.sh
+
+# On target host (after untar)
+sudo ./install.sh
+sudo vasn_tapctl validate
+sudo vasn_tapctl start
+sudo vasn_tapctl status
+```
+
 ## Usage
 
 vasn_tap requires **root privileges** (for raw socket access and eBPF).
@@ -95,6 +118,7 @@ sudo ./vasn_tap -V -c /etc/vasn_tap/config.yaml
 - In **ebpf** mode, worker count is forced to 1 regardless of `runtime.workers` (perf buffer limitation).
 - In **afpacket** mode, workers are distributed via PACKET_FANOUT_HASH for per-flow affinity.
 - If `runtime.output_iface` is omitted, packets are captured and counted but not forwarded (drop mode).
+- If tunnel is disabled and input/output are the same interface (especially `lo`), self-forwarding loops are possible. Use different interfaces or drop mode.
 - TX packet length is clamped to the output interface MTU (avoids kernel "packet size is too long" and stuck ring). Oversize packets are truncated; use UDP or jumbo MTU on the path to avoid truncation.
 - If mandatory config fields are missing/invalid (e.g. `runtime.input_iface` or `runtime.mode`), vasn_tap **does not start**.
 - Use **`-V -c <path>`** to validate config before restart/apply. Config is read once at startup; **restart is required** for config changes.
@@ -145,7 +169,7 @@ tunnel:
 #  local_ip: optional; else derived from runtime.output_iface
 ```
 
-For VXLAN: **type: vxlan**, **remote_ip** (required), **vni** (e.g. 1000), **dstport** (default 4789), optional **local_ip**. For GRE: **type: gre**, **remote_ip** (required), optional **key** and **local_ip**. With **-s**, stats show a line: `Tunnel (VXLAN): N packets sent, M bytes` or `Tunnel (GRE): ...`.
+For VXLAN: **type: vxlan**, **remote_ip** (required), **vni** (e.g. 1000), **dstport** (default 4789), optional **local_ip**. For GRE: **type: gre**, **remote_ip** (required), optional **key** and **local_ip**. With `runtime.stats: true`, stats show a line: `Tunnel (VXLAN): N packets sent, M bytes` or `Tunnel (GRE): ...`.
 
 ## Testing
 
@@ -191,6 +215,12 @@ vasn_tap/
 │       ├── tc_clone.bpf.c    # Kernel-side TC BPF program
 │       ├── tc_clone.h         # eBPF program constants
 │       └── vmlinux.h          # Auto-generated kernel type definitions
+├── scripts/
+│   ├── build-package.sh       # Build + stage + tarball for QA
+│   ├── install.sh             # Install binary/BPF/config/systemd unit
+│   ├── vasn_tapctl.sh         # start|stop|restart|status|validate|apply
+│   ├── vasn_tap.service       # systemd unit (YAML-driven startup)
+│   └── INSTALL.txt            # Packaging install quick guide
 ├── tests/
 │   ├── unit/                  # CMocka unit tests
 │   │   ├── test_cli.c        # CLI-lite tests: config path, validate, help/version, deprecated flags
@@ -227,8 +257,11 @@ Workers are automatically pinned to CPUs. For best performance, isolate CPUs:
 
 ```bash
 # Add to kernel cmdline: isolcpus=2,3,4,5
-# Then run with those CPUs:
-sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 4
+# Then configure in YAML runtime:
+#   mode: afpacket
+#   workers: 4
+# and run:
+sudo ./vasn_tap -c /etc/vasn_tap/config.yaml
 ```
 
 ### Socket Buffer Sizes
@@ -260,14 +293,14 @@ The perf buffer size is configured via `PERF_BUFFER_PAGES` in `src/worker.c`.
 
 **Memory** is dominated by mmap’d ring buffers; the kernel does not report per-thread RSS, so usage is process-wide.
 
-- **AF_PACKET:** Each worker has an RX ring (default 16 MB per worker) and, when not using tunnel, a TX ring (4 MB per worker). Total scales with `-w` (e.g. 4 workers ≈ 80 MB with TX).
+- **AF_PACKET:** Each worker has an RX ring (default 16 MB per worker) and, when not using tunnel, a TX ring (4 MB per worker). Total scales with `runtime.workers` (e.g. 4 workers ≈ 80 MB with TX).
 - **eBPF:** One perf buffer (~256 KB) and one shared TX ring (4 MB) when forwarding.
 - **Tunnel mode:** One small encap buffer (2 KB) shared by workers.
 
-Use **`-M`** (or **`--resource-usage`**) together with **`-s`** to print **memory (RSS)** and **per-thread CPU%** every stats interval. `-M` implies `-s`. Example:
+Set `runtime.resource_usage: true` together with `runtime.stats: true` to print **memory (RSS)** and **per-thread CPU%** every stats interval. `resource_usage` implies stats in code.
 
 ```bash
-sudo ./vasn_tap -m afpacket -i eth0 -o eth1 -w 4 -M
+sudo ./vasn_tap -c /etc/vasn_tap/config.yaml
 ```
 
 Output appears below the packet stats every second, for example:
@@ -279,14 +312,14 @@ CPU (1.0s): tid 1234 0.1% tid 1235 12.3% tid 1236 11.8% ...
 
 Resource data is gathered only in the **main thread** (reads from `/proc/self/status` and `/proc/self/task/*/stat`); the packet **hot path is not touched**, so there is no performance impact on capture or forwarding.
 
-**CPU** scales with the number of workers and traffic rate. Workers are pinned to CPUs; the main thread only sleeps and, when `-s` is set, prints stats (and resource usage when `-M` is set). To inspect from outside: `top` or `htop` (per-process and per-thread), or `pidstat -p <pid> -t 1` for per-thread CPU.
+**CPU** scales with the number of workers and traffic rate. Workers are pinned to CPUs; the main thread only sleeps and, when `runtime.stats` is enabled, prints stats (plus resource usage when `runtime.resource_usage` is enabled). To inspect from outside: `top` or `htop` (per-process and per-thread), or `pidstat -p <pid> -t 1` for per-thread CPU.
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | `Error: This program requires root privileges` | Run with `sudo` |
-| `Error: /sys/kernel/btf/vmlinux not found` | Your kernel lacks BTF support. Use `-m afpacket` instead, or upgrade to a kernel >= 5.10 with `CONFIG_DEBUG_INFO_BTF=y` |
+| `Error: /sys/kernel/btf/vmlinux not found` | Your kernel lacks BTF support. Set `runtime.mode: afpacket` in YAML, or upgrade to a kernel >= 5.10 with `CONFIG_DEBUG_INFO_BTF=y` |
 | `Error: Input interface eth0 not found` | Check interface name with `ip link show` |
 | `Failed to initialize AF_PACKET` | Check that the interface exists and is up: `ip link set eth0 up` |
 | `make` fails with `clang not found` | Install clang: `sudo apt-get install clang llvm` |
