@@ -7,24 +7,24 @@
 # Rules are evaluated first-match; empty rules => default_action for every packet.
 
 runtime:
-  input_iface: ens34
-  output_iface: ens34         # optional unless tunnel section is enabled
+  input_iface: lo
+  output_iface:        # optional unless tunnel section is enabled
   mode: afpacket             # afpacket | ebpf
   workers: 4                 # 0 = auto (num CPUs)
   verbose: false
   debug: false
   stats: true
   filter_stats: true
-  resource_usage: false
+  resource_usage: true
   truncate:
-    enabled: true
-    length: 76              # valid when enabled: 64..9000
+    enabled: false
+    length: 64              # valid when enabled: 64..9000
 
 filter:
   default_action: drop   # allow | drop
   rules:
      # Allow TCP to port 22 (e.g. SSH)
-    - action: allow
+    - action: drop
       match:
         protocol: tcp
         port_dst: 22
@@ -33,9 +33,15 @@ filter:
     - action: allow
       match:
         protocol: tcp
-        port_dst: 443
+        port_dst: 8000
 
     - action: allow
+      match:
+        protocol: tcp
+        port_src: 8000
+
+
+    - action: drop
       match:
         protocol: tcp
         port_dst: 8080
@@ -68,13 +74,16 @@ filter:
 #   ip_src, ip_dst: IPv4 address or CIDR (e.g. 10.0.0.0/8)
 #   eth_type: 0x0800 (IPv4) or decimal
 #
+
 # Tunnel (optional): when present, encapsulate allowed packets and send to remote VTEP
-tunnel:
-  type: vxlan
-  remote_ip: 10.4.5.187
-  vni: 1000
-  dstport: 4789
+#tunnel:
+#  type: vxlan
+#  remote_ip: 192.168.200.1
+#  vni: 1000
+#  dstport: 4789
 #   local_ip: optional; else from output interface (-o)
+
+    
 # For GRE: type: gre, remote_ip (required), key (optional), local_ip (optional)
 #tunnel:
 #  type: gre

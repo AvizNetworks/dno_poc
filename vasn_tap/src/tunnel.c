@@ -89,6 +89,10 @@ static int resolve_arp(const char *ifname, uint32_t ip_be, uint8_t *mac_out, int
 {
 	struct arpreq req;
 	int fd, ret;
+	unsigned int i;
+#define ARP_RETRY_COUNT  3
+#define ARP_WAIT_US      300000  /* 300 ms after each ARP prime */
+
 	memset(&req, 0, sizeof(req));
 	((struct sockaddr_in *)&req.arp_pa)->sin_family = AF_INET;
 	((struct sockaddr_in *)&req.arp_pa)->sin_addr.s_addr = ip_be;
@@ -96,22 +100,44 @@ static int resolve_arp(const char *ifname, uint32_t ip_be, uint8_t *mac_out, int
 	strncpy(req.arp_dev, ifname, sizeof(req.arp_dev) - 1);
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (fd < 0) return -errno;
+
+	/* If already in cache, use it */
 	ret = ioctl(fd, SIOCGARP, &req);
 	if (ret == 0 && (req.arp_flags & ATF_COM)) {
 		memcpy(mac_out, req.arp_ha.sa_data, ETH_ALEN);
 		close(fd);
 		return 0;
 	}
-	{ int s = socket(AF_INET, SOCK_DGRAM, 0); if (s >= 0) { struct sockaddr_in d = {.sin_family=AF_INET,.sin_addr.s_addr=ip_be,.sin_port=htons(4789)}; setsockopt(s, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname)+1); connect(s, (struct sockaddr *)&d, sizeof(d)); close(s); } }
-	usleep(100000);
-	ret = ioctl(fd, SIOCGARP, &req);
-	close(fd);
-	if (ret != 0 || !(req.arp_flags & ATF_COM)) {
-		if (verbose) { char b[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &ip_be, b, sizeof(b)); fprintf(stderr, "Tunnel: ARP failed for %s\n", b); }
-		return -ENXIO;
+
+	/* Prime ARP and retry up to ARP_RETRY_COUNT times */
+	for (i = 0; i < ARP_RETRY_COUNT; i++) {
+		int s = socket(AF_INET, SOCK_DGRAM, 0);
+		if (s >= 0) {
+			struct sockaddr_in d = {
+				.sin_family = AF_INET,
+				.sin_addr.s_addr = ip_be,
+				.sin_port = htons(4789)
+			};
+			setsockopt(s, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname) + 1);
+			connect(s, (struct sockaddr *)&d, sizeof(d));
+			close(s);
+		}
+		usleep(ARP_WAIT_US);
+		ret = ioctl(fd, SIOCGARP, &req);
+		if (ret == 0 && (req.arp_flags & ATF_COM)) {
+			memcpy(mac_out, req.arp_ha.sa_data, ETH_ALEN);
+			close(fd);
+			return 0;
+		}
 	}
-	memcpy(mac_out, req.arp_ha.sa_data, ETH_ALEN);
-	return 0;
+
+	close(fd);
+	if (verbose) {
+		char b[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &ip_be, b, sizeof(b));
+		fprintf(stderr, "Tunnel: ARP failed for %s (tried %u times)\n", b, ARP_RETRY_COUNT + 1);
+	}
+	return -ENXIO;
 }
 
 static __u16 ip_csum(const void *data, size_t len)
