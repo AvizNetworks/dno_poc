@@ -66,7 +66,7 @@ BPF_SRC := $(EBPF_DIR)/tc_clone.bpf.c
 # vmlinux.h path
 VMLINUX_H := $(EBPF_DIR)/vmlinux.h
 
-.PHONY: all clean install vmlinux test test-basic test-filter test-tunnel test-all help
+.PHONY: all clean install vmlinux test test-basic test-filter test-tunnel test-truncate test-all help
 
 all: $(BUILD_DIR) $(VMLINUX_H) $(BPF_OBJ) $(TARGET)
 
@@ -183,9 +183,16 @@ test-tunnel: $(TARGET)
 	@echo ""
 	sudo $(TEST_INTEG_DIR)/run_integ.sh tunnel
 
+test-truncate: $(TARGET)
+	@echo ""
+	@echo "=== Truncation Integration Tests (3 cases: afpacket, ebpf, no_truncate) ==="
+	@echo "(requires root)"
+	@echo ""
+	sudo $(TEST_INTEG_DIR)/run_integ.sh truncate
+
 test-all: $(TARGET)
 	@echo ""
-	@echo "=== All Integration Tests (20 cases: basic + filter + tunnel) ==="
+	@echo "=== All Integration Tests (23 cases: basic + filter + tunnel + truncate) ==="
 	@echo "(requires root)"
 	@echo ""
 	sudo $(TEST_INTEG_DIR)/run_integ.sh all
@@ -200,8 +207,9 @@ help:
 	@echo "  test        - Run unit tests (no root needed)"
 	@echo "  test-basic  - Run basic integration tests, 8 cases (needs root, reports in tests/integration/reports/)"
 	@echo "  test-filter  - Run filter integration tests, 10 cases (needs root, reports in tests/integration/reports/)"
-	@echo "  test-tunnel  - Run tunnel integration tests, 2 cases GRE+VXLAN (needs root, reports in tests/integration/reports/)"
-	@echo "  test-all     - Run all integration tests, 20 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-tunnel   - Run tunnel integration tests, 2 cases GRE+VXLAN (needs root, reports in tests/integration/reports/)"
+	@echo "  test-truncate - Run truncation integration tests, 3 cases (needs root, reports in tests/integration/reports/)"
+	@echo "  test-all      - Run all integration tests, 23 cases (needs root, reports in tests/integration/reports/)"
 	@echo "  vmlinux     - Generate vmlinux.h only"
 	@echo "  install     - Install to /usr/local (requires root)"
 	@echo "  help        - Show this help"

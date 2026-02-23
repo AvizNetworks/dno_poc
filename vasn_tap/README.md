@@ -190,13 +190,14 @@ Runs 7 unit test suites using CMocka: CLI parsing, config validation, stats accu
 ### Integration Tests (requires root)
 
 ```bash
-make test-basic   # 8 cases → tests/integration/reports/test_report_basic.html
-make test-filter  # 10 cases → tests/integration/reports/test_report_filter.html
-make test-tunnel  # 2 cases (GRE, VXLAN) → tests/integration/reports/test_report_tunnel.html
-make test-all     # 20 cases (basic + filter + tunnel) → tests/integration/reports/test_report.html
+make test-basic    # 8 cases → tests/integration/reports/test_report_basic.html
+make test-filter   # 10 cases → tests/integration/reports/test_report_filter.html
+make test-tunnel   # 2 cases (GRE, VXLAN) → tests/integration/reports/test_report_tunnel.html
+make test-truncate # 3 cases (truncate afpacket, ebpf, no_truncate) → tests/integration/reports/test_report_truncate.html
+make test-all      # 23 cases (basic + filter + tunnel + truncate) → tests/integration/reports/test_report.html
 ```
 
-Or run the runner directly: `sudo tests/integration/run_integ.sh [basic|filter|tunnel|all]`. Creates network namespaces with veth pairs; **basic** runs forwarding, drop mode, graceful shutdown (both modes), multiworker, and fanout; **filter** runs the ACL filter tests (afpacket + ebpf); **tunnel** runs GRE and VXLAN tunnel encap tests (afpacket). HTML reports are written under **tests/integration/reports/**.
+Or run the runner directly: `sudo tests/integration/run_integ.sh [basic|filter|tunnel|truncate|all]`. Creates network namespaces with veth pairs; **basic** runs forwarding, drop mode, graceful shutdown (both modes), multiworker, and fanout; **filter** runs the ACL filter tests (afpacket + ebpf); **tunnel** runs GRE and VXLAN tunnel encap tests (afpacket); **truncate** runs truncation tests (afpacket, ebpf, and no_truncate). HTML reports are written under **tests/integration/reports/**.
 
 See [TESTING.md](TESTING.md) for full details on the test suites, how to add tests, and the test matrix.
 

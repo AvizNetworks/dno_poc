@@ -18,11 +18,12 @@ vasn_tap uses a **two-tier testing strategy**:
 make test
 
 # Run integration tests (requires root; reports in tests/integration/reports/)
-make test-basic   # 8 cases
-make test-filter  # 10 filter cases
-make test-tunnel  # 2 tunnel cases (GRE, VXLAN)
-make test-all     # 20 cases (basic + filter + tunnel)
-# Or: sudo tests/integration/run_integ.sh [basic|filter|tunnel|all]
+make test-basic    # 8 cases
+make test-filter   # 10 filter cases
+make test-tunnel   # 2 tunnel cases (GRE, VXLAN)
+make test-truncate # 3 truncation cases (afpacket, ebpf, no_truncate)
+make test-all      # 23 cases (basic + filter + tunnel + truncate)
+# Or: sudo tests/integration/run_integ.sh [basic|filter|tunnel|truncate|all]
 ```
 
 ---
@@ -214,12 +215,12 @@ Originally, CLI parsing lived inside `main()` in `main.c`. This made it impossib
 ### How to Run
 
 ```bash
-# Run full suite (sets up namespaces, runs all 20 tests: 8 basic + 10 filter + 2 tunnel, generates HTML report)
+# Run full suite (sets up namespaces, runs all 23 tests: 8 basic + 10 filter + 2 tunnel + 3 truncate, generates HTML report)
 make test-all
 # Or: sudo tests/integration/run_integ.sh all
 ```
 
-HTML reports are generated under **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report.html depending on which suite was run).
+HTML reports are generated under **tests/integration/reports/** (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report_truncate.html, test_report.html depending on which suite was run).
 
 ### Test Topology
 
@@ -259,10 +260,11 @@ All tests except multiworker run in **both** capture modes:
 | `test_fanout_distribution.sh` | Yes | No* | Use iperf3 with 8 parallel TCP flows to verify PACKET_FANOUT_HASH distributes packets across 4 worker sockets. Exercises the TPACKET_V2 TX ring output path under sustained load (requires iperf3; skips gracefully if not installed) |
 | `test_tunnel_gre.sh` | Yes | No | GRE tunnel: allow-all filter, tunnel to 192.168.201.1; ARP prime, pings; assert "Tunnel (GRE): N > 0"; tcpdump in ns_dst (proto 47) for received-at-destination |
 | `test_tunnel_vxlan.sh` | Yes | No | VXLAN tunnel: allow-all filter, tunnel to 192.168.201.1; ARP prime, pings; assert "Tunnel (VXLAN): N > 0"; tcpdump in ns_dst (udp port 4789) for received-at-destination |
+| `test_truncate.sh` | Yes | Yes | Truncation: ping -s 200. When enabled (afpacket/ebpf), captured frames le 128B and one eq 128B; when no_truncate, one frame gt 128B. Uses pcap_packet_lengths.py. |
 
 *eBPF mode is forced to 1 worker, so multi-worker, fanout, and tunnel testing only apply to AF_PACKET.
 
-This gives **8 basic + 10 filter + 2 tunnel = 20** test results in the HTML reports (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, and test_report.html for full suite).
+This gives **8 basic + 10 filter + 2 tunnel + 3 truncate = 23** test results in the HTML reports (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report_truncate.html, and test_report.html for full suite).
 
 ### TX Ring Performance Notes
 
@@ -308,7 +310,8 @@ After running the integration tests, HTML reports are generated under **tests/in
 - **test_report_basic.html** (make test-basic, 8 cases)
 - **test_report_filter.html** (make test-filter, 10 cases)
 - **test_report_tunnel.html** (make test-tunnel, 2 cases)
-- **test_report.html** (make test-all, 20 cases)
+- **test_report_truncate.html** (make test-truncate, 3 cases)
+- **test_report.html** (make test-all, 23 cases)
 
 Each report includes:
 
@@ -439,9 +442,10 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/unit/test_output.c` | 8 tests for output module error paths |
 | `tests/unit/test_truncate.c` | Truncation helper tests (IPv4/VLAN IPv4 length + checksum fixup) |
 | `tests/unit/test_common.h` | Shared CMocka includes |
-| `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (10) \| tunnel (2) \| all (20) |
+| `tests/integration/run_integ.sh` | Suite runner: basic (8) \| filter (10) \| tunnel (2) \| truncate (3) \| all (23) |
 | `tests/integration/run_all.sh` | Wrapper for `run_integ.sh all` |
-| `tests/integration/reports/` | HTML reports (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report.html) |
+| `tests/integration/reports/` | HTML reports (test_report_basic.html, test_report_filter.html, test_report_tunnel.html, test_report_truncate.html, test_report.html) |
+| `tests/integration/pcap_packet_lengths.py` | Helper: read pcap, print one packet length per line (truncation tests) |
 | `tests/integration/setup_namespaces.sh` | Create test topology |
 | `tests/integration/teardown_namespaces.sh` | Destroy test topology |
 | `tests/integration/test_helpers.sh` | JSON result writing helpers |
@@ -459,3 +463,4 @@ Defined in `tests/integration/test_helpers.sh`:
 | `tests/integration/test_graceful_shutdown.sh` | Graceful shutdown test |
 | `tests/integration/test_tunnel_gre.sh` | GRE tunnel encap test (afpacket) |
 | `tests/integration/test_tunnel_vxlan.sh` | VXLAN tunnel encap test (afpacket) |
+| `tests/integration/test_truncate.sh` | Truncation test: afpacket, ebpf, or no_truncate; verifies frame lengths via pcap |

@@ -1,12 +1,13 @@
 #!/bin/bash
 #
 # vasn_tap integration test runner - Suite: basic | filter | tunnel | all
-# Usage: sudo ./tests/integration/run_integ.sh [basic|filter|tunnel|all]
+# Usage: sudo ./tests/integration/run_integ.sh [basic|filter|tunnel|truncate|all]
 #
 # basic: 8 tests (basic_forward, drop_mode, graceful_shutdown x2 modes, multiworker, fanout)
 # filter: 10 tests (drop_all x2, allow_all, allow_icmp_rule, drop_icmp_rule, ip_cidr x2 modes each)
 # tunnel: 2 tests (tunnel_gre, tunnel_vxlan)
-# all: 20 tests (basic 8 + filter 10 + tunnel 2)
+# truncate: 3 tests (truncate afpacket, ebpf, no_truncate)
+# all: 23 tests (basic 8 + filter 10 + tunnel 2 + truncate 3)
 #
 # Reports: tests/integration/reports/test_report_*.html
 #
@@ -21,7 +22,7 @@ SUITE_START=$(date +%s)
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: Integration tests require root privileges"
-    echo "Usage: sudo $0 [basic|filter|tunnel|all]"
+    echo "Usage: sudo $0 [basic|filter|tunnel|truncate|all]"
     exit 1
 fi
 
@@ -31,10 +32,10 @@ if [ ! -x "$PROJECT_DIR/vasn_tap" ]; then
 fi
 
 case "$SUITE" in
-    basic|filter|tunnel|all) ;;
+    basic|filter|tunnel|truncate|all) ;;
     *)
-        echo "Error: Invalid suite. Use: basic, filter, tunnel, or all"
-        echo "Usage: sudo $0 [basic|filter|tunnel|all]"
+        echo "Error: Invalid suite. Use: basic, filter, tunnel, truncate, or all"
+        echo "Usage: sudo $0 [basic|filter|tunnel|truncate|all]"
         exit 1
         ;;
 esac
@@ -125,6 +126,17 @@ if [ "$SUITE" = "tunnel" ] || [ "$SUITE" = "all" ]; then
     run_one "test_tunnel_vxlan.sh"
 fi
 
+if [ "$SUITE" = "truncate" ] || [ "$SUITE" = "all" ]; then
+    echo "========== Truncation tests =========="
+    echo ""
+    echo ">>> Running: test_truncate.sh afpacket"
+    run_one "test_truncate.sh" "afpacket"
+    echo ">>> Running: test_truncate.sh ebpf"
+    run_one "test_truncate.sh" "ebpf"
+    echo ">>> Running: test_truncate.sh no_truncate"
+    run_one "test_truncate.sh" "no_truncate"
+fi
+
 echo ">>> Tearing down test environment..."
 bash "$SCRIPT_DIR/teardown_namespaces.sh"
 echo ""
@@ -133,10 +145,11 @@ SUITE_END=$(date +%s)
 TOTAL_DURATION=$((SUITE_END - SUITE_START))
 
 case "$SUITE" in
-    basic)   REPORT_PATH="$REPORT_DIR/test_report_basic.html" ;;
-    filter)  REPORT_PATH="$REPORT_DIR/test_report_filter.html" ;;
-    tunnel)  REPORT_PATH="$REPORT_DIR/test_report_tunnel.html" ;;
-    all)     REPORT_PATH="$REPORT_DIR/test_report.html" ;;
+    basic)    REPORT_PATH="$REPORT_DIR/test_report_basic.html" ;;
+    filter)   REPORT_PATH="$REPORT_DIR/test_report_filter.html" ;;
+    tunnel)   REPORT_PATH="$REPORT_DIR/test_report_tunnel.html" ;;
+    truncate) REPORT_PATH="$REPORT_DIR/test_report_truncate.html" ;;
+    all)      REPORT_PATH="$REPORT_DIR/test_report.html" ;;
 esac
 
 mkdir -p "$REPORT_DIR"

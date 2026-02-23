@@ -34,6 +34,10 @@
 #define PERF_BUFFER_PAGES 64
 #define PERF_POLL_TIMEOUT_MS 100
 
+/* Writable buffer for truncation in eBPF path (perf buffer is read-only) */
+#define WORKER_TRUNCATE_BUF_SIZE 9216
+static __u8 g_truncate_buf[WORKER_TRUNCATE_BUF_SIZE];
+
 /* Global worker context for perf buffer callback */
 static struct worker_ctx *g_worker_ctx = NULL;
 
@@ -66,10 +70,11 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
     atomic_fetch_add(&stats->packets_received, 1);
     atomic_fetch_add(&stats->bytes_received, meta->len);
 
-    /* Get packet data pointer (after metadata) */
+    /* Get packet data pointer (after metadata). Perf buffer is read-only. */
     __u8 *pkt_data = meta->data;
     __u32 pkt_len = meta->len;
     __u32 send_len = pkt_len;
+    __u8 *send_data = pkt_data;
 
     /* Validate packet length */
     if (size < sizeof(struct pkt_meta) + pkt_len) {
@@ -99,17 +104,30 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         }
     }
 
-    send_len = truncate_apply(pkt_data, pkt_len,
-                              wctx->config.truncate_enabled,
-                              wctx->config.truncate_length);
+    /*
+     * Truncation must run on a writable buffer. Perf buffer memory is read-only,
+     * so when truncation is enabled copy into g_truncate_buf and truncate there.
+     */
+    if (wctx->config.truncate_enabled && pkt_len <= WORKER_TRUNCATE_BUF_SIZE) {
+        memcpy(g_truncate_buf, pkt_data, pkt_len);
+        send_len = truncate_apply(g_truncate_buf, pkt_len, true, wctx->config.truncate_length);
+        send_data = g_truncate_buf;
+    } else if (!wctx->config.truncate_enabled) {
+        send_len = pkt_len;
+        send_data = pkt_data;
+    } else {
+        /* truncate enabled but packet larger than buffer: send without truncating */
+        send_len = pkt_len;
+        send_data = pkt_data;
+    }
     if (send_len < pkt_len) {
         atomic_fetch_add(&stats->packets_truncated, 1);
         atomic_fetch_add(&stats->bytes_truncated, (uint64_t)(pkt_len - send_len));
     }
 
     if (wctx->config.tunnel_ctx) {
-        tunnel_debug_own_mismatch(wctx->config.tunnel_ctx, pkt_data, pkt_len);
-        if (tunnel_send(wctx->config.tunnel_ctx, pkt_data, send_len) == 0) {
+        tunnel_debug_own_mismatch(wctx->config.tunnel_ctx, send_data, send_len);
+        if (tunnel_send(wctx->config.tunnel_ctx, send_data, send_len) == 0) {
             atomic_fetch_add(&stats->packets_sent, 1);
             atomic_fetch_add(&stats->bytes_sent, send_len);
             wctx->tx_pending++;
@@ -120,7 +138,7 @@ static void handle_sample(void *ctx, int cpu, void *data, __u32 size)
         } else {
             atomic_fetch_add(&stats->packets_dropped, 1);
         }
-    } else if (tx_ring_write(&wctx->tx_ring, pkt_data, send_len) == 0) {
+    } else if (tx_ring_write(&wctx->tx_ring, send_data, send_len) == 0) {
         atomic_fetch_add(&stats->packets_sent, 1);
         atomic_fetch_add(&stats->bytes_sent, send_len);
         wctx->tx_pending++;
