@@ -201,6 +201,13 @@ Or run the runner directly: `sudo tests/integration/run_integ.sh [basic|filter|t
 
 See [TESTING.md](TESTING.md) for full details on the test suites, how to add tests, and the test matrix.
 
+## Documentation
+
+| Document | Audience | Description |
+|----------|----------|-------------|
+| [docs/SOFTWARE_FUNCTIONAL_SPECIFICATION.md](docs/SOFTWARE_FUNCTIONAL_SPECIFICATION.md) | Dev, QA, customer-facing | Functional spec, behavior, and limitations |
+| [docs/CUSTOMER_GUIDE.md](docs/CUSTOMER_GUIDE.md) | End customer | Install, configure, and operate vasn_tap |
+
 ## Project Structure
 
 ```
