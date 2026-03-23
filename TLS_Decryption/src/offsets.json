@@ -1,0 +1,15 @@
+{
+  "openssl_version": "OpenSSL 3.0.2 15 Mar 2022",
+  "ssl_version": 0,
+  "ssl_session": 2328,
+  "ssl_s3_client_random": 352,
+  "ssl_master_secret": -1,
+  "ssl_handshake_secret": -1,
+  "ssl_server_handshake_secret": -1,
+  "ssl_client_app_traffic_secret": 1860,
+  "ssl_server_app_traffic_secret": 1924,
+  "ssl_exporter_master_secret": 1988,
+  "session_master_key_length": 8,
+  "session_master_key": 80,
+  "derive_secret_key_and_iv_addr": "0x4b1f0"
+}
