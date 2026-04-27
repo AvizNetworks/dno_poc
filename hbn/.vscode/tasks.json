@@ -1,0 +1,47 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "SSH: host switch (admin@10.20.13.12)",
+      "type": "shell",
+      "command": "ssh admin@10.20.13.12",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "hbn-terminals"
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "SSH: BF3 DPU (ubuntu@10.20.13.228)",
+      "type": "shell",
+      "command": "ssh ubuntu@10.20.13.228",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "hbn-terminals"
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Local shell",
+      "type": "shell",
+      "command": "bash",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "hbn-terminals"
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+flexible:
+  hbn_cpu: "1"
+  hbn_memory: "3Gi"
+  ovs_cpu: "1"
+  huge_pages_size: "2048"
+  huge_pages_count: "1600"
