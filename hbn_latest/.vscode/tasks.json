@@ -1,0 +1,76 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+
+    // ─── Server 1 BF3 ────────────────────────────────────────────────────────
+    {
+      "label": "S1: BF3 BMC (root@10.20.13.216)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no root@10.20.13.216",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server1" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S1: BF3 ARM (ubuntu@10.20.13.247)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no ubuntu@10.20.13.247",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server1" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S1: Host (admin@10.20.13.13)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF123' ssh -o StrictHostKeyChecking=no admin@10.20.13.13",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server1" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+
+    // ─── Server 2 BF3 ────────────────────────────────────────────────────────
+    {
+      "label": "S2: BF3 BMC (root@10.20.13.212)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no root@10.20.13.212",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server2" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S2: BF3 ARM (ubuntu@10.20.13.228)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no ubuntu@10.20.13.228",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server2" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S2: Host (admin@10.20.13.12)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF123' ssh -o StrictHostKeyChecking=no admin@10.20.13.12",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server2" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+
+    // ─── Server 3 BF3 ────────────────────────────────────────────────────────
+    {
+      "label": "S3: BF3 BMC (root@10.4.5.166)",
+      "type": "shell",
+      "command": "sshpass -p 'MaiBF3@94538' ssh -o StrictHostKeyChecking=no root@10.4.5.166",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server3" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S3: BF3 ARM (ubuntu@10.4.5.165)",
+      "type": "shell",
+      "command": "sshpass -p 'H3lLoW0rLd12!' ssh -o StrictHostKeyChecking=no ubuntu@10.4.5.165",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server3" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    }
+
+  ]
+}
