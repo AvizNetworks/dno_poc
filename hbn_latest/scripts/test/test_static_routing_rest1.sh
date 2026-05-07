@@ -10,13 +10,13 @@ TOR_IP="10.20.13.214";   TOR_USER="admin";  TOR_PASS="Aviz@123"
 HOST_IP="10.20.13.13";   HOST_USER="admin"; HOST_PASS="Aviz@AIF123"
 REST_USER="nvidia";      REST_PASS="nvidia"; REST_PORT="8765"
 
-BF3_P0_IFACE="p0_if";       BF3_P0_IP="5.5.5.6/24";         BF3_P0_ADDR="5.5.5.6"
+BF3_P0_IFACE="p0_if";       BF3_P0_IP="6.6.6.6/24";         BF3_P0_ADDR="6.6.6.6"
 BF3_PF0_IFACE="pf0hpf_if";  BF3_PF0_IP="192.168.201.2/24";  BF3_PF0_ADDR="192.168.201.2"
-TOR_IFACE="Ethernet72";      TOR_IFACE_IP="5.5.5.1/24";      TOR_PEER="5.5.5.1"
-HOST_IFACE="enp65s0f0n";  HOST_IFACE_IP="192.168.201.1/24"; HOST_PEER="192.168.201.1"
+TOR_IFACE="Ethernet72";      TOR_IFACE_IP="6.6.6.1/24";      TOR_PEER="6.6.6.1"; TOR_SUBNET="6.6.6.0/24"
+HOST_IFACE="enp65s0f0np0"; HOST_IFACE_IP="192.168.201.1/24"; HOST_PEER="192.168.201.1"
 
 # Test prefixes for static routes — non-connected, nexthop reachable via connected subnets
-# 10.10.1.0/24 represents a network "behind" the ToR, reached via 5.5.5.1
+# 10.10.1.0/24 represents a network "behind" the ToR, reached via 6.6.6.1
 # 10.10.2.0/24 represents a network "behind" the Host, reached via 192.168.201.1
 STATIC_PREFIX1="10.10.1.0/24"; STATIC_PREFIX1_ENC="10.10.1.0%2F24"; STATIC_NH1="${TOR_PEER}"
 STATIC_PREFIX2="10.10.2.0/24"; STATIC_PREFIX2_ENC="10.10.2.0%2F24"; STATIC_NH2="${HOST_PEER}"
@@ -236,8 +236,29 @@ sys.exit(0 if isinstance(d,dict) and 'via' in d else 1)
 done
 
 if [[ "$APPLIED" != "true" ]]; then
-  warn "NVUE apply did not commit routes — falling back to vtysh"
-  info "Configuring static routes directly via vtysh..."
+  warn "NVUE apply did not commit — falling back to vtysh for all BF3 config"
+
+  info "Configuring ${BF3_P0_IFACE} = ${BF3_P0_IP} via kernel..."
+  OLD_P0=$(bf3_cont_cmd "ip addr show ${BF3_P0_IFACE} 2>/dev/null" \
+    | grep "inet " | awk '{print $2}' | head -1 || echo "")
+  bf3_cont_cmd "ip link set ${BF3_P0_IFACE} up" > /dev/null 2>&1 || true
+  if [[ -n "$OLD_P0" && "$OLD_P0" != "${BF3_P0_IP}" ]]; then
+    bf3_cont_cmd "ip addr del ${OLD_P0} dev ${BF3_P0_IFACE}" > /dev/null 2>&1 || true
+  fi
+  bf3_cont_cmd "ip addr add ${BF3_P0_IP} dev ${BF3_P0_IFACE}" > /dev/null 2>&1 || true
+  ok "${BF3_P0_IFACE} = ${BF3_P0_IP}"
+
+  info "Configuring ${BF3_PF0_IFACE} = ${BF3_PF0_IP} via kernel..."
+  OLD_PF0=$(bf3_cont_cmd "ip addr show ${BF3_PF0_IFACE} 2>/dev/null" \
+    | grep "inet " | awk '{print $2}' | head -1 || echo "")
+  bf3_cont_cmd "ip link set ${BF3_PF0_IFACE} up" > /dev/null 2>&1 || true
+  if [[ -n "$OLD_PF0" && "$OLD_PF0" != "${BF3_PF0_IP}" ]]; then
+    bf3_cont_cmd "ip addr del ${OLD_PF0} dev ${BF3_PF0_IFACE}" > /dev/null 2>&1 || true
+  fi
+  bf3_cont_cmd "ip addr add ${BF3_PF0_IP} dev ${BF3_PF0_IFACE}" > /dev/null 2>&1 || true
+  ok "${BF3_PF0_IFACE} = ${BF3_PF0_IP}"
+
+  info "Configuring static routes via vtysh..."
   VT_OUT=$(bf3_vtysh \
     "configure terminal" \
     "ip route ${STATIC_PREFIX1} ${STATIC_NH1}" \
@@ -245,8 +266,12 @@ if [[ "$APPLIED" != "true" ]]; then
     "end" \
     "write memory")
   [[ -n "$VT_OUT" ]] && echo "$VT_OUT" | sed 's/^/         /'
-  ok "Static routes configured via vtysh fallback"
+  ok "Interfaces and static routes configured via vtysh fallback"
 fi
+
+# Always ensure interfaces are up (may go DOWN after NVUE apply)
+bf3_cont_cmd "ip link set ${BF3_P0_IFACE} up" > /dev/null 2>&1 || true
+bf3_cont_cmd "ip link set ${BF3_PF0_IFACE} up" > /dev/null 2>&1 || true
 
 # ─── Phase 2: Configure ToR and Host (--setup) ────────────────────────────────
 if [[ "$SETUP" == "true" ]]; then
@@ -257,9 +282,10 @@ if [[ "$SETUP" == "true" ]]; then
     sudo config interface ip add ${TOR_IFACE} ${TOR_IFACE_IP} 2>/dev/null || true
     sudo config interface startup ${TOR_IFACE} 2>/dev/null || true
     sudo vtysh -c 'configure terminal' \
+               -c 'no ip route 192.168.201.0/24' \
                -c 'ip route 192.168.201.0/24 ${BF3_P0_ADDR}' \
                -c 'end' -c 'write memory' 2>/dev/null || \
-    sudo ip route add 192.168.201.0/24 via ${BF3_P0_ADDR} 2>/dev/null || true
+    sudo ip route replace 192.168.201.0/24 via ${BF3_P0_ADDR} 2>/dev/null || true
   " > /dev/null
   TOR_RT=$(ssh_cmd "$TOR_USER" "$TOR_PASS" "$TOR_IP" \
     "show ip route 192.168.201.0/24 2>/dev/null || ip route show 192.168.201.0/24 2>/dev/null" || true)
@@ -271,16 +297,16 @@ if [[ "$SETUP" == "true" ]]; then
 
   info "Configuring Host ${HOST_IFACE} = ${HOST_IFACE_IP} and static route for ToR subnet..."
   ssh_cmd "$HOST_USER" "$HOST_PASS" "$HOST_IP" "
-    sudo ip addr add ${HOST_IFACE_IP} dev ${HOST_IFACE} 2>/dev/null || true
-    sudo ip link set ${HOST_IFACE} up
-    sudo ip route add 5.5.5.0/24 via ${BF3_PF0_ADDR} 2>/dev/null || true
+    echo '${HOST_PASS}' | sudo -S ip addr add ${HOST_IFACE_IP} dev ${HOST_IFACE} 2>/dev/null || true
+    echo '${HOST_PASS}' | sudo -S ip link set ${HOST_IFACE} up 2>/dev/null || true
+    echo '${HOST_PASS}' | sudo -S ip route add ${TOR_SUBNET} via ${BF3_PF0_ADDR} 2>/dev/null || true
   " > /dev/null
   HOST_RT=$(ssh_cmd "$HOST_USER" "$HOST_PASS" "$HOST_IP" \
-    "ip route show 5.5.5.0/24 2>/dev/null" || true)
+    "ip route show ${TOR_SUBNET} 2>/dev/null" || true)
   if [[ -n "$HOST_RT" ]]; then
-    ok "Host: ${HOST_IFACE}=${HOST_IFACE_IP}, route 5.5.5.0/24 via ${BF3_PF0_ADDR} confirmed"
+    ok "Host: ${HOST_IFACE}=${HOST_IFACE_IP}, route ${TOR_SUBNET} via ${BF3_PF0_ADDR} confirmed"
   else
-    fail "Host: route 5.5.5.0/24 missing — add manually: sudo ip route add 5.5.5.0/24 via ${BF3_PF0_ADDR}"
+    fail "Host: route ${TOR_SUBNET} missing — add manually: sudo ip route add ${TOR_SUBNET} via ${BF3_PF0_ADDR}"
   fi
 
   info "Enabling IP forwarding inside doca-hbn container..."
