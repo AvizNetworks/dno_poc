@@ -5,18 +5,18 @@
 set -uo pipefail
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
-BF3_IP="10.20.13.247";   BF3_USER="ubuntu"; BF3_PASS="Aviz@AIF12345"
+BF3_IP="10.20.13.228";   BF3_USER="ubuntu"; BF3_PASS="Aviz@AIF12345"
 TOR_IP="10.20.13.214";   TOR_USER="admin";  TOR_PASS="Aviz@123"
-HOST_IP="10.20.13.13";   HOST_USER="admin"; HOST_PASS="Aviz@AIF123"
+HOST_IP="10.20.13.12";   HOST_USER="admin"; HOST_PASS="Aviz@AIF123"
 REST_USER="nvidia";      REST_PASS="nvidia"; REST_PORT="8765"
 
-BF3_P0_IFACE="p1_if";       BF3_P0_IP="6.6.6.6/24";         BF3_P0_ADDR="6.6.6.6"
+BF3_P0_IFACE="p0_if";       BF3_P0_IP="5.5.5.6/24";         BF3_P0_ADDR="5.5.5.6"
 BF3_PF0_IFACE="pf0hpf_if";  BF3_PF0_IP="192.168.201.2/24";  BF3_PF0_ADDR="192.168.201.2"
-TOR_IFACE="Ethernet72";      TOR_IFACE_IP="6.6.6.1/24";      TOR_PEER="6.6.6.1"; TOR_SUBNET="6.6.6.0/24"
-HOST_IFACE="enp65s0f0np0"; HOST_IFACE_IP="192.168.201.1/24"; HOST_PEER="192.168.201.1"
+TOR_IFACE="Ethernet76";      TOR_IFACE_IP="5.5.5.1/24";      TOR_PEER="5.5.5.1"; TOR_SUBNET="5.5.5.0/24"
+HOST_IFACE="enp193s0f0np0";  HOST_IFACE_IP="192.168.201.1/24"; HOST_PEER="192.168.201.1"
 
 # Test prefixes for static routes — non-connected, nexthop reachable via connected subnets
-# 10.10.1.0/24 represents a network "behind" the ToR, reached via 6.6.6.1
+# 10.10.1.0/24 represents a network "behind" the ToR, reached via 5.5.5.1
 # 10.10.2.0/24 represents a network "behind" the Host, reached via 192.168.201.1
 STATIC_PREFIX1="10.10.1.0/24"; STATIC_PREFIX1_ENC="10.10.1.0%2F24"; STATIC_NH1="${TOR_PEER}"
 STATIC_PREFIX2="10.10.2.0/24"; STATIC_PREFIX2_ENC="10.10.2.0%2F24"; STATIC_NH2="${HOST_PEER}"
@@ -153,7 +153,7 @@ echo -e "  ${BOLD}HBN Static Routing Test — NVUE REST API${NC}"
 echo "  $(date)"
 echo "============================================================"
 echo ""
-printf "  %-12s %s\n" "BF3:"  "${BF3_IP}  (${BF3_P0_IFACE}=${BF3_P0_IP}, ${BF3_PF0_IFACE}=${BF3_PF0_IP})"
+printf "  %-12s %s\n" "BF3:"  "${BF3_IP}  (p0_if=${BF3_P0_IP}, pf0hpf_if=${BF3_PF0_IP})"
 printf "  %-12s %s\n" "ToR:"  "${TOR_IP}  (${TOR_IFACE}=${TOR_IFACE_IP})"
 printf "  %-12s %s\n" "Host:" "${HOST_IP}  (${HOST_IFACE}=${HOST_IFACE_IP})"
 printf "  %-12s %s\n" "REST:"  "${REST_BASE}  (user=${REST_USER})"
@@ -431,7 +431,7 @@ ping_test() {
   fi
 }
 
-ping_test "BF3→ToR (${BF3_P0_IFACE}→${TOR_PEER})" \
+ping_test "BF3→ToR (p0_if→${TOR_PEER})" \
   "bf3_cont_cmd 'ping -I ${BF3_P0_IFACE} -c ${PING_COUNT} -W 2 ${TOR_PEER} 2>&1'"
 
 ping_test "BF3→Host (pf0hpf_if→${HOST_PEER})" \

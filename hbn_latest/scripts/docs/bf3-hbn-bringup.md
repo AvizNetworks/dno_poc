@@ -441,8 +441,6 @@ sudo systemctl restart openvswitch-switch
 sudo systemctl restart sfc.service
 ```
 
-> **Note on p0/p1 "Invalid argument":** After a successful bringup, `ovs-vsctl show` will always show `error: "could not add network device p0 to ofproto (Invalid argument)"` for the `p0` and `p1` ports. This is **expected and benign** — the physical uplinks are owned by the eswitch firmware and OVS-DPDK cannot bind them as netdev ports. Only "Invalid argument" errors on ports other than `p0`/`p1` indicate a real hugepage problem requiring the `del-br` / restart sequence above.
-
 ---
 
 ### Step 7 — Run HBN Profile Service
@@ -580,29 +578,26 @@ end
 
 ### Step 13 — Enable BGP (if needed)
 
-BGP is disabled by default. The bringup script handles this automatically with `--enable-bgp`. To enable manually:
+BGP is not in the default watchfrr command line. Enable it:
 
 ```bash
-# 1. Edit the host-mounted daemons file (persists across container restarts)
-sudo sed -i 's/bgpd=no/bgpd=yes/' /var/lib/hbn/etc/frr/daemons
-
-# 2. Restart FRR inside the container to pick up the change
-CONT=$(sudo crictl ps | grep doca-hbn | grep -v init | awk '{print $1}')
-sudo crictl exec -it $CONT supervisorctl restart frr
-
-# 3. Verify
-sudo crictl exec -it $CONT vtysh -c "show daemons"
-# expected: watchfrr zebra bgpd staticd bfdd
+# For this session
+sudo crictl exec -it $(sudo crictl ps -q --name doca-hbn) bash
+sed -i 's/bgpd=no/bgpd=yes/' /etc/frr/daemons
+/usr/lib/frr/watchfrr.sh start bgpd
 ```
 
-> **Do not use** `watchfrr.sh start bgpd` or `supervisorctl restart watchfrr` — these fail on DOCA 3.3.0 with exit code 127 or "no such process". The correct command is `supervisorctl restart frr` (restarts the whole FRR supervisor group).
+For persistence across container restarts, edit the host-mounted copy:
+```bash
+sudo sed -i 's/bgpd=no/bgpd=yes/' /var/lib/hbn/etc/frr/daemons
+```
 
 ---
 
 ### Step 14 — Verify Full Stack
 
 ```bash
-# OVS — p0/p1 "Invalid argument" is expected (benign); other ports should be clean
+# OVS — no "Invalid argument" or "could not set configuration" errors
 sudo ovs-vsctl show
 
 # SF representors
@@ -663,27 +658,12 @@ sudo ovs-ofctl dump-ports br-hbn
 
 ---
 
-## Helper Scripts
-
-| Script | Where to run | Purpose |
-|--------|-------------|---------|
-| `scripts/bringup_hbn_bf3.sh` | BF3 (sudo) | Full idempotent bringup — run this first on any new BF3 |
-| `scripts/status_hbn.sh` | BF3 (sudo) | Full health check — green board before handing off |
-| `scripts/topology_hbn.sh` | BF3 (sudo) | Interface reference card (MACs, IPs, link state) |
-| `scripts/mirror_to_dpu.sh` | x86 host (sudo) | tc mirred copy → BF3 → aviz0 for Aviz ASN DPI |
-| `scripts/test/test_static_routing_rest.sh` | any | REST API static route config + ping test (S2, 5.5.5.x) |
-| `scripts/test/test_static_routing_rest1.sh` | any | Same for S1 (6.6.6.x, Ethernet72) |
-| `scripts/test/validate_routing.sh` | x86 host or local | SSH-based ping validation across ToR/BF3/Host |
-
----
-
 ## Common Failure Modes
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
 | `init-sfs` stuck forever waiting for interfaces | `hbn.conf` has 14 VF entries (install.sh generated) | Replace from `mellanox/hbn.conf` (Step 5) |
-| `ovs-vsctl show` shows `p0`/`p1` "Invalid argument" | **Expected/benign** — eswitch firmware owns physical uplinks; OVS-DPDK can't bind them | No action needed. `status_hbn.sh` shows this as `[WARN]` (not `[FAIL]`). |
-| OVS `Invalid argument` on ports OTHER than p0/p1 (e.g., pf0hpf, p0_if_r) | OVS started before hugepages allocated | `del-br br-hbn`, allocate hugepages, restart OVS + sfc.service (Step 6) |
+| OVS br-hbn `Invalid argument` / tap device failed | OVS started before hugepages allocated | `del-br br-hbn`, allocate hugepages, restart OVS + sfc.service (Step 6) |
 | SFs provisioned but `p0_if_r` etc. missing | `mlnx-sf.conf` assigns physical port MAC to SF; mlx5_core skips function netdev | Replace `mlnx-sf.conf`, delete SFs (`mlnx-sf -a delete -i pci/…/<sfidx>`), reprovision (Step 9) |
 | `mlnx-sf --action delete` reports "SF not found" | Using integer sfindex instead of full path | Use `pci/0000:03:00.0/<sfindex>` format (from `devlink port show`) |
 | OVS ports missing after sfc.service | sfc.service ran before SFs were provisioned | `systemctl restart sfc.service` (Step 10) |
@@ -694,9 +674,7 @@ sudo ovs-ofctl dump-ports br-hbn
 | Pod stuck, kubelet hostPath volume errors | `/var/lib/hbn/` dirs missing | Create dirs (Step 4) |
 | `crictl pull` fails | DNS broken | Fix `/etc/resolv.conf` (Step 2) |
 | `p0_if` etc. DOWN in vtysh | Not brought up after netns move | `ip link set <if> up` (Step 12) |
-| `bgpd` not running | Not enabled in daemons file, or FRR not restarted after edit | Edit `/var/lib/hbn/etc/frr/daemons`, then `crictl exec $CONT supervisorctl restart frr` (Step 13) |
-| NVUE `nv config apply` reports "already applied" | NVUE REST apply is broken on DOCA 3.3.0 | Use `crictl exec $CONT nv config apply --assume-yes` inside the container, or fall back to `vtysh` directly |
-| Static route shows `S inactive` in `show ip route` | Nexthop is within the same subnet as the destination (recursive loop) | Use a non-connected nexthop prefix (e.g., `10.10.1.0/24 via 5.5.5.1` is valid; `5.5.5.0/24 via 5.5.5.1` is not) |
+| `bgpd` not running | Not in watchfrr command / daemons file | Enable + start bgpd (Step 13) |
 | `hbn-profile.service` fails first run | `/etc/kubelet.d/doca_hbn.yaml` not yet present | Re-run after YAML exists (Step 7) |
 | REST API 401 after container restart | Credentials reset to nvidia/nvidia | Re-run `hbn-dpu-setup.sh -u nvidia -p nvidia -e` from its source dir |
 | SFs opstate `detached` / stuck in `sf_cfg` | Used raw `devlink port function set state active` instead of `mlnx-sf` | Delete and recreate with `mlnx-sf --action create -t` (the `-t` flag is required) |

@@ -6,14 +6,14 @@ set -uo pipefail
 
 # ─── Device credentials ───────────────────────────────────────────────────────
 TOR_IP="10.20.13.214";   TOR_USER="admin";  TOR_PASS="Aviz@123"
-BF3_IP="10.20.13.247";   BF3_USER="ubuntu"; BF3_PASS="Aviz@AIF12345"
-HOST_IP="10.20.13.13";   HOST_USER="admin"; HOST_PASS="Aviz@AIF123"
+BF3_IP="10.20.13.228";   BF3_USER="ubuntu"; BF3_PASS="Aviz@AIF12345"
+HOST_IP="10.20.13.12";   HOST_USER="admin"; HOST_PASS="Aviz@AIF123"
 
 # ─── Interface/IP config ─────────────────────────────────────────────────────
-TOR_IFACE="Ethernet72";  TOR_IFACE_IP="5.5.5.1/24"
-BF3_P0_CIDR="5.5.5.6/24";       BF3_P0_IP="5.5.5.6";       BF3_P0_IFACE="p1_if"
+TOR_IFACE="Ethernet76";  TOR_IFACE_IP="5.5.5.1/24"
+BF3_P0_CIDR="5.5.5.6/24";       BF3_P0_IP="5.5.5.6";       BF3_P0_IFACE="p0_if"
 BF3_PF0_CIDR="192.168.201.2/24"; BF3_PF0_IP="192.168.201.2"; BF3_PF0_IFACE="pf0hpf_if"
-HOST_IFACE="enp65s0f0np0";  HOST_IFACE_IP="192.168.201.1/24"
+HOST_IFACE="enp193s0f0np0"; HOST_IFACE_IP="192.168.201.1/24"
 
 PING_COUNT=3
 SETUP=false
@@ -180,7 +180,7 @@ section "Ping Validation (count=$PING_COUNT)"
 declare -A PING_RESULTS
 
 # 1. BF3 → ToR
-info "Ping: BF3 ${BF3_P0_IFACE} (${BF3_P0_IP}) → ToR ${TOR_IFACE} ($(echo $TOR_IFACE_IP | cut -d/ -f1))"
+info "Ping: BF3 p0_if (${BF3_P0_IP}) → ToR ${TOR_IFACE} ($(echo $TOR_IFACE_IP | cut -d/ -f1))"
 TOR_PEER=$(echo "$TOR_IFACE_IP" | cut -d/ -f1)
 OUT=$(bf3_cont_cmd "ping -I ${BF3_P0_IFACE} -c ${PING_COUNT} -W 2 ${TOR_PEER} 2>&1" || echo "ping failed")
 echo "$OUT" | grep -E "packets|rtt" | sed 's/^/         /'
@@ -198,7 +198,7 @@ PING_RESULTS["BF3→Host"]="$LOSS"
 [[ "$LOSS" == "0" ]] && ok "BF3 → Host: 0% loss" || fail "BF3 → Host: ${LOSS}% loss"
 
 # 3. ToR → BF3 p0_if
-info "Ping: ToR ${TOR_IFACE} → BF3 ${BF3_P0_IFACE} (${BF3_P0_IP})"
+info "Ping: ToR ${TOR_IFACE} → BF3 p0_if (${BF3_P0_IP})"
 OUT=$(ssh_cmd "$TOR_USER" "$TOR_PASS" "$TOR_IP" \
   "ping ${BF3_P0_IP} -c ${PING_COUNT} -W 2 2>&1" || echo "ping failed")
 echo "$OUT" | grep -E "packets|rtt" | sed 's/^/         /'
