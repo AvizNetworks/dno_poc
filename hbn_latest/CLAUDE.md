@@ -6,7 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repo Is
 
-Bash scripts for bringing up NVIDIA HBN (Host-Based Networking) on a BlueField-3 DPU running DOCA 3.3.0. All scripts run **on the BF3** (or from an x86 host via SSH), not locally. Validated on `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`.
+Two independent toolsets in this repo — keep them separate:
+
+- **`scripts/`** — HBN (Host-Based Networking): standalone bringup of doca-hbn on a BF3. Runs on the BF3 directly. No Kubernetes required.
+- **`dpf/`** — DPF (DPU Provisioning Framework): Kubernetes-native lifecycle management for BF3 DPUs. Runs from the DPF Operator VM. HBN will be deployed as a DPUService on top of DPF in a future step.
+
+HBN scripts validated on `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`.
 
 ---
 
@@ -17,9 +22,11 @@ Bash scripts for bringing up NVIDIA HBN (Host-Based Networking) on a BlueField-3
 | S1 | `10.20.13.247` ubuntu/Aviz@AIF12345 | `10.20.13.216` root/Aviz@AIF12345 | `10.20.13.13` admin/Aviz@AIF123 |
 | S2 | `10.20.13.228` ubuntu/Aviz@AIF12345 | `10.20.13.212` root/Aviz@AIF12345 | `10.20.13.12` admin/Aviz@AIF123 |
 | S3 | `10.4.5.165` ubuntu/H3lLoW0rLd12! | `10.4.5.166` root/MaiBF3@94538 | — |
-| S4 | `10.20.13.249` ubuntu/Aviz@AIF12345 | `10.20.13.250` root/Aviz@AIF12345 | — |
+| S4 | `10.20.13.249` ubuntu/Aviz@AIF12345 | `10.20.13.250` root/Aviz@AIF12345 | `10.20.13.207` aviz/aviz@123 |
 
 **ToR Switch:** `10.20.13.214` (admin / Aviz@123) — shared across S1 and S2.
+
+**DPF Operator VM:** `10.4.5.136` dpu-vm/admin — k3s cluster, DPF Operator v25.7.0 installed; manages S4's BF3 via DPF provisioning.
 
 VSCode tasks (`.vscode/tasks.json`) auto-open SSH sessions to all 4 servers on folder open.
 
@@ -33,21 +40,47 @@ All scripts require `sudo` and run on the BF3 unless noted.
 ```bash
 sudo ./scripts/bringup_hbn_bf3.sh
 sudo ./scripts/bringup_hbn_bf3.sh --enable-bgp --rest-pass <password>
+
+# With SR-IOV VFs (enable on host first — see VF section below)
+sudo ./scripts/bringup_hbn_bf3.sh --vfs 8            # 4 VFs per PF
+sudo ./scripts/bringup_hbn_bf3.sh --p0-vfs 4 --p1-vfs 4
 ```
 
 **Health check:**
 ```bash
-sudo ./scripts/status_hbn.sh
+sudo ./scripts/status_hbn.sh   # shows all interfaces including VFs if enabled
 ```
 
-**Interface reference (live state + MACs):**
+**Interface reference (live state + MACs + host NIC mapping):**
 ```bash
 sudo ./scripts/topology_hbn.sh
+sudo ./scripts/topology_hbn.sh --host-ip <HOST-IP>   # auto-discovers host NIC names
 ```
 
 **Access methods cheatsheet (run from any machine):**
 ```bash
 ./scripts/access_hbn.sh --bf3-ip <BF3-OOB-IP>
+```
+
+**Enable SR-IOV VFs on x86 host (required before --vfs bringup):**
+```bash
+# On x86 host — adjust interface names per server
+echo 4 > /sys/class/net/enp65s0f0np0/device/sriov_numvfs   # S1
+echo 4 > /sys/class/net/enp65s0f1np1/device/sriov_numvfs
+# Verify: ip link show enp65s0f0np0 | grep "vf "
+```
+
+**VF interface mapping (after --vfs bringup):**
+```
+BF3 container   ↔  Host NIC
+pf0vf0_if       ↔  enp65s0f0v0   (sfnum 4)
+pf0vf1_if       ↔  enp65s0f0v1   (sfnum 5)
+pf0vf2_if       ↔  enp65s0f0v2   (sfnum 6)
+pf0vf3_if       ↔  enp65s0f0v3   (sfnum 7)
+pf1vf0_if       ↔  enp65s0f1v0   (sfnum 8)
+pf1vf1_if       ↔  enp65s0f1v1   (sfnum 9)
+pf1vf2_if       ↔  enp65s0f1v2   (sfnum 10)
+pf1vf3_if       ↔  enp65s0f1v3   (sfnum 11)
 ```
 
 **End-to-end routing validation (SSH-based, run from x86 host or locally):**
@@ -73,6 +106,87 @@ CONT=$(sudo crictl ps | grep doca-hbn | grep -v init | awk '{print $1}')
 sudo crictl exec -it $CONT vtysh   # FRR CLI
 sudo crictl exec -it $CONT nv      # NVUE CLI
 ```
+
+---
+
+## DPF Commands
+
+All DPF scripts run from the **DPF Operator VM** (`10.4.5.136`). No sudo required.
+The DPF stack is completely separate from the HBN scripts above.
+
+**Prerequisites:**
+- `KUBECONFIG=~/.kube/config` (k3s kubeconfig on DPF Operator VM)
+- BFB file placed at `/opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`
+- BMC reachable: `10.20.13.250` (S4)
+
+**Provision BF3 via DPF (idempotent, safe to re-run):**
+```bash
+./dpf/scripts/bringup_dpf.sh
+./dpf/scripts/bringup_dpf.sh --dry-run          # preview steps without applying
+./dpf/scripts/bringup_dpf.sh --rshim-install    # flash via x86 rshim (bypasses Redfish)
+```
+
+**DPF health check:**
+```bash
+./dpf/scripts/status_dpf.sh
+```
+
+**Cross-subnet tunnel (required when DPF VM and BF3 are on different subnets):**
+```bash
+./dpf/scripts/tunnel_dpf.sh start   # open reverse SSH tunnel DPF VM → x86 host
+./dpf/scripts/tunnel_dpf.sh bf3     # print iptables DNAT commands to run on BF3
+./dpf/scripts/tunnel_dpf.sh status  # check tunnel health
+./dpf/scripts/tunnel_dpf.sh stop    # tear down
+```
+
+**Get DPU cluster kubeconfig:**
+```bash
+kubectl get secret s4-dpu-cluster-admin-kubeconfig -n dpf-operator-system \
+  -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/dpu-kubeconfig
+kubectl get nodes --kubeconfig /tmp/dpu-kubeconfig
+```
+
+**Architecture (OOB-only — x86 host NOT in k8s cluster):**
+```
+DPF Operator VM (10.4.5.136)
+  └── DPF Operator → Redfish API → BMC (10.20.13.250) → flash BFB on BF3
+  └── Kamaji (virtual k8s control plane) ← BF3 kubelet joins via OOB (10.20.13.249)
+
+S4 Host (10.20.13.207): NOT involved in k8s
+
+SUBNET NOTE: TCP from 10.20.13.x → 10.4.5.x is blocked in this lab.
+Use tunnel_dpf.sh before running --rshim-install. See dpf/README.md.
+```
+
+**Key config variables** (top of `bringup_dpf.sh` — update per environment):
+```
+BF3_BMC_IP      BMC/Redfish endpoint        (default: 10.20.13.250)
+BF3_OOB_IP      BF3 OOB management IP       (default: 10.20.13.249)
+BF3_SERIAL      BF3 serial number           (default: MT2437600HGY)
+BFB_FILE        local path to .bfb          (default: /opt/bfb/bf-bundle-*.bfb)
+BFB_REGISTRY_IP IP serving BFB over HTTP    (default: 10.4.5.136)
+X86_HOST_IP     x86 host for rshim install  (default: 10.20.13.207)
+```
+
+**Get BF3 serial number:**
+```bash
+ssh ubuntu@<BF3-OOB> 'sudo dmidecode -t system | grep Serial'
+# or from x86 host:
+ssh aviz@<x86-host> 'sudo dmidecode -t system | grep -A2 "System Information" | grep Serial'
+```
+
+**Troubleshooting DPF:**
+
+| Symptom | Fix |
+|---|---|
+| `DPFOperatorConfig` missing | Run `bringup_dpf.sh` — step 5 creates it |
+| Kamaji pods not starting | Check PVC bound: `kubectl get pvc -n dpf-operator-system` |
+| BFB stuck downloading | Check registry reachable: `curl http://BFB_REGISTRY_IP:8080/` |
+| DPU phase stuck `OSInstalling` | BMC reboot in progress — wait up to 30 min |
+| DPU phase `Error` / `FailToInstall` / `404` | BMC skipped flash (same version) — run `bringup_dpf.sh --rshim-install` or patch: `kubectl patch dpu s4-dpu -n dpf-operator-system --subresource=status --type=merge -p '{"status":{"phase":"Ready"}}'` |
+| `kubeadm join: no route to host` | TCP blocked between subnets — run `tunnel_dpf.sh start` then `tunnel_dpf.sh bf3` |
+| etcd-defrag jobs accumulating | Run `bringup_dpf.sh` — step 3 cleans them up |
+| `sudo` slow on BF3 | `echo "127.0.0.1 s4-dpu" \| sudo tee -a /etc/hosts` |
 
 ---
 

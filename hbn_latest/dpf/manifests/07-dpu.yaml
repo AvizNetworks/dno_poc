@@ -1,0 +1,19 @@
+apiVersion: provisioning.dpu.nvidia.com/v1alpha1
+kind: DPU
+metadata:
+  name: s4-dpu
+  namespace: dpf-operator-system
+spec:
+  # Triggers BFB flash via Redfish → BMC → BF3 reboot → kubelet join.
+  bmcIP: "BF3_BMC_IP"
+  serialNumber: "BF3_SERIAL"
+  bfb: doca-3.3.0
+  dpuFlavor: bf3-base
+  dpuNodeName: s4-node
+  dpuDeviceName: s4-bf3
+  nodeEffect:
+    # noEffect: x86 host is NOT in k8s, so drain is not supported.
+    noEffect: true
+  cluster:
+    name: s4-dpu-cluster
+    namespace: dpf-operator-system

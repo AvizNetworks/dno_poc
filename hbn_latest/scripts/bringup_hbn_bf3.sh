@@ -21,6 +21,8 @@ ENABLE_BGP=false
 REST_USER="nvidia"
 REST_PASS="nvidia"
 SKIP_DNS_FIX=false
+P0_VFS=0
+P1_VFS=0
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -39,11 +41,16 @@ Options:
   --rest-user <user>         REST API username (default: nvidia)
   --rest-pass <pass>         REST API password (default: nvidia)
   --skip-dns-fix             Skip adding nameserver 8.8.8.8 to resolv.conf
+  --vfs <n>                  Total VFs split equally across both PFs (e.g. --vfs 8 → 4 per PF)
+  --p0-vfs <n>               VFs on PF0 only
+  --p1-vfs <n>               VFs on PF1 only
   -h, --help                 Show this help
 
 Examples:
   sudo $0
   sudo $0 --enable-bgp --rest-user nvidia --rest-pass MyPass123
+  sudo $0 --vfs 8
+  sudo $0 --p0-vfs 4 --p1-vfs 4
 EOF
   exit 0
 }
@@ -55,6 +62,9 @@ while [[ $# -gt 0 ]]; do
     --rest-user)        REST_USER="$2"; shift ;;
     --rest-pass)        REST_PASS="$2"; shift ;;
     --skip-dns-fix)     SKIP_DNS_FIX=true ;;
+    --vfs)              P0_VFS=$(($2/2)); P1_VFS=$(($2/2)); shift ;;
+    --p0-vfs)           P0_VFS="$2"; shift ;;
+    --p1-vfs)           P1_VFS="$2"; shift ;;
     -h|--help)          usage ;;
     *) echo "Unknown option: $1"; usage ;;
   esac
@@ -91,6 +101,78 @@ if [[ -z "$SFC_SERVICE" ]]; then
   echo -e "${CYAN}[INFO]${NC}  install.sh is at: /opt/mellanox/sfc-hbn/install.sh"
   exit 1
 fi
+
+# ─── VF config generators ────────────────────────────────────────────────────
+generate_hbn_conf() {
+  {
+    cat <<'EOF'
+[hbn_profile]
+profile_name = default
+
+[BR_HBN_UPLINKS]
+p0
+p1
+
+[BR_HBN_REPS]
+pf0hpf
+pf1hpf
+EOF
+    for ((i=0; i<P0_VFS; i++)); do echo "pf0vf${i}"; done
+    for ((i=0; i<P1_VFS; i++)); do echo "pf1vf${i}"; done
+    cat <<'EOF'
+
+[BR_HBN_SFS]
+
+
+[BR_SFC_UPLINKS]
+
+
+[BR_SFC_REPS]
+
+[BR_SFC_SFS]
+
+
+[BR_HBN_SFC_PATCH_PORTS]
+
+
+[LINK_PROPAGATION]
+p0:p0_if_r
+p1:p1_if_r
+pf0hpf:pf0hpf_if_r
+pf1hpf:pf1hpf_if_r
+EOF
+    for ((i=0; i<P0_VFS; i++)); do echo "pf0vf${i}:pf0vf${i}_if_r"; done
+    for ((i=0; i<P1_VFS; i++)); do echo "pf1vf${i}:pf1vf${i}_if_r"; done
+    printf '\n[ENABLE_BR_SFC]\n\n\n[ENABLE_BR_SFC_DEFAULT_FLOWS]\n\n\n[ENABLE_VETH]\n\n'
+  } > "${HBN_CONF}"
+}
+
+generate_sfc_conf() {
+  # VF SF function netdevs: ${_SF_PREFIX}s${sfnum} (e.g. enp3s0f0s4)
+  # _SF_PREFIX is derived from BF3_PCI0 at the top of Step 4
+  {
+    cat <<'EOF'
+BR_HBN_NAME=br-hbn
+MAPPINGS=(
+"br-hbn~p0~p0_if_r~p0_if~p0_if_r"
+"br-hbn~p1~p1_if_r~p1_if~p1_if_r"
+"br-hbn~pf0hpf~pf0hpf_if_r~pf0hpf_if~pf0hpf_if_r"
+"br-hbn~pf1hpf~pf1hpf_if_r~pf1hpf_if~pf1hpf_if_r"
+EOF
+    # VF entries: field2=SF function netdev (→ container as pf0vfN_if)
+    #             field3=VF representor renamed to pf0vfN_if_r (→ stays in OVS)
+    local _SFNUM=4
+    for ((i=0; i<P0_VFS; i++)); do
+      echo "\"br-hbn~${_SF_PREFIX}s${_SFNUM}~pf0vf${i}_if_r~pf0vf${i}_if~pf0vf${i}_if_r\""
+      _SFNUM=$((_SFNUM+1))
+    done
+    for ((i=0; i<P1_VFS; i++)); do
+      echo "\"br-hbn~${_SF_PREFIX}s${_SFNUM}~pf1vf${i}_if_r~pf1vf${i}_if~pf1vf${i}_if_r\""
+      _SFNUM=$((_SFNUM+1))
+    done
+    echo ")"
+  } > "${SFC_CONF}"
+}
 
 echo ""
 echo "============================================================"
@@ -139,9 +221,17 @@ info "Step 4/13 — Deploying reference config files from ${MLX_REF_DIR}"
 
 [[ -d "$MLX_REF_DIR" ]] || fail "Reference config directory not found: $MLX_REF_DIR (clone the full repo)"
 
-# hbn.conf — install.sh generates with 14 VF interfaces; init-sfs loops forever waiting for them
-if grep -qE "pf0vf[0-9]" "${HBN_CONF}" 2>/dev/null; then
-  info "hbn.conf has VF entries (install.sh generated) — replacing with 4-interface version"
+TOTAL_VFS=$((P0_VFS + P1_VFS))
+# SF function netdev prefix derived from BF3 PCI address (e.g. 0000:03:00.0 → enp3s0f0)
+_BUS_DEC=$(printf '%d' "0x${BF3_PCI0:5:2}" 2>/dev/null || echo 3)
+_SF_PREFIX="enp${_BUS_DEC}s0f0"
+
+# hbn.conf — generate dynamically when VFs requested; otherwise use repo reference
+if [[ $TOTAL_VFS -gt 0 ]]; then
+  generate_hbn_conf
+  ok "hbn.conf generated (p0_vfs=${P0_VFS}, p1_vfs=${P1_VFS})"
+elif grep -qE "pf0vf[0-9]" "${HBN_CONF}" 2>/dev/null; then
+  info "hbn.conf has unexpected VF entries — replacing with PF-only version"
   cp "${MLX_REF_DIR}/hbn.conf" "${HBN_CONF}"
   ok "hbn.conf replaced"
 elif [[ ! -f "${HBN_CONF}" ]]; then
@@ -151,9 +241,12 @@ else
   ok "hbn.conf already correct"
 fi
 
-# sfc.conf — install.sh generates 14+ VF MAPPINGS; correct version has 4 SF entries
-if grep -qE "pf0vf[0-9]|pf1vf[0-9]" "${SFC_CONF}" 2>/dev/null; then
-  info "sfc.conf has VF MAPPINGS (install.sh generated) — replacing with 4-interface version"
+# sfc.conf — generate dynamically when VFs requested; otherwise use repo reference
+if [[ $TOTAL_VFS -gt 0 ]]; then
+  generate_sfc_conf
+  ok "sfc.conf generated (p0_vfs=${P0_VFS}, p1_vfs=${P1_VFS})"
+elif grep -qE "pf0vf[0-9]|pf1vf[0-9]" "${SFC_CONF}" 2>/dev/null; then
+  info "sfc.conf has unexpected VF entries — replacing with PF-only version"
   cp "${MLX_REF_DIR}/sfc.conf" "${SFC_CONF}"
   ok "sfc.conf replaced"
 elif [[ ! -f "${SFC_CONF}" ]]; then
@@ -178,12 +271,25 @@ if [[ ! -f "${MLX_SF_CONF}" ]]; then
   SF_CONF_OK=false
   info "mlnx-sf.conf missing — will generate"
 else
-  # Verify all 4 required sfnums are present (install.sh may assign different sfnums like 0)
+  # Verify all 4 base sfnums are present
   for _SFNUM in 2 3 1514 1515; do
     grep -q "\-\-sfnum ${_SFNUM}" "${MLX_SF_CONF}" 2>/dev/null || { SF_CONF_OK=false; break; }
   done
   [[ "$SF_CONF_OK" == "false" ]] && warn "mlnx-sf.conf missing required sfnums (2, 3, 1514, 1515) — will regenerate"
-  # Check for physical MAC conflict (mlx5_core skips function netdevs when SF has port MAC)
+  # Verify VF sfnums present when --vfs was requested
+  if [[ "$SF_CONF_OK" == "true" && $TOTAL_VFS -gt 0 ]]; then
+    _CHK_SFNUM=4
+    for ((i=0; i<P0_VFS; i++)); do
+      grep -q "\-\-sfnum ${_CHK_SFNUM}" "${MLX_SF_CONF}" 2>/dev/null || { SF_CONF_OK=false; break; }
+      _CHK_SFNUM=$((_CHK_SFNUM+1))
+    done
+    for ((i=0; i<P1_VFS; i++)); do
+      grep -q "\-\-sfnum ${_CHK_SFNUM}" "${MLX_SF_CONF}" 2>/dev/null || { SF_CONF_OK=false; break; }
+      _CHK_SFNUM=$((_CHK_SFNUM+1))
+    done
+    [[ "$SF_CONF_OK" == "false" ]] && warn "mlnx-sf.conf missing VF sfnums — will regenerate"
+  fi
+  # Check for physical MAC conflict
   if [[ "$SF_CONF_OK" == "true" ]]; then
     if { [[ -n "$P0_MAC" ]] && grep -qi "$P0_MAC" "${MLX_SF_CONF}"; } || \
        { [[ -n "$P1_MAC" ]] && grep -qi "$P1_MAC" "${MLX_SF_CONF}"; }; then
@@ -208,13 +314,27 @@ if [[ "$SF_CONF_OK" == "false" ]]; then
     _SF2_MAC="02:00:00:00:00:02"; _SF3_MAC="02:00:00:00:00:03"
     _SF1514_MAC="02:00:00:05:ea:00"; _SF1515_MAC="02:00:00:05:eb:00"
   fi
-  cat > "${MLX_SF_CONF}" <<EOF
+  {
+    cat <<EOF
 /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 2 --hwaddr ${_SF2_MAC} -t --cpu-list 0-2
 /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 1514 --hwaddr ${_SF1514_MAC} -t --cpu-list 0-2
 /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 3 --hwaddr ${_SF3_MAC} -t --cpu-list 0-2
 /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 1515 --hwaddr ${_SF1515_MAC} -t --cpu-list 0-2
 EOF
-  ok "mlnx-sf.conf generated: sfnums 2, 3, 1514, 1515 with derived MACs (base: ${P0_MAC:-unknown})"
+    # VF SFs: sfnums 4..4+P0_VFS-1 for pf0vfN, then 4+P0_VFS..4+P0_VFS+P1_VFS-1 for pf1vfN
+    _SFNUM=4
+    for ((i=0; i<P0_VFS; i++)); do
+      _MAC="02:${_B3}:${_B4}:${_B5}:$(printf '%02x' 0):$(printf '%02x' $_SFNUM)"
+      echo "/sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum ${_SFNUM} --hwaddr ${_MAC} -t --cpu-list 0-2"
+      _SFNUM=$((_SFNUM+1))
+    done
+    for ((i=0; i<P1_VFS; i++)); do
+      _MAC="02:${_B3}:${_B4}:${_B5}:$(printf '%02x' 1):$(printf '%02x' $_SFNUM)"
+      echo "/sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum ${_SFNUM} --hwaddr ${_MAC} -t --cpu-list 0-2"
+      _SFNUM=$((_SFNUM+1))
+    done
+  } > "${MLX_SF_CONF}"
+  ok "mlnx-sf.conf generated: sfnums 2,3,1514,1515 + ${TOTAL_VFS} VF SFs (base: ${P0_MAC:-unknown})"
 else
   ok "mlnx-sf.conf check passed (sfnums and MACs OK)"
 fi
@@ -292,11 +412,23 @@ SFS_PROVISIONED=true
 
 # Primary check: all 4 SF opstate=attached in devlink
 sfs_all_attached() {
-  local s
+  local s _SFNUM=4
   for s in 2 3 1514 1515; do
     local op
     op=$(devlink port show 2>/dev/null | grep "sfnum ${s} " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
     [[ "$op" == "attached" ]] || return 1
+  done
+  for ((i=0; i<P0_VFS; i++)); do
+    local op
+    op=$(devlink port show 2>/dev/null | grep "sfnum ${_SFNUM} " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
+    [[ "$op" == "attached" ]] || return 1
+    _SFNUM=$((_SFNUM+1))
+  done
+  for ((i=0; i<P1_VFS; i++)); do
+    local op
+    op=$(devlink port show 2>/dev/null | grep "sfnum ${_SFNUM} " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
+    [[ "$op" == "attached" ]] || return 1
+    _SFNUM=$((_SFNUM+1))
   done
 }
 
@@ -346,7 +478,10 @@ else
 
   # Explicitly activate any SFs that are in devlink but not yet active.
   # mlnx-sf should do this internally, but some driver versions require it explicitly.
-  for _S in 2 3 1514 1515; do
+  _ALL_SFNUMS=(2 3 1514 1515)
+  _VS=4; for ((i=0; i<P0_VFS; i++)); do _ALL_SFNUMS+=($_VS); _VS=$((_VS+1)); done
+         for ((i=0; i<P1_VFS; i++)); do _ALL_SFNUMS+=($_VS); _VS=$((_VS+1)); done
+  for _S in "${_ALL_SFNUMS[@]}"; do
     _PORT=$(devlink port show 2>/dev/null | grep "sfnum ${_S} " | awk '{print $1}' | sed 's/:$//')
     if [[ -n "$_PORT" ]]; then
       devlink port function set "$_PORT" state active 2>/dev/null \
@@ -377,7 +512,8 @@ OVS_RESTARTED=false
 OVS_REAL_ERRORS=$(ovs-vsctl show 2>/dev/null \
   | grep "Invalid argument" \
   | grep -v "could not add network device p[01] to ofproto" \
-  | wc -l || echo 0)
+  | wc -l | tr -d ' ' || true)
+OVS_REAL_ERRORS=${OVS_REAL_ERRORS:-0}
 if [[ "$OVS_REAL_ERRORS" -gt 0 ]]; then
   warn "br-hbn has 'Invalid argument' — OVS started before hugepages were allocated; fixing"
   ovs-vsctl del-br br-hbn 2>/dev/null && info "Deleted stale br-hbn" || true
@@ -386,11 +522,54 @@ if [[ "$OVS_REAL_ERRORS" -gt 0 ]]; then
   OVS_RESTARTED=true
 fi
 
+# Clean stale VF OVS entries and rename VF representors before sfc restart.
+# Stale entries from previous runs cause "already in use" conflicts when sfc re-adds them.
+if [[ $TOTAL_VFS -gt 0 ]]; then
+  info "Cleaning stale VF OVS entries..."
+  _VS=4
+  for ((i=0; i<P0_VFS; i++)); do
+    ovs-vsctl del-port br-hbn "pf0vf${i}"       2>/dev/null || true
+    ovs-vsctl del-port br-hbn "pf0vf${i}_if_r"  2>/dev/null || true
+    ovs-vsctl del-port br-hbn "${_SF_PREFIX}s${_VS}" 2>/dev/null || true
+    _VS=$((_VS+1))
+  done
+  for ((i=0; i<P1_VFS; i++)); do
+    ovs-vsctl del-port br-hbn "pf1vf${i}"           2>/dev/null || true
+    ovs-vsctl del-port br-hbn "pf1vf${i}_if_r"      2>/dev/null || true
+    ovs-vsctl del-port br-hbn "${_SF_PREFIX}s${_VS}" 2>/dev/null || true
+    _VS=$((_VS+1))
+  done
+
+  info "Renaming VF representors for OVS..."
+  for ((i=0; i<P0_VFS; i++)); do
+    ip link show "pf0vf${i}" &>/dev/null 2>&1 && \
+      ip link set "pf0vf${i}" name "pf0vf${i}_if_r" 2>/dev/null && \
+      info "  pf0vf${i} → pf0vf${i}_if_r" || true
+  done
+  for ((i=0; i<P1_VFS; i++)); do
+    ip link show "pf1vf${i}" &>/dev/null 2>&1 && \
+      ip link set "pf1vf${i}" name "pf1vf${i}_if_r" 2>/dev/null && \
+      info "  pf1vf${i} → pf1vf${i}_if_r" || true
+  done
+fi
+
 # Restart sfc.service when OVS was fixed or SFs were just provisioned
 if [[ "$OVS_RESTARTED" == "true" ]] || [[ "$SFS_PROVISIONED" == "false" ]]; then
   info "Restarting ${SFC_SERVICE} to wire up SFs and hugepages..."
   systemctl restart "$SFC_SERVICE"
   sleep 20
+fi
+
+# When VFs are configured, force restart the doca-hbn container so init-sfs
+# runs again with the new VF OVS metadata (hbn_netdev) — this moves the VF SF
+# function netdevs (enp3s0f0sN) into the container as pf0vfN_if / pf1vfN_if.
+if [[ $TOTAL_VFS -gt 0 ]]; then
+  _OLD_CONT=$(crictl ps -q --name doca-hbn 2>/dev/null | head -1 || true)
+  if [[ -n "$_OLD_CONT" ]]; then
+    info "Restarting doca-hbn container so init-sfs picks up VF interfaces..."
+    crictl stop "$_OLD_CONT" 2>/dev/null || true
+    sleep 5
+  fi
 fi
 
 # ─── Step 8: Validate OVS ports ──────────────────────────────────────────────
@@ -450,13 +629,50 @@ echo ""
 CONT=$(crictl ps -q --name doca-hbn 2>/dev/null | head -1 || true)
 [[ -z "$CONT" ]] && fail "Could not get doca-hbn container ID"
 info "Container ID: $CONT"
+CONT_PID=$(crictl inspect "$CONT" 2>/dev/null \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('info',{}).get('pid',''))" 2>/dev/null || true)
+[[ -z "$CONT_PID" ]] && fail "Could not get doca-hbn container PID"
 
 # ─── Step 11: Bring up interfaces inside container ───────────────────────────
 info "Step 11/13 — Bringing up HBN interfaces inside container"
-for iface in p0_if p1_if pf0hpf_if pf1hpf_if; do
-  STATE=$(crictl exec "$CONT" ip link show "$iface" 2>/dev/null | grep -o "state [A-Z]*" | awk '{print $2}')
+HBN_IFACES=(p0_if p1_if pf0hpf_if pf1hpf_if)
+for ((i=0; i<P0_VFS; i++)); do HBN_IFACES+=("pf0vf${i}_if"); done
+for ((i=0; i<P1_VFS; i++)); do HBN_IFACES+=("pf1vf${i}_if"); done
+# Move VF SF function netdevs from host into container (init-sfs doesn't handle these).
+# The SF function netdev (enp3s0f0sN) is moved to the container and renamed pf0vfN_if.
+if [[ $TOTAL_VFS -gt 0 ]]; then
+  info "Moving VF SF function netdevs into container..."
+  _SFNUM=4
+  for ((i=0; i<P0_VFS; i++)); do
+    _NETDEV="${_SF_PREFIX}s${_SFNUM}"
+    if ip link show "$_NETDEV" &>/dev/null 2>&1; then
+      ip link set "$_NETDEV" netns "$CONT_PID" name "pf0vf${i}_if" 2>/dev/null && \
+        info "  ${_NETDEV} → pf0vf${i}_if (in container)" || \
+        warn "  ${_NETDEV}: could not move to container"
+    else
+      warn "  ${_NETDEV}: not found in host namespace"
+    fi
+    _SFNUM=$((_SFNUM+1))
+  done
+  for ((i=0; i<P1_VFS; i++)); do
+    _NETDEV="${_SF_PREFIX}s${_SFNUM}"
+    if ip link show "$_NETDEV" &>/dev/null 2>&1; then
+      ip link set "$_NETDEV" netns "$CONT_PID" name "pf1vf${i}_if" 2>/dev/null && \
+        info "  ${_NETDEV} → pf1vf${i}_if (in container)" || \
+        warn "  ${_NETDEV}: could not move to container"
+    else
+      warn "  ${_NETDEV}: not found in host namespace"
+    fi
+    _SFNUM=$((_SFNUM+1))
+  done
+fi
+
+for iface in "${HBN_IFACES[@]}"; do
+  STATE=$(crictl exec "$CONT" ip link show "$iface" 2>/dev/null | grep -o "state [A-Z]*" | awk '{print $2}' || true)
   if [[ "$STATE" == "UP" ]]; then
     ok "$iface already UP"
+  elif [[ -z "$STATE" ]]; then
+    warn "$iface: not found in container — VF SF may not be provisioned yet"
   else
     crictl exec "$CONT" ip link set "$iface" up 2>/dev/null && ok "$iface brought UP" || warn "$iface: could not set UP"
   fi
@@ -533,12 +749,13 @@ echo "  Bringup Complete — Summary"
 echo "============================================================"
 
 OOB_IP=$(ip addr show oob_net0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 || echo "unknown")
-SF_COUNT=$(devlink port show 2>/dev/null | grep -c "sfnum [0-9]" || echo 0)
-FLOW_COUNT=$(ovs-appctl dpctl/dump-flows type=offloaded 2>/dev/null | grep -c "actions:" || echo 0)
+SF_COUNT=$(devlink port show 2>/dev/null | grep -c "sfnum [0-9]" || true); SF_COUNT=${SF_COUNT:-0}
+FLOW_COUNT=$(ovs-appctl dpctl/dump-flows type=offloaded 2>/dev/null | grep -c "actions:" || true); FLOW_COUNT=${FLOW_COUNT:-0}
+EXPECTED_SFS=$((4 + TOTAL_VFS))
 
 echo ""
 printf "  %-25s %s\n" "doca-hbn container:" "Running ($CONT)"
-printf "  %-25s %s\n" "SFs provisioned:" "$SF_COUNT (expect 4)"
+printf "  %-25s %s\n" "SFs provisioned:" "$SF_COUNT (expect ${EXPECTED_SFS})"
 printf "  %-25s %s\n" "OVS offloaded flows:" "$FLOW_COUNT"
 printf "  %-25s %s\n" "OOB IP:" "$OOB_IP"
 printf "  %-25s %s\n" "REST API:" "https://${OOB_IP}:8765/nvue_v1/"

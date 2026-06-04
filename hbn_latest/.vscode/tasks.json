@@ -70,7 +70,48 @@
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server3" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
-    }
+    },
 
+    // ─── Server 4 BF3 ────────────────────────────────────────────────────────
+    {
+      "label": "S4: BF3 BMC (root@10.20.13.250)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no root@10.20.13.250",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server4" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S4: BF3 ARM (ubuntu@10.20.13.249)",
+      "type": "shell",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no ubuntu@10.20.13.249",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server4" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S4: Host (admin@10.20.13.207)",
+      "type": "shell",
+      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.207",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server4" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "DPF operator1",
+      "type": "shell",
+      "command": "sshpass -p 'admin' ssh -o StrictHostKeyChecking=no dpu-vm@10.4.5.136",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server5" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "DPF operator2",
+      "type": "shell",
+      "command": "sshpass -p 'admin' ssh -o StrictHostKeyChecking=no dpu-vm@10.4.5.136",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server5" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    }
   ]
 }

@@ -1,5 +1,0 @@
-- set:
-    system:
-      api:
-        listening-address:
-          0.0.0.0: {}

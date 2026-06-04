@@ -101,18 +101,17 @@ hbn/
 Automates all bringup steps:
 1. Verify eswitch switchdev mode
 2. Fix DNS (adds 8.8.8.8 if needed for image pull)
-3. Install `apparmor-utils`
-4. Create required hostPath directories
-5. Deploy reference configs (`hbn.conf`, `sfc.conf`, `mlnx-sf.conf`, `doca_hbn.yaml`)
-6. Allocate hugepages (1600×2MB) and create persistent service
-7. Provision SubFunctions (sfnum 2, 3, 1514, 1515) with MAC validation
-8. OVS health check — restart if hugepage-broken
-9. Validate all 8 OVS ports on `br-hbn`
-10. Pull `doca_hbn` container image
-11. Wait for `doca-hbn` pod to be Running
-12. Bring up HBN interfaces (`p0_if`, `p1_if`, `pf0hpf_if`, `pf1hpf_if`)
-13. Enable BGP in FRR (optional)
-14. Configure REST API password and external access
+3. Create required hostPath directories
+4. Generate `hbn.conf`, `sfc.conf`, `mlnx-sf.conf` dynamically (VF-aware)
+5. Allocate hugepages (1600×2MB) and create persistent service
+6. Provision SubFunctions (sfnum 2, 3, 1514, 1515 + VF sfnums if `--vfs` set)
+7. OVS health check — clean stale VF entries, rename VF representors
+8. Validate OVS ports on `br-hbn`
+9. Pull `doca_hbn` container image
+10. Wait for `doca-hbn` pod to be Running
+11. Move VF SF function netdevs into container, bring up all interfaces
+12. Enable BGP in FRR (optional)
+13. Configure REST API password and external access
 
 **Options:**
 
@@ -122,6 +121,16 @@ Automates all bringup steps:
 | `--rest-user <user>` | `nvidia` | REST API username |
 | `--rest-pass <pass>` | `nvidia` | REST API password |
 | `--skip-dns-fix` | off | Skip adding nameserver 8.8.8.8 |
+| `--vfs <n>` | 0 | Total VFs split equally across both PFs (e.g. `--vfs 8` → 4 per PF) |
+| `--p0-vfs <n>` | 0 | VFs on PF0 only |
+| `--p1-vfs <n>` | 0 | VFs on PF1 only |
+
+**VF prerequisite** — enable SR-IOV on the x86 host before running with `--vfs`:
+```bash
+# On x86 host (run once, make persistent via udev or systemd)
+echo 4 > /sys/class/net/enp65s0f0np0/device/sriov_numvfs
+echo 4 > /sys/class/net/enp65s0f1np1/device/sriov_numvfs
+```
 
 ---
 

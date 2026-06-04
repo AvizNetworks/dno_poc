@@ -1,0 +1,10 @@
+apiVersion: provisioning.dpu.nvidia.com/v1alpha1
+kind: DPUCluster
+metadata:
+  name: s4-dpu-cluster
+  namespace: dpf-operator-system
+spec:
+  # kamaji: DPF manages the DPU cluster control plane via Kamaji TenantControlPlane.
+  # No clusterEndpoint/keepalived needed for single-node (one BF3) cluster.
+  type: kamaji
+  maxNodes: 1

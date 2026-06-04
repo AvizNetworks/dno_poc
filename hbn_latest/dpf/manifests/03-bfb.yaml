@@ -1,0 +1,9 @@
+apiVersion: provisioning.dpu.nvidia.com/v1alpha1
+kind: BFB
+metadata:
+  name: doca-3.3.0
+  namespace: dpf-operator-system
+spec:
+  # URL must serve the .bfb file directly (HTTP/HTTPS).
+  # bringup_dpf.sh substitutes BFB_URL at apply time.
+  url: "BFB_URL"

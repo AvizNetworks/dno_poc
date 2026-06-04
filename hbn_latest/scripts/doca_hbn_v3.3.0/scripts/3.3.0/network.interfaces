@@ -1,5 +1,0 @@
-source /etc/network/interfaces.d/*.intf
-
-auto lo
-iface lo inet loopback
-

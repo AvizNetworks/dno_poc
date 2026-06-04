@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BF3 HBN Internal Port Mapping</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; font-size: 13px; }
+
+  h1 { text-align: center; padding: 20px; font-size: 20px; color: #63b3ed; letter-spacing: 1px; }
+  h1 span { color: #a0aec0; font-size: 13px; font-weight: normal; display: block; margin-top: 4px; }
+
+  .diagram { display: flex; gap: 0; align-items: stretch; padding: 10px 20px 20px; min-height: 90vh; }
+
+  /* ── Columns ── */
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .col-tor   { width: 120px; justify-content: center; }
+  .col-phys  { width: 110px; justify-content: center; }
+  .col-eswitch { width: 170px; justify-content: center; }
+  .col-ovs   { width: 210px; justify-content: center; }
+  .col-frr   { width: 220px; justify-content: center; }
+  .col-host  { width: 170px; justify-content: center; }
+
+  /* arrows between columns */
+  .col-arrow { width: 30px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 0; }
+  .arrow-band { flex: 1; display: flex; align-items: center; justify-content: center; }
+  .arr { font-size: 18px; color: #4a5568; }
+  .arr.active { color: #63b3ed; }
+  .arr.pcie { color: #9f7aea; }
+
+  /* ── Boxes ── */
+  .box {
+    border-radius: 8px;
+    padding: 10px 12px;
+    border: 1px solid;
+  }
+  .box-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    opacity: 0.7;
+  }
+
+  /* color themes */
+  .theme-tor   { background: #1a2744; border-color: #2b4299; }
+  .theme-phys  { background: #1a2a1a; border-color: #2d5a2d; }
+  .theme-eswitch { background: #1a1a2e; border-color: #553c9a; }
+  .theme-ovs   { background: #1a2520; border-color: #276749; }
+  .theme-frr   { background: #1a2530; border-color: #2c7a7b; }
+  .theme-nl2   { background: #2d1f0e; border-color: #c05621; }
+  .theme-host  { background: #1a1a2e; border-color: #553c9a; }
+
+  /* ── Port pills ── */
+  .port-list { display: flex; flex-direction: column; gap: 4px; }
+  .port {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px; border-radius: 4px; cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid transparent;
+  }
+  .port:hover { border-color: #63b3ed44; background: #ffffff0a; }
+  .port.highlighted { background: #2a4a6a; border-color: #63b3ed; }
+
+  .port-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .port-name { font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; font-weight: 600; }
+  .port-desc { font-size: 10px; color: #718096; margin-top: 1px; }
+
+  /* dot colors */
+  .dot-tor    { background: #4299e1; }
+  .dot-uplink { background: #48bb78; }
+  .dot-rep    { background: #9f7aea; }
+  .dot-sf     { background: #f6ad55; }
+  .dot-frr    { background: #63b3ed; }
+  .dot-vf     { background: #fc8181; }
+  .dot-host   { background: #b794f4; }
+
+  /* ── Hardware offload note ── */
+  .hw-box {
+    background: #1a1005;
+    border: 1px dashed #744210;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    color: #d69e2e;
+    margin-top: 6px;
+  }
+  .hw-box strong { display: block; margin-bottom: 3px; color: #f6ad55; }
+
+  /* ── Section dividers ── */
+  .section-div {
+    width: 100%;
+    border-top: 1px dashed #2d3748;
+    margin: 4px 0;
+  }
+
+  /* ── Big BF3 wrapper ── */
+  .bf3-wrapper {
+    border: 1px solid #4a5568;
+    border-radius: 12px;
+    padding: 12px;
+    background: #111827;
+    display: flex;
+    gap: 0;
+    flex: 1;
+  }
+  .bf3-label {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    font-size: 11px;
+    font-weight: 700;
+    color: #718096;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 0 4px;
+    margin-right: 8px;
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 12px; padding: 10px 20px;
+    border-top: 1px solid #2d3748;
+    margin-top: 4px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #a0aec0; }
+
+  /* ── Tooltip ── */
+  .tooltip {
+    position: fixed;
+    background: #1a202c;
+    border: 1px solid #4a5568;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    pointer-events: none;
+    display: none;
+    z-index: 1000;
+    max-width: 260px;
+    line-height: 1.6;
+  }
+  .tooltip strong { color: #63b3ed; display: block; margin-bottom: 4px; }
+
+  /* ── Info panel ── */
+  .info-panel {
+    position: fixed;
+    right: 20px;
+    top: 80px;
+    width: 280px;
+    background: #1a202c;
+    border: 1px solid #4a5568;
+    border-radius: 8px;
+    padding: 14px;
+    display: none;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .info-panel h3 { color: #63b3ed; margin-bottom: 8px; font-size: 13px; }
+  .info-panel .close { float: right; cursor: pointer; color: #718096; font-size: 16px; line-height: 1; }
+  .info-row { display: flex; gap: 6px; margin-bottom: 3px; }
+  .info-key { color: #718096; min-width: 80px; }
+  .info-val { color: #e2e8f0; font-family: monospace; }
+
+  .flow-path {
+    margin-top: 10px;
+    padding: 8px;
+    background: #0f1117;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 11px;
+    color: #68d391;
+    line-height: 1.8;
+  }
+</style>
+</head>
+<body>
+
+<h1>BF3 HBN — Internal Port Mapping & Data Plane
+  <span>DOCA 3.3.0 · Server 1 (10.20.13.247) · 4 PF + 8 VF interfaces</span>
+</h1>
+
+<div class="diagram">
+
+  <!-- ToR -->
+  <div class="col col-tor">
+    <div class="box theme-tor">
+      <div class="box-label">ToR Switch</div>
+      <div class="port-list">
+        <div class="port" data-id="tor-e72" onclick="showInfo(this)">
+          <div class="port-dot dot-tor"></div>
+          <div><div class="port-name">Ethernet72</div><div class="port-desc">→ BF3 p1</div></div>
+        </div>
+        <div class="port" data-id="tor-e76" onclick="showInfo(this)">
+          <div class="port-dot dot-tor"></div>
+          <div><div class="port-name">Ethernet76</div><div class="port-desc">→ S2 BF3 p0</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow ToR→Phys -->
+  <div class="col-arrow"><div class="arrow-band"><span class="arr active">▶</span></div></div>
+
+  <!-- Physical ports -->
+  <div class="col col-phys">
+    <div class="box theme-phys">
+      <div class="box-label">Physical Ports</div>
+      <div class="port-list">
+        <div class="port" data-id="p0" onclick="showInfo(this)">
+          <div class="port-dot dot-uplink"></div>
+          <div><div class="port-name">p0</div><div class="port-desc">SFP port 0</div></div>
+        </div>
+        <div class="port" data-id="p1" onclick="showInfo(this)">
+          <div class="port-dot dot-uplink"></div>
+          <div><div class="port-name">p1</div><div class="port-desc">SFP port 1 → E72</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BF3 wrapper -->
+  <div class="bf3-wrapper">
+    <div class="bf3-label">BF3 DPU ARM</div>
+
+    <!-- Arrow Phys→Eswitch -->
+    <div class="col-arrow"><div class="arrow-band"><span class="arr active">▶</span></div></div>
+
+    <!-- Eswitch -->
+    <div class="col col-eswitch">
+      <div class="box theme-eswitch">
+        <div class="box-label">eswitch (HW)</div>
+        <div class="port-list">
+          <div class="port" data-id="eswitch" onclick="showInfo(this)">
+            <div class="port-dot" style="background:#9f7aea"></div>
+            <div><div class="port-name">switchdev mode</div><div class="port-desc">TC flower rules</div></div>
+          </div>
+          <div class="port" data-id="p0-rep" onclick="showInfo(this)">
+            <div class="port-dot dot-rep"></div>
+            <div><div class="port-name">p0 representor</div><div class="port-desc">→ p0_if_r in OVS</div></div>
+          </div>
+          <div class="port" data-id="p1-rep" onclick="showInfo(this)">
+            <div class="port-dot dot-rep"></div>
+            <div><div class="port-name">p1 representor</div><div class="port-desc">→ p1_if_r in OVS</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="pf0-rep" onclick="showInfo(this)">
+            <div class="port-dot dot-sf"></div>
+            <div><div class="port-name">pf0hpf rep</div><div class="port-desc">→ pf0hpf_if_r</div></div>
+          </div>
+          <div class="port" data-id="pf1-rep" onclick="showInfo(this)">
+            <div class="port-dot dot-sf"></div>
+            <div><div class="port-name">pf1hpf rep</div><div class="port-desc">→ pf1hpf_if_r</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="vf0-rep" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf0..3 rep</div><div class="port-desc">→ pf0vfN_if_r</div></div>
+          </div>
+          <div class="port" data-id="vf1-rep" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf0..3 rep</div><div class="port-desc">→ pf1vfN_if_r</div></div>
+          </div>
+        </div>
+        <div class="hw-box">
+          <strong>⚡ Hardware offload</strong>
+          Matched flows bypass OVS entirely — line rate forwarding.
+          nl2docad programs TC rules from FRR routes.
+        </div>
+      </div>
+    </div>
+
+    <!-- Arrow Eswitch→OVS -->
+    <div class="col-arrow">
+      <div class="arrow-band" style="flex:2"><span class="arr active">▶</span></div>
+      <div class="arrow-band" style="flex:1; font-size:9px; color:#744210; text-align:center;">miss</div>
+    </div>
+
+    <!-- OVS -->
+    <div class="col col-ovs">
+      <div class="box theme-ovs">
+        <div class="box-label">OVS br-hbn (DPDK)</div>
+        <div class="port-list">
+          <div class="port" data-id="ovs-p0" onclick="showInfo(this)">
+            <div class="port-dot dot-uplink"></div>
+            <div><div class="port-name">p0</div><div class="port-desc">physical uplink DPDK</div></div>
+          </div>
+          <div class="port" data-id="ovs-p1" onclick="showInfo(this)">
+            <div class="port-dot dot-uplink"></div>
+            <div><div class="port-name">p1</div><div class="port-desc">physical uplink DPDK</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="ovs-p0r" onclick="showInfo(this)">
+            <div class="port-dot dot-rep"></div>
+            <div><div class="port-name">p0_if_r</div><div class="port-desc">p0 SF representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-p1r" onclick="showInfo(this)">
+            <div class="port-dot dot-rep"></div>
+            <div><div class="port-name">p1_if_r</div><div class="port-desc">p1 SF representor</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="ovs-pf0" onclick="showInfo(this)">
+            <div class="port-dot dot-sf"></div>
+            <div><div class="port-name">pf0hpf</div><div class="port-desc">host PF0 proxy</div></div>
+          </div>
+          <div class="port" data-id="ovs-pf0r" onclick="showInfo(this)">
+            <div class="port-dot dot-sf"></div>
+            <div><div class="port-name">pf0hpf_if_r</div><div class="port-desc">PF0 SF representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-pf1" onclick="showInfo(this)">
+            <div class="port-dot dot-sf"></div>
+            <div><div class="port-name">pf1hpf</div><div class="port-desc">host PF1 proxy</div></div>
+          </div>
+          <div class="port" data-id="ovs-pf1r" onclick="showInfo(this)">
+            <div class="port-dot dot-sf"></div>
+            <div><div class="port-name">pf1hpf_if_r</div><div class="port-desc">PF1 SF representor</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="ovs-vf0r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf0_if_r</div><div class="port-desc">VF0 PF0 representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-vf1r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf1_if_r</div><div class="port-desc">VF1 PF0 representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-vf2r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf2_if_r</div><div class="port-desc">VF2 PF0 representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-vf3r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf3_if_r</div><div class="port-desc">VF3 PF0 representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-vf4r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf0_if_r</div><div class="port-desc">VF0 PF1 representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-vf5r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf1_if_r</div><div class="port-desc">VF1 PF1 representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-vf6r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf2_if_r</div><div class="port-desc">VF2 PF1 representor</div></div>
+          </div>
+          <div class="port" data-id="ovs-vf7r" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf3_if_r</div><div class="port-desc">VF3 PF1 representor</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="ovs-aviz" onclick="showInfo(this)">
+            <div class="port-dot" style="background:#f6e05e"></div>
+            <div><div class="port-name">aviz0</div><div class="port-desc">mirror → ASN DPI</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Arrow OVS→FRR -->
+    <div class="col-arrow"><div class="arrow-band"><span class="arr active">⇄</span></div></div>
+
+    <!-- FRR container -->
+    <div class="col col-frr">
+      <div class="box theme-frr">
+        <div class="box-label">doca-hbn container (FRR)</div>
+        <div class="port-list">
+          <div class="port" data-id="frr-p0" onclick="showInfo(this)">
+            <div class="port-dot dot-frr"></div>
+            <div><div class="port-name">p0_if</div><div class="port-desc">ToR uplink 0 · sfnum 1514</div></div>
+          </div>
+          <div class="port" data-id="frr-p1" onclick="showInfo(this)">
+            <div class="port-dot dot-frr"></div>
+            <div><div class="port-name">p1_if</div><div class="port-desc">ToR uplink 1 · sfnum 1515 · 6.6.6.6/24</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="frr-pf0" onclick="showInfo(this)">
+            <div class="port-dot dot-frr"></div>
+            <div><div class="port-name">pf0hpf_if</div><div class="port-desc">host PF0 · sfnum 2 · 192.168.201.2/24</div></div>
+          </div>
+          <div class="port" data-id="frr-pf1" onclick="showInfo(this)">
+            <div class="port-dot dot-frr"></div>
+            <div><div class="port-name">pf1hpf_if</div><div class="port-desc">host PF1 · sfnum 3</div></div>
+          </div>
+          <div class="section-div"></div>
+          <div class="port" data-id="frr-vf0" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf0_if</div><div class="port-desc">sfnum 4 · enp65s0f0v0</div></div>
+          </div>
+          <div class="port" data-id="frr-vf1" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf1_if</div><div class="port-desc">sfnum 5 · enp65s0f0v1</div></div>
+          </div>
+          <div class="port" data-id="frr-vf2" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf2_if</div><div class="port-desc">sfnum 6 · enp65s0f0v2</div></div>
+          </div>
+          <div class="port" data-id="frr-vf3" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf0vf3_if</div><div class="port-desc">sfnum 7 · enp65s0f0v3</div></div>
+          </div>
+          <div class="port" data-id="frr-vf4" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf0_if</div><div class="port-desc">sfnum 8 · enp65s0f1v0</div></div>
+          </div>
+          <div class="port" data-id="frr-vf5" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf1_if</div><div class="port-desc">sfnum 9 · enp65s0f1v1</div></div>
+          </div>
+          <div class="port" data-id="frr-vf6" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf2_if</div><div class="port-desc">sfnum 10 · enp65s0f1v2</div></div>
+          </div>
+          <div class="port" data-id="frr-vf7" onclick="showInfo(this)">
+            <div class="port-dot dot-vf"></div>
+            <div><div class="port-name">pf1vf3_if</div><div class="port-desc">sfnum 11 · enp65s0f1v3</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /bf3-wrapper -->
+
+  <!-- Arrow FRR→Host (PCIe) -->
+  <div class="col-arrow"><div class="arrow-band"><span class="arr pcie">⇄</span></div></div>
+
+  <!-- Host side -->
+  <div class="col col-host">
+    <div class="box theme-host">
+      <div class="box-label">x86 Host (10.20.13.13)</div>
+      <div class="port-list">
+        <div class="port" data-id="host-pf0" onclick="showInfo(this)">
+          <div class="port-dot dot-host"></div>
+          <div><div class="port-name">enp65s0f0np0</div><div class="port-desc">PF0 · 192.168.201.1</div></div>
+        </div>
+        <div class="port" data-id="host-pf1" onclick="showInfo(this)">
+          <div class="port-dot dot-host"></div>
+          <div><div class="port-name">enp65s0f1np1</div><div class="port-desc">PF1</div></div>
+        </div>
+        <div class="section-div"></div>
+        <div class="port" data-id="host-vf0" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f0v0</div><div class="port-desc">VF0 on PF0</div></div>
+        </div>
+        <div class="port" data-id="host-vf1" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f0v1</div><div class="port-desc">VF1 on PF0</div></div>
+        </div>
+        <div class="port" data-id="host-vf2" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f0v2</div><div class="port-desc">VF2 on PF0</div></div>
+        </div>
+        <div class="port" data-id="host-vf3" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f0v3</div><div class="port-desc">VF3 on PF0</div></div>
+        </div>
+        <div class="port" data-id="host-vf4" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f1v0</div><div class="port-desc">VF0 on PF1</div></div>
+        </div>
+        <div class="port" data-id="host-vf5" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f1v1</div><div class="port-desc">VF1 on PF1</div></div>
+        </div>
+        <div class="port" data-id="host-vf6" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f1v2</div><div class="port-desc">VF2 on PF1</div></div>
+        </div>
+        <div class="port" data-id="host-vf7" onclick="showInfo(this)">
+          <div class="port-dot dot-vf"></div>
+          <div><div class="port-name">enp65s0f1v3</div><div class="port-desc">VF3 on PF1</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /diagram -->
+
+<div class="legend">
+  <div class="legend-item"><div class="port-dot dot-uplink" style="display:inline-block;width:10px;height:10px;border-radius:50%"></div> Physical / ToR uplink</div>
+  <div class="legend-item"><div class="port-dot dot-rep" style="display:inline-block;width:10px;height:10px;border-radius:50%"></div> Eswitch representor (OVS port)</div>
+  <div class="legend-item"><div class="port-dot dot-sf" style="display:inline-block;width:10px;height:10px;border-radius:50%"></div> SF proxy (host PF path)</div>
+  <div class="legend-item"><div class="port-dot dot-frr" style="display:inline-block;width:10px;height:10px;border-radius:50%"></div> FRR interface (container)</div>
+  <div class="legend-item"><div class="port-dot dot-vf" style="display:inline-block;width:10px;height:10px;border-radius:50%"></div> Virtual Function (SR-IOV)</div>
+  <div class="legend-item"><div class="port-dot dot-host" style="display:inline-block;width:10px;height:10px;border-radius:50%"></div> Host NIC (x86)</div>
+  <div class="legend-item" style="margin-left:auto;color:#718096">Click any port for details</div>
+</div>
+
+<!-- Info panel -->
+<div class="info-panel" id="info-panel">
+  <span class="close" onclick="closeInfo()">✕</span>
+  <h3 id="info-title">-</h3>
+  <div id="info-content"></div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const portInfo = {
+  'tor-e72': {
+    title: 'ToR Ethernet72',
+    rows: [['Switch','SONiC 10.20.13.214'],['Port','Ethernet72'],['Connects to','BF3 p1 (Server 1)'],['LLDP peer','5c:25:73:79:c8:9d']],
+    flow: 'ToR Eth72 → p1 physical → eswitch → p1_if_r (OVS) → p1_if (FRR)'
+  },
+  'tor-e76': {
+    title: 'ToR Ethernet76',
+    rows: [['Switch','SONiC 10.20.13.214'],['Port','Ethernet76'],['Connects to','BF3 p0 (Server 2)']],
+    flow: 'ToR Eth76 → p0 physical → eswitch → p0_if_r (OVS) → p0_if (FRR)'
+  },
+  'p0': {
+    title: 'Physical Port p0',
+    rows: [['Type','SFP/QSFP physical port'],['OVS port','p0 (type=dpdk)'],['Representor','p0_if_r'],['FRR iface','p0_if (sfnum 1514)']],
+    flow: 'ToR → p0 (physical) → eswitch TC rules → [offloaded] or → p0_if_r (OVS miss) → OVS bridge → p0_if (FRR)'
+  },
+  'p1': {
+    title: 'Physical Port p1',
+    rows: [['Type','SFP/QSFP physical port'],['LLDP','Ethernet72 on ToR'],['OVS port','p1 (type=dpdk)'],['Representor','p1_if_r'],['FRR iface','p1_if (sfnum 1515)'],['Current IP','6.6.6.6/24']],
+    flow: 'ToR → p1 (physical) → eswitch → p1_if_r (OVS) → p1_if (FRR routing)'
+  },
+  'eswitch': {
+    title: 'eswitch (Hardware)',
+    rows: [['Mode','switchdev'],['PCI','0000:03:00.0 + 03:00.1'],['TC rules','programmed by nl2docad'],['Offload','matched flows bypass OVS']],
+    flow: 'First packet → OVS (software) → FRR installs route → nl2docad programs TC flower rule → subsequent packets offloaded at line rate'
+  },
+  'ovs-p0r': {
+    title: 'OVS Port: p0_if_r',
+    rows: [['Type','eswitch representor (dpdk)'],['Represents','p0 physical uplink SF'],['Pair','↔ p0_if in container'],['sfnum','1514']],
+    flow: 'p0 physical → eswitch miss → p0_if_r (OVS) → bridge → p0_if (FRR container)'
+  },
+  'ovs-p1r': {
+    title: 'OVS Port: p1_if_r',
+    rows: [['Type','eswitch representor (dpdk)'],['Represents','p1 physical uplink SF'],['Pair','↔ p1_if in container'],['sfnum','1515']],
+    flow: 'p1 physical → eswitch miss → p1_if_r (OVS) → bridge → p1_if (FRR container)'
+  },
+  'ovs-pf0': {
+    title: 'OVS Port: pf0hpf',
+    rows: [['Type','PCIe host PF0 proxy (dpdk)'],['altname','enp3s0f0nc1pf0'],['Pair','↔ pf0hpf_if_r'],['Survives container restart','yes (PCIe-based)']],
+    flow: 'Host enp65s0f0np0 → PCIe → pf0hpf (OVS) ↔ pf0hpf_if_r → eswitch'
+  },
+  'ovs-pf0r': {
+    title: 'OVS Port: pf0hpf_if_r',
+    rows: [['Type','SF representor (dpdk)'],['sfnum','2'],['Pair','↔ pf0hpf_if (FRR)'],['Current IP','192.168.201.2/24']],
+    flow: 'Host traffic → PCIe → eswitch → pf0hpf_if_r (OVS) → pf0hpf_if (FRR)'
+  },
+  'ovs-pf1': {
+    title: 'OVS Port: pf1hpf',
+    rows: [['Type','PCIe host PF1 proxy (dpdk)'],['altname','enp3s0f0nc1pf1'],['sfnum','3']],
+    flow: 'Host enp65s0f1np1 → PCIe → pf1hpf (OVS) ↔ pf1hpf_if_r → eswitch'
+  },
+  'ovs-pf1r': {
+    title: 'OVS Port: pf1hpf_if_r',
+    rows: [['Type','SF representor (dpdk)'],['sfnum','3'],['Pair','↔ pf1hpf_if (FRR)']],
+    flow: 'Host enp65s0f1np1 → PCIe → eswitch → pf1hpf_if_r (OVS) → pf1hpf_if (FRR)'
+  },
+  'ovs-vf0r': { title: 'OVS: pf0vf0_if_r', rows: [['Type','VF0 representor (dpdk)'],['VF','pf0 VF0'],['Host NIC','enp65s0f0v0'],['sfnum','4']], flow: 'Host VM/Pod → enp65s0f0v0 → PCIe VF → eswitch → pf0vf0_if_r (OVS) → pf0vf0_if (FRR)' },
+  'ovs-vf1r': { title: 'OVS: pf0vf1_if_r', rows: [['Type','VF1 representor (dpdk)'],['Host NIC','enp65s0f0v1'],['sfnum','5']], flow: 'Host VM/Pod → enp65s0f0v1 → PCIe VF → eswitch → pf0vf1_if_r (OVS) → pf0vf1_if (FRR)' },
+  'ovs-vf2r': { title: 'OVS: pf0vf2_if_r', rows: [['Type','VF2 representor (dpdk)'],['Host NIC','enp65s0f0v2'],['sfnum','6']], flow: 'Host VM/Pod → enp65s0f0v2 → PCIe → pf0vf2_if_r → pf0vf2_if (FRR)' },
+  'ovs-vf3r': { title: 'OVS: pf0vf3_if_r', rows: [['Type','VF3 representor (dpdk)'],['Host NIC','enp65s0f0v3'],['sfnum','7']], flow: 'Host VM/Pod → enp65s0f0v3 → PCIe → pf0vf3_if_r → pf0vf3_if (FRR)' },
+  'ovs-vf4r': { title: 'OVS: pf1vf0_if_r', rows: [['Type','VF0 PF1 representor (dpdk)'],['Host NIC','enp65s0f1v0'],['sfnum','8']], flow: 'Host VM/Pod → enp65s0f1v0 → PCIe VF → pf1vf0_if_r (OVS) → pf1vf0_if (FRR)' },
+  'ovs-vf5r': { title: 'OVS: pf1vf1_if_r', rows: [['Type','VF1 PF1 representor (dpdk)'],['Host NIC','enp65s0f1v1'],['sfnum','9']], flow: 'Host VM/Pod → enp65s0f1v1 → PCIe → pf1vf1_if_r → pf1vf1_if (FRR)' },
+  'ovs-vf6r': { title: 'OVS: pf1vf2_if_r', rows: [['Type','VF2 PF1 representor'],['Host NIC','enp65s0f1v2'],['sfnum','10']], flow: '' },
+  'ovs-vf7r': { title: 'OVS: pf1vf3_if_r', rows: [['Type','VF3 PF1 representor'],['Host NIC','enp65s0f1v3'],['sfnum','11']], flow: '' },
+  'ovs-aviz': { title: 'OVS: aviz0 (Mirror port)', rows: [['Type','AF_PACKET (kernel)'],['Purpose','Traffic mirror to ASN DPI'],['Mirror source','all br-hbn ports'],['Consumer','Aviz Service Node']], flow: 'All br-hbn traffic → OVS mirror → aviz0 (AF_PACKET) → Aviz DPI engine (2700 app signatures)' },
+  'frr-p0': { title: 'FRR: p0_if', rows: [['sfnum','1514'],['Direction','ToR-facing'],['MAC','5c:25:73:79:c8:9c'],['Config','ip address + BGP/OSPF/static']], flow: 'Packets in: p0_if_r → OVS → netns → p0_if → FRR routing decision → out any interface' },
+  'frr-p1': { title: 'FRR: p1_if', rows: [['sfnum','1515'],['Direction','ToR-facing (Ethernet72)'],['MAC','5c:25:73:79:c8:9d'],['Current IP','6.6.6.6/24']], flow: 'ToR Ethernet72 → p1 physical → eswitch → p1_if_r → OVS → p1_if (FRR)' },
+  'frr-pf0': { title: 'FRR: pf0hpf_if', rows: [['sfnum','2'],['Direction','Host PF0 facing'],['Host NIC','enp65s0f0np0'],['Current IP','192.168.201.2/24']], flow: 'Host enp65s0f0np0 (192.168.201.1) ↔ PCIe ↔ pf0hpf_if (192.168.201.2) → FRR routes' },
+  'frr-pf1': { title: 'FRR: pf1hpf_if', rows: [['sfnum','3'],['Direction','Host PF1 facing'],['Host NIC','enp65s0f1np1']], flow: 'Host enp65s0f1np1 ↔ PCIe ↔ pf1hpf_if → FRR routing' },
+  'frr-vf0': { title: 'FRR: pf0vf0_if', rows: [['sfnum','4'],['Host VF','enp65s0f0v0'],['Used by','VM1 / Pod1 on PF0']], flow: 'VM → enp65s0f0v0 → PCIe → eswitch → pf0vf0_if_r (OVS) → pf0vf0_if (FRR) → route to ToR or other VFs' },
+  'frr-vf1': { title: 'FRR: pf0vf1_if', rows: [['sfnum','5'],['Host VF','enp65s0f0v1']], flow: 'VM2 → enp65s0f0v1 → PCIe → pf0vf1_if_r → pf0vf1_if (FRR)' },
+  'frr-vf2': { title: 'FRR: pf0vf2_if', rows: [['sfnum','6'],['Host VF','enp65s0f0v2']], flow: '' },
+  'frr-vf3': { title: 'FRR: pf0vf3_if', rows: [['sfnum','7'],['Host VF','enp65s0f0v3']], flow: '' },
+  'frr-vf4': { title: 'FRR: pf1vf0_if', rows: [['sfnum','8'],['Host VF','enp65s0f1v0']], flow: 'VM → enp65s0f1v0 → PCIe → pf1vf0_if_r → pf1vf0_if (FRR routing)' },
+  'frr-vf5': { title: 'FRR: pf1vf1_if', rows: [['sfnum','9'],['Host VF','enp65s0f1v1']], flow: '' },
+  'frr-vf6': { title: 'FRR: pf1vf2_if', rows: [['sfnum','10'],['Host VF','enp65s0f1v2']], flow: '' },
+  'frr-vf7': { title: 'FRR: pf1vf3_if', rows: [['sfnum','11'],['Host VF','enp65s0f1v3']], flow: '' },
+  'host-pf0': { title: 'Host NIC: enp65s0f0np0', rows: [['PCI','0000:41:00.0'],['Type','BF3 PCIe PF0'],['IP','192.168.201.1/24'],['BF3 peer','pf0hpf_if (192.168.201.2)']], flow: 'Host OS traffic → enp65s0f0np0 → PCIe → BF3 pf0hpf_if → FRR → ToR' },
+  'host-pf1': { title: 'Host NIC: enp65s0f1np1', rows: [['PCI','0000:41:00.1'],['Type','BF3 PCIe PF1'],['BF3 peer','pf1hpf_if']], flow: 'Host OS traffic → enp65s0f1np1 → PCIe → BF3 pf1hpf_if → FRR routing' },
+  'host-vf0': { title: 'Host VF: enp65s0f0v0', rows: [['Type','SR-IOV VF on PF0'],['Passthrough to','VM1 / Pod1'],['BF3 peer','pf0vf0_if'],['sfnum','4']], flow: 'VM1 sends packet → enp65s0f0v0 → BF3 eswitch → pf0vf0_if_r (OVS) → pf0vf0_if (FRR) → route decision → p0_if or p1_if → ToR' },
+  'host-vf1': { title: 'Host VF: enp65s0f0v1', rows: [['Type','SR-IOV VF on PF0'],['BF3 peer','pf0vf1_if'],['sfnum','5']], flow: '' },
+  'host-vf2': { title: 'Host VF: enp65s0f0v2', rows: [['Type','SR-IOV VF on PF0'],['BF3 peer','pf0vf2_if'],['sfnum','6']], flow: '' },
+  'host-vf3': { title: 'Host VF: enp65s0f0v3', rows: [['Type','SR-IOV VF on PF0'],['BF3 peer','pf0vf3_if'],['sfnum','7']], flow: '' },
+  'host-vf4': { title: 'Host VF: enp65s0f1v0', rows: [['Type','SR-IOV VF on PF1'],['BF3 peer','pf1vf0_if'],['sfnum','8']], flow: '' },
+  'host-vf5': { title: 'Host VF: enp65s0f1v1', rows: [['BF3 peer','pf1vf1_if'],['sfnum','9']], flow: '' },
+  'host-vf6': { title: 'Host VF: enp65s0f1v2', rows: [['BF3 peer','pf1vf2_if'],['sfnum','10']], flow: '' },
+  'host-vf7': { title: 'Host VF: enp65s0f1v3', rows: [['BF3 peer','pf1vf3_if'],['sfnum','11']], flow: '' },
+};
+
+function showInfo(el) {
+  const id = el.getAttribute('data-id');
+  const info = portInfo[id];
+  if (!info) return;
+
+  document.querySelectorAll('.port.highlighted').forEach(p => p.classList.remove('highlighted'));
+  el.classList.add('highlighted');
+
+  const panel = document.getElementById('info-panel');
+  document.getElementById('info-title').textContent = info.title;
+
+  let html = '';
+  info.rows.forEach(([k, v]) => {
+    html += `<div class="info-row"><span class="info-key">${k}</span><span class="info-val">${v}</span></div>`;
+  });
+  if (info.flow) {
+    html += `<div class="flow-path">${info.flow.replace(/→/g, '\n→')}</div>`;
+  }
+  document.getElementById('info-content').innerHTML = html;
+  panel.style.display = 'block';
+}
+
+function closeInfo() {
+  document.getElementById('info-panel').style.display = 'none';
+  document.querySelectorAll('.port.highlighted').forEach(p => p.classList.remove('highlighted'));
+}
+</script>
+</body>
+</html>

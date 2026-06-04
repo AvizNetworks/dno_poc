@@ -1,0 +1,17 @@
+apiVersion: operator.dpu.nvidia.com/v1alpha1
+kind: DPFOperatorConfig
+metadata:
+  name: dpfoperatorconfig
+  namespace: dpf-operator-system
+spec:
+  provisioningController:
+    bfbPVCName: bfb-pvc
+    dmsTimeout: 600
+    installInterface:
+      # Provision BF3 via Redfish (BMC API) — no x86 host k8s agent required.
+      # bfbRegistryAddress must be reachable from the DPF Operator VM.
+      # Set BFB_REGISTRY_IP / BFB_REGISTRY_PORT in bringup_dpf.sh to match.
+      installViaRedfish:
+        bfbRegistryAddress: "http://BFB_REGISTRY_IP:BFB_REGISTRY_PORT"
+  kamajiClusterManager: {}
+  imagePullSecrets: []

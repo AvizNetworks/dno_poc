@@ -34,12 +34,15 @@ running FRR for routing and BFD.
                         │  ┌──────────────────────────────────────────┐  │
                         │  │        doca-hbn container (k8s pod)       │  │
                         │  │                                           │  │
-                        │  │  p0_if     ─ SF data netdev for p0       │  │
-                        │  │  p1_if     ─ SF data netdev for p1       │  │
-                        │  │  pf0hpf_if ─ SF data netdev for pf0hpf  │  │
-                        │  │  pf1hpf_if ─ SF data netdev for pf1hpf  │  │
-                        │  │                                           │  │
-                        │  │  FRR: zebra  staticd  bfdd  (bgpd off)  │  │
+                        │  │  p0_if       ─ ToR uplink 0 (sfnum 1514)  │  │
+                        │  │  p1_if       ─ ToR uplink 1 (sfnum 1515)  │  │
+                        │  │  pf0hpf_if   ─ Host PF0 (sfnum 2)         │  │
+                        │  │  pf1hpf_if   ─ Host PF1 (sfnum 3)         │  │
+                        │  │  pf0vf0_if   ─ Host VF0 (sfnum 4) [--vfs] │  │
+                        │  │  ...                                        │  │
+                        │  │  pf1vf3_if   ─ Host VF7 (sfnum 11)[--vfs] │  │
+                        │  │                                             │  │
+                        │  │  FRR: zebra  staticd  bfdd  (bgpd off)    │  │
                         │  └──────────────────────────────────────────┘  │
                         │                          │                      │
                         └──────────────────────────┼──────────────────────┘
@@ -52,12 +55,20 @@ running FRR for routing and BFD.
 
 ### Port → SF → Representor Mapping
 
-| OVS DPDK Port | Role | SF netdev (container) | Representor (host) | sfnum | MAC |
-|---------------|------|-----------------------|-------------------|-------|-----|
-| `p0` | Physical uplink 0 | `p0_if` | `p0_if_r` | 2 | `5c:25:73:79:c8:9c` |
-| `p1` | Physical uplink 1 | `p1_if` | `p1_if_r` | 3 | `5c:25:73:79:c8:9d` |
-| `pf0hpf` | Host PF0 proxy | `pf0hpf_if` | `pf0hpf_if_r` | 1514 | `00:04:4b:44:cb:f0` |
-| `pf1hpf` | Host PF1 proxy | `pf1hpf_if` | `pf1hpf_if_r` | 1515 | `00:04:4b:9f:5f:f1` |
+| OVS DPDK Port | Role | SF netdev (container) | Representor (host) | sfnum | Host NIC |
+|---------------|------|-----------------------|-------------------|-------|----------|
+| `p0` | Physical uplink 0 | `p0_if` | `p0_if_r` | 1514 | — |
+| `p1` | Physical uplink 1 | `p1_if` | `p1_if_r` | 1515 | — |
+| `pf0hpf` | Host PF0 proxy | `pf0hpf_if` | `pf0hpf_if_r` | 2 | `enp65s0f0np0` |
+| `pf1hpf` | Host PF1 proxy | `pf1hpf_if` | `pf1hpf_if_r` | 3 | `enp65s0f1np1` |
+| `pf0vf0_if_r` | Host VF0 on PF0 (`--vfs`) | `pf0vf0_if` | `pf0vf0_if_r` | 4 | `enp65s0f0v0` |
+| `pf0vf1_if_r` | Host VF1 on PF0 (`--vfs`) | `pf0vf1_if` | `pf0vf1_if_r` | 5 | `enp65s0f0v1` |
+| `pf0vf2_if_r` | Host VF2 on PF0 (`--vfs`) | `pf0vf2_if` | `pf0vf2_if_r` | 6 | `enp65s0f0v2` |
+| `pf0vf3_if_r` | Host VF3 on PF0 (`--vfs`) | `pf0vf3_if` | `pf0vf3_if_r` | 7 | `enp65s0f0v3` |
+| `pf1vf0_if_r` | Host VF0 on PF1 (`--vfs`) | `pf1vf0_if` | `pf1vf0_if_r` | 8 | `enp65s0f1v0` |
+| `pf1vf1_if_r` | Host VF1 on PF1 (`--vfs`) | `pf1vf1_if` | `pf1vf1_if_r` | 9 | `enp65s0f1v1` |
+| `pf1vf2_if_r` | Host VF2 on PF1 (`--vfs`) | `pf1vf2_if` | `pf1vf2_if_r` | 10 | `enp65s0f1v2` |
+| `pf1vf3_if_r` | Host VF3 on PF1 (`--vfs`) | `pf1vf3_if` | `pf1vf3_if_r` | 11 | `enp65s0f1v3` |
 
 ### Link Propagation
 Link state is propagated between DPDK port and its representor:
@@ -278,8 +289,12 @@ idempotent — safe to re-run at any step.
 
 ```bash
 # Prerequisites: clone the repo to the BF3 so mellanox/ directory is present
-sudo ./bringup_hbn_bf3.sh
-sudo ./bringup_hbn_bf3.sh --enable-bgp --hbn-scripts-dir ~/hbn-scripts
+sudo ./scripts/bringup_hbn_bf3.sh
+sudo ./scripts/bringup_hbn_bf3.sh --enable-bgp --rest-pass <password>
+
+# With SR-IOV VFs (enable sriov_numvfs on host first)
+sudo ./scripts/bringup_hbn_bf3.sh --vfs 8          # 4 VFs per PF
+sudo ./scripts/bringup_hbn_bf3.sh --p0-vfs 4 --p1-vfs 4
 ```
 
 Before running on a **brand-new BF3**, ensure `mellanox/doca_hbn.yaml` exists in
@@ -370,32 +385,33 @@ sudo mkdir -p \
 
 ### Step 5 — Deploy Reference Config Files
 
-On a fresh BF3, `install.sh` generates `hbn.conf` with 14 VF interfaces and
-`sfc.conf` with 14 VF port mappings. `init-sfs` reads `hbn.conf` to know which
-interfaces to wait for — with the VF version it loops forever. Replace both
-from the repo's `mellanox/` directory.
+The bringup script generates `hbn.conf`, `sfc.conf`, and `mlnx-sf.conf`
+**dynamically** based on the `--vfs` flag. You do not need to edit these files
+manually.
 
+**Without VFs (default — 4 interfaces):**
 ```bash
-# hbn.conf — detect VF entries (pf0vf0 etc.) and replace
-grep "pf0vf0" /etc/mellanox/hbn.conf && \
-  sudo cp mellanox/hbn.conf /etc/mellanox/hbn.conf
-
-# sfc.conf — same check for VF MAPPINGS
-grep "pf0vf" /etc/mellanox/sfc.conf && \
-  sudo cp mellanox/sfc.conf /etc/mellanox/sfc.conf
-
-# mlnx-sf.conf — check for physical port MAC assigned as SF MAC
-# Physical port MAC conflict causes mlx5_core to skip function netdev creation
-# (p0_if_r etc. never appear). Replace if install.sh used physical MACs.
-P0_MAC=$(cat /sys/class/net/$(grep -rl "^p0$" /sys/class/net/*/phys_port_name 2>/dev/null | head -1 | cut -d/ -f5)/address)
-grep -qi "$P0_MAC" /etc/mellanox/mlnx-sf.conf && \
-  sudo cp mellanox/mlnx-sf.conf /etc/mellanox/mlnx-sf.conf
-
-# doca_hbn.yaml — hbn-runtime package does NOT install this; kubelet needs it
-# Copy from working BF3 if not already present:
-#   scp ubuntu@<working-bf3>:/etc/kubelet.d/doca_hbn.yaml mellanox/
-sudo cp mellanox/doca_hbn.yaml /etc/kubelet.d/doca_hbn.yaml
+sudo ./scripts/bringup_hbn_bf3.sh
 ```
+
+**With VFs (SR-IOV) — enable on host first, then:**
+```bash
+# On x86 host
+echo 4 > /sys/class/net/enp65s0f0np0/device/sriov_numvfs
+echo 4 > /sys/class/net/enp65s0f1np1/device/sriov_numvfs
+
+# On BF3
+sudo ./scripts/bringup_hbn_bf3.sh --vfs 8
+```
+
+The script will generate `hbn.conf` with VF representor entries, `sfc.conf`
+with the correct DPDK mappings, and `mlnx-sf.conf` with sfnums 4–11 for the
+VF SFs. After bringup, `pf0vf0_if` through `pf1vf3_if` appear in the
+`doca-hbn` container and are configurable via FRR/NVUE.
+
+**Legacy note:** If `install.sh` was previously run and generated a 14-VF
+`hbn.conf`, the bringup script automatically detects and replaces it when
+running without `--vfs`.
 
 ---
 
@@ -681,7 +697,9 @@ sudo ovs-ofctl dump-ports br-hbn
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
-| `init-sfs` stuck forever waiting for interfaces | `hbn.conf` has 14 VF entries (install.sh generated) | Replace from `mellanox/hbn.conf` (Step 5) |
+| `init-sfs` stuck forever waiting for interfaces | `hbn.conf` has 14 VF entries (install.sh generated) but VFs not provisioned | Re-run `bringup_hbn_bf3.sh` without `--vfs` (replaces with 4-interface version) |
+| VF interfaces (`pf0vf0_if` etc.) missing from container | SR-IOV not enabled on host, or bringup run without `--vfs` | Enable `sriov_numvfs` on host, then re-run `bringup_hbn_bf3.sh --vfs 8` |
+| `enp3s0f0sN: No such device` in OVS after container restart | Expected — init-sfs moved SF function netdevs to container; OVS loses kernel interface but traffic flows via eswitch TC rules | Not an error; `status_hbn.sh` shows as `[WARN]` |
 | `ovs-vsctl show` shows `p0`/`p1` "Invalid argument" | **Expected/benign** — eswitch firmware owns physical uplinks; OVS-DPDK can't bind them | No action needed. `status_hbn.sh` shows this as `[WARN]` (not `[FAIL]`). |
 | OVS `Invalid argument` on ports OTHER than p0/p1 (e.g., pf0hpf, p0_if_r) | OVS started before hugepages allocated | `del-br br-hbn`, allocate hugepages, restart OVS + sfc.service (Step 6) |
 | SFs provisioned but `p0_if_r` etc. missing | `mlnx-sf.conf` assigns physical port MAC to SF; mlx5_core skips function netdev | Replace `mlnx-sf.conf`, delete SFs (`mlnx-sf -a delete -i pci/…/<sfidx>`), reprovision (Step 9) |

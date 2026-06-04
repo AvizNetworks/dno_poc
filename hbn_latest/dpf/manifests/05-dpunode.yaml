@@ -1,0 +1,8 @@
+apiVersion: provisioning.dpu.nvidia.com/v1alpha1
+kind: DPUNode
+metadata:
+  name: s4-node
+  namespace: dpf-operator-system
+spec:
+  # No nodeRebootMethod needed — DPU CR bmcIP drives Redfish provisioning directly.
+  # kubeNodeRef is intentionally omitted: x86 host is NOT a k8s worker node.

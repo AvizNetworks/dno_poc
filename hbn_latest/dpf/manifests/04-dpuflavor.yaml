@@ -1,0 +1,10 @@
+apiVersion: provisioning.dpu.nvidia.com/v1alpha1
+kind: DPUFlavor
+metadata:
+  name: bf3-base
+  namespace: dpf-operator-system
+spec:
+  grub:
+    kernelParameters:
+      - "console=ttyAMA1"
+      - "quiet"

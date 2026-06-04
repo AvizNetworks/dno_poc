@@ -74,13 +74,21 @@ if ovs-vsctl show 2>/dev/null | grep -q "br-hbn"; then
   OVS_SHOW=$(ovs-vsctl show 2>/dev/null)
   # p0/p1 "Invalid argument" is expected on BF3 switchdev — physical uplinks are
   # owned by the eswitch firmware; OVS-DPDK cannot bind them as netdev ports.
+  # enp3s0f0sN "No such device" is expected when VFs are enabled — init-sfs moves
+  # these SF function netdevs into the doca-hbn container; OVS loses the kernel
+  # interface but traffic still flows via eswitch TC flower rules (nl2docad).
   REAL_ERRORS=$(echo "$OVS_SHOW" | grep -E "No such device|error:|could not" \
-    | grep -v "could not add network device p[01] to ofproto" | wc -l || echo 0)
-  P01_ERRORS=$(echo "$OVS_SHOW" | grep -c "could not add network device p[01] to ofproto" || echo 0)
+    | grep -v "could not add network device p[01] to ofproto" \
+    | grep -v "enp[0-9]*s[0-9]*f[0-9]*s[0-9]*" \
+    | wc -l | tr -d ' ' || true)
+  REAL_ERRORS=${REAL_ERRORS:-0}
+  VF_SF_ERRORS=$(echo "$OVS_SHOW" | grep -c "enp[0-9]*s[0-9]*f[0-9]*s[0-9]*" || true)
+  P01_ERRORS=$(echo "$OVS_SHOW" | grep -c "could not add network device p[01] to ofproto" || true)
   if [[ "$REAL_ERRORS" -gt 0 ]]; then
     fail "OVS has $REAL_ERRORS port error(s) — run: sudo systemctl restart openvswitch-switch"
     echo "$OVS_SHOW" | grep -E "No such device|error:|could not" \
-      | grep -v "could not add network device p[01] to ofproto" | while read -r line; do
+      | grep -v "could not add network device p[01] to ofproto" \
+      | grep -v "enp[0-9]*s[0-9]*f[0-9]*s[0-9]*" | while read -r line; do
       echo "       error: $line"
     done
   else
@@ -88,6 +96,8 @@ if ovs-vsctl show 2>/dev/null | grep -q "br-hbn"; then
     pass "OVS ports: $PORTS"
     [[ "$P01_ERRORS" -gt 0 ]] && \
       warn "p0/p1 uplinks report 'Invalid argument' — expected on BF3 switchdev (benign, eswitch firmware owns physical ports)"
+    [[ "${VF_SF_ERRORS:-0}" -gt 0 ]] && \
+      warn "VF SF function netdevs (enp3s0f0sN) show 'No such device' — expected, init-sfs moved them to container"
   fi
 else
   fail "br-hbn bridge not found"
@@ -124,7 +134,17 @@ fi
 # ─── 7. Interfaces inside container ──────────────────────────────────────────
 section "HBN Interfaces (inside doca-hbn container)"
 if [[ -n "$CONT_PID" ]]; then
-  for iface in p0_if p1_if pf0hpf_if pf1hpf_if; do
+  # Build interface list: always check PF interfaces, discover VF interfaces dynamically
+  CHECK_IFACES=(p0_if p1_if pf0hpf_if pf1hpf_if)
+  for _PFX in pf0vf pf1vf; do
+    for _N in 0 1 2 3 4 5 6 7; do
+      _VIF="${_PFX}${_N}_if"
+      nsenter -t "$CONT_PID" -n -- ip link show "$_VIF" &>/dev/null 2>&1 && \
+        CHECK_IFACES+=("$_VIF") || break
+    done
+  done
+
+  for iface in "${CHECK_IFACES[@]}"; do
     INFO=$(nsenter -t "$CONT_PID" -n -- ip addr show "$iface" 2>/dev/null || true)
     if [[ -z "$INFO" ]]; then
       fail "$iface not found inside container netns"
