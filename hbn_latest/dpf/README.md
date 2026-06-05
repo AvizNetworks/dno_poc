@@ -1,6 +1,6 @@
 # DPF — DPU Provisioning Framework
 
-NVIDIA DPF Operator v25.7.0 — Kubernetes-native lifecycle management for BlueField-3 DPUs.
+NVIDIA DPF Operator v25.10.1 — Kubernetes-native lifecycle management for BlueField-3 DPUs.
 
 ---
 
@@ -17,7 +17,7 @@ DPF treats each BF3 DPU as a Kubernetes resource. You declare the desired state 
 ```
 DPF Operator VM (10.4.5.136)
   ├── k3s cluster (single node)
-  ├── DPF Operator v25.7.0
+  ├── DPF Operator v25.10.1
   ├── Kamaji (virtual k8s for DPUs)
   ├── ArgoCD (GitOps for DPU workloads)
   └── bfb-registry (nginx, port 8080 — serves BFB to BMC)
@@ -62,6 +62,22 @@ The OS flash itself must go through the x86 host's PCIe rshim connection using `
 DPF role:   bfcfg generation → TenantControlPlane → DPUService deployment
 rshim role: OS flash (bfb-install on x86 host via PCIe rshim to BF3)
 ```
+
+## Upgrading DPF Operator
+
+Use `--upgrade` mode — handles the Helm upgrade plus all post-upgrade manual fixes automatically:
+
+```bash
+./dpf/scripts/bringup_dpf.sh --upgrade                    # upgrade to default version
+./dpf/scripts/bringup_dpf.sh --upgrade --version v25.10.2 # upgrade to specific version
+```
+
+**What `--upgrade` does (post-upgrade fixes required for v25.10.x):**
+1. `helm upgrade dpf-operator` to the target version
+2. Updates sub-controller deployment images (dpf-provisioning, dpuservice, kamaji-cm, servicechainset) — Helm only updates the main controller; others need manual image update
+3. Fixes `servicechainset-controller-manager-credentials` secret — `KUBERNETES_SERVICE_HOST` must be the DPU cluster DNS name (`s4-dpu-cluster.dpf-operator-system.svc`) not the NodePort IP, otherwise the DPU cluster token is rejected by k3s
+4. Bootstraps `svc.dpu.nvidia.com` CRDs onto the DPU cluster — needed for servicechainset-controller to start (CRDs normally deployed by a DPUService, but that requires the controller to be running first — chicken-and-egg)
+5. Creates ClusterRole + ClusterRoleBinding on DPU cluster for the servicechainset-controller service account
 
 ## Quick Start
 
@@ -290,7 +306,7 @@ Minimum info needed per server:
 
 | Component | State |
 |---|---|
-| DPF Operator | Running (v25.7.0) |
+| DPF Operator | Running (v25.10.1) |
 | Kamaji etcd | Running (3 replicas) |
 | BFB | Ready (doca-3.3.0, bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k) |
 | DPUCluster | Ready (s4-dpu-cluster, Kamaji, 1 node) |

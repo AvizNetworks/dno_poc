@@ -5,10 +5,11 @@
 #
 # Usage:
 #   ./bringup_dpf.sh [--bfb-url <url>] [--dry-run]
+#   ./bringup_dpf.sh --upgrade [--version v25.10.1]   # upgrade DPF Operator in-place
 #
 # Prerequisites:
 #   - kubectl configured (KUBECONFIG or ~/.kube/config)
-#   - DPF Operator v25.7.0 already installed (Helm release in dpf-operator-system)
+#   - DPF Operator v25.10.1 installed (Helm release in dpf-operator-system)
 #   - BFB file accessible at BFB_URL (HTTP/HTTPS)
 #   - BMC reachable at BF3_BMC_IP over the network
 
@@ -35,6 +36,8 @@ BFB_URL="http://${BFB_REGISTRY_IP}:${BFB_UPLOAD_PORT}/$(basename "${BFB_FILE}")"
 WAIT_TIMEOUT=300        # seconds to wait for Kamaji + provisioner pods
 DPU_TIMEOUT=1800        # seconds to wait for BFB flash (30 min — reboot included)
 DRY_RUN=false
+DPF_VERSION="v25.10.1"  # DPF Operator Helm chart version (update when upgrading)
+DO_UPGRADE=false
 
 # ─── rshim install (alternative to DPF Redfish OS install) ────────────────────
 # Used via --rshim-install when DPF's Redfish path fails (e.g. same-version BMC skip).
@@ -71,6 +74,8 @@ Options:
   --x86-pass <pass>    x86 host SSH password (default: from config)
   --x86-bfb <path>     BFB path on x86 host (default: ${X86_BFB_PATH})
   --rshim-dev <dev>    rshim device on x86 host (default: ${RSHIM_DEVICE})
+  --upgrade            Upgrade DPF Operator Helm release to --version (skips bringup steps)
+  --version <ver>      DPF Operator version to upgrade to (default: ${DPF_VERSION})
   --dry-run            Print steps without applying
   -h, --help           Show this help
 
@@ -79,6 +84,8 @@ Examples:
   $0 --bfb-url http://fileserver.local/bf-bundle-3.3.0.bfb
   $0 --bmc-ip 10.20.13.250 --serial MT2437600HGY
   $0 --rshim-install --x86-host 10.20.13.207
+  $0 --upgrade                        # upgrade to default version (${DPF_VERSION})
+  $0 --upgrade --version v25.10.2     # upgrade to specific version
 EOF
   exit 0
 }
@@ -95,12 +102,185 @@ while [[ $# -gt 0 ]]; do
     --x86-pass)       X86_HOST_PASS="$2";   shift ;;
     --x86-bfb)        X86_BFB_PATH="$2";    shift ;;
     --rshim-dev)      RSHIM_DEVICE="$2";    shift ;;
+    --upgrade)        DO_UPGRADE=true ;;
+    --version)        DPF_VERSION="$2";     shift ;;
     --dry-run)        DRY_RUN=true ;;
     -h|--help)        usage ;;
     *) echo "Unknown option: $1"; usage ;;
   esac
   shift
 done
+
+# ─── Upgrade mode ─────────────────────────────────────────────────────────────
+# Upgrades the DPF Operator Helm release then applies post-upgrade fixes.
+# Post-upgrade fixes needed for v25.7.0 → v25.10.1 (and likely future versions):
+#   1. Manually update sub-controller deployment images (dpf-provisioning,
+#      dpuservice, kamaji-cm, servicechainset) — Helm only updates the main
+#      dpf-operator-controller-manager; others are managed by DPFOperatorConfig
+#      reconciler which may be blocked by unhealthy DPUServices.
+#   2. Fix servicechainset-controller credentials secret — KUBERNETES_SERVICE_HOST
+#      must be the DPU cluster DNS name (not the NodePort IP) to avoid k3s
+#      intercepting the connection and rejecting the DPU cluster token.
+#   3. Bootstrap svc.dpu.nvidia.com CRDs onto the DPU cluster — the
+#      servicechainset-controller connects to the DPU cluster and needs these
+#      CRDs to exist before it can start (chicken-and-egg: CRDs are deployed
+#      by a DPUService, but the controller must be running for DPUServices to deploy).
+#   4. Create ClusterRole + ClusterRoleBinding on the DPU cluster for the
+#      servicechainset-controller service account.
+if [[ "${DO_UPGRADE}" == "true" ]]; then
+  echo ""
+  echo "============================================================"
+  echo "  DPF Operator Upgrade → ${DPF_VERSION}"
+  echo "============================================================"
+  echo ""
+
+  info "Step 1/5 — Helm upgrade dpf-operator → ${DPF_VERSION}"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    info "[dry-run] helm upgrade dpf-operator dpf-repository/dpf-operator --version ${DPF_VERSION}"
+  else
+    helm repo update dpf-repository 2>/dev/null || true
+    helm upgrade dpf-operator dpf-repository/dpf-operator \
+      --version "${DPF_VERSION}" \
+      --namespace "${DPF_NAMESPACE}" \
+      --wait --timeout 5m \
+      || fail "Helm upgrade failed"
+    ok "DPF Operator upgraded to ${DPF_VERSION}"
+  fi
+
+  info "Step 2/5 — Update sub-controller deployment images to ${DPF_VERSION}"
+  DPF_IMAGE="nvcr.io/nvidia/doca/dpf-system:${DPF_VERSION}"
+  for deploy in dpf-provisioning-controller-manager dpuservice-controller-manager \
+                kamaji-cm-controller-manager servicechainset-controller-manager; do
+    current=$(kube get deployment "${deploy}" -n "${DPF_NAMESPACE}" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+    if [[ "${current}" == "${DPF_IMAGE}" ]]; then
+      skip "${deploy}: already on ${DPF_VERSION}"
+    elif [[ -z "${current}" ]]; then
+      warn "${deploy}: not found — skipping"
+    else
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        info "[dry-run] would update ${deploy}: ${current} → ${DPF_IMAGE}"
+      else
+        kube set image "deployment/${deploy}" "manager=${DPF_IMAGE}" -n "${DPF_NAMESPACE}" 2>/dev/null \
+          || warn "${deploy}: image update failed (may use different container name)"
+        ok "${deploy}: updated to ${DPF_VERSION}"
+      fi
+    fi
+  done
+
+  info "Step 3/5 — Fix servicechainset-controller credentials (DPU cluster endpoint)"
+  CURRENT_HOST=$(kube get secret servicechainset-controller-manager-credentials \
+    -n "${DPF_NAMESPACE}" \
+    -o jsonpath='{.data.KUBERNETES_SERVICE_HOST}' 2>/dev/null | base64 -d || echo "")
+  DPU_SVC_HOST="s4-dpu-cluster.${DPF_NAMESPACE}.svc"
+  if [[ "${CURRENT_HOST}" == "${DPU_SVC_HOST}" ]]; then
+    skip "credentials secret already uses DNS hostname"
+  else
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      info "[dry-run] would patch KUBERNETES_SERVICE_HOST: ${CURRENT_HOST} → ${DPU_SVC_HOST}"
+    else
+      NEW_HOST_B64=$(echo -n "${DPU_SVC_HOST}" | base64)
+      kube patch secret servicechainset-controller-manager-credentials \
+        -n "${DPF_NAMESPACE}" \
+        --type=json \
+        -p="[{\"op\": \"replace\", \"path\": \"/data/KUBERNETES_SERVICE_HOST\", \"value\": \"${NEW_HOST_B64}\"}]" \
+        || fail "Failed to patch credentials secret"
+      ok "credentials secret patched: KUBERNETES_SERVICE_HOST → ${DPU_SVC_HOST}"
+    fi
+  fi
+
+  info "Step 4/5 — Bootstrap svc.dpu.nvidia.com CRDs onto DPU cluster"
+  kube get secret s4-dpu-cluster-admin-kubeconfig -n "${DPF_NAMESPACE}" \
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/dpu-tc-kubeconfig 2>/dev/null || true
+  if [[ -s /tmp/dpu-tc-kubeconfig ]]; then
+    dkube() { kubectl --kubeconfig /tmp/dpu-tc-kubeconfig "$@"; }
+    MISSING_CRDS=()
+    for crd in servicechains.svc.dpu.nvidia.com servicechainsets.svc.dpu.nvidia.com \
+               serviceinterfaces.svc.dpu.nvidia.com serviceinterfacesets.svc.dpu.nvidia.com; do
+      dkube get crd "${crd}" &>/dev/null || MISSING_CRDS+=("${crd}")
+    done
+    if [[ ${#MISSING_CRDS[@]} -eq 0 ]]; then
+      skip "svc.dpu.nvidia.com CRDs already on DPU cluster"
+    else
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        info "[dry-run] would install ${#MISSING_CRDS[@]} CRDs on DPU cluster: ${MISSING_CRDS[*]}"
+      else
+        for crd in "${MISSING_CRDS[@]}"; do
+          kube get crd "${crd}" -o json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for k in ['resourceVersion','uid','creationTimestamp','generation','managedFields']:
+    d['metadata'].pop(k, None)
+d['metadata'].pop('annotations', None)
+d.pop('status', None)
+print(json.dumps(d))
+" | kubectl --kubeconfig /tmp/dpu-tc-kubeconfig apply -f - 2>/dev/null \
+            && ok "  installed: ${crd}" \
+            || warn "  failed: ${crd}"
+        done
+      fi
+    fi
+
+    info "Step 5/5 — Create ClusterRole + ClusterRoleBinding on DPU cluster"
+    if dkube get clusterrolebinding servicechainset-controller-manager &>/dev/null; then
+      skip "ClusterRoleBinding already exists on DPU cluster"
+    else
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        info "[dry-run] would create ClusterRole + ClusterRoleBinding on DPU cluster"
+      else
+        dkube apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: servicechainset-controller-manager
+rules:
+- apiGroups: ["svc.dpu.nvidia.com"]
+  resources: ["servicechains","servicechainsets","serviceinterfaces","serviceinterfacesets",
+               "servicechains/status","servicechainsets/status","serviceinterfaces/status",
+               "serviceinterfacesets/status","servicechains/finalizers",
+               "servicechainsets/finalizers","serviceinterfaces/finalizers",
+               "serviceinterfacesets/finalizers"]
+  verbs: ["create","delete","get","list","patch","update","watch"]
+- apiGroups: [""]
+  resources: ["nodes","pods","events"]
+  verbs: ["get","list","watch","create","patch","update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create","delete","get","list","patch","update","watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: servicechainset-controller-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: servicechainset-controller-manager
+subjects:
+- kind: ServiceAccount
+  name: servicechainset-controller-manager
+  namespace: ${DPF_NAMESPACE}
+EOF
+        ok "ClusterRole + ClusterRoleBinding created on DPU cluster"
+        # Restart servicechainset-controller to pick up new credentials + RBAC
+        kube rollout restart deployment/servicechainset-controller-manager \
+          -n "${DPF_NAMESPACE}" 2>/dev/null || true
+        ok "servicechainset-controller-manager restarted"
+      fi
+    fi
+  else
+    warn "DPU cluster kubeconfig not available — skipping steps 4 and 5"
+    warn "Re-run after TenantControlPlane is Ready: ./bringup_dpf.sh --upgrade"
+  fi
+
+  echo ""
+  echo "============================================================"
+  echo "  Upgrade complete — ${DPF_VERSION}"
+  echo "============================================================"
+  echo ""
+  info "Verify: kubectl get pods -n ${DPF_NAMESPACE} | grep -v etcd-defrag"
+  exit 0
+fi
 
 apply() {
   local file="$1"
@@ -159,7 +339,7 @@ else
 fi
 
 # ─── Step 1b: Install missing prerequisites (cert-manager, Kamaji, ArgoCD) ───
-# DPF Operator v25.7.0 requires these three to be present before DPFOperatorConfig.
+# DPF Operator requires these three to be present before DPFOperatorConfig.
 # Each check is idempotent — skipped if already installed.
 
 info "  Checking cert-manager..."
@@ -191,7 +371,7 @@ else
   ok "Kamaji installed"
 fi
 
-# Kamaji v1.0.0 webhook rejects k8s versions > 1.30.2 but DPF v25.7.0 requests v1.33.0.
+# Kamaji v1.0.0 webhook rejects k8s versions > 1.30.2 but DPF v25.10.1 requests v1.33.0.
 # The underlying etcd supports v1.33; only the webhook version-check blocks it.
 # Deleting the webhook is safe: DPF manages TenantControlPlane lifecycle, not Kamaji CLI.
 if [[ "${DRY_RUN}" != "true" ]]; then
@@ -425,7 +605,7 @@ fi
 # ─── Step 9: DPUCluster ───────────────────────────────────────────────────────
 # DPUCluster tells DPF to create a virtual k8s control plane via Kamaji (type: kamaji).
 # Must exist before the DPU CR is applied — DPU waits for the cluster to be found.
-# Note: Kamaji v1.0.0 only supports k8s ≤1.30.x. DPF v25.7.0 requests v1.33.0.
+# Note: Kamaji v1.0.0 only supports k8s ≤1.30.x. DPF v25.10.1 requests v1.33.0.
 # The validating webhook check is deleted in Step 1b; the underlying kamaji etcd supports it.
 info "Step 9/11 — DPUCluster (virtual k8s control plane for DPU)"
 if kube get dpucluster s4-dpu-cluster -n "${DPF_NAMESPACE}" &>/dev/null; then

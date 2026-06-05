@@ -258,7 +258,7 @@ hr{border:none;border-top:1px solid var(--border);margin:28px 0}
 <nav class="sidebar">
   <div class="sidebar-header">
     <h1>&#x2388; DPF Cluster</h1>
-    <p>NVIDIA DPF v25.7.0</p>
+    <p>NVIDIA DPF v25.10.1</p>
   </div>
   <div class="nav-group">Overview</div>
   <a href="#arch"><span class="dot" style="background:var(--cyan)"></span>Architecture</a>

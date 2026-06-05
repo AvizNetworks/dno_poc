@@ -26,7 +26,7 @@ HBN scripts validated on `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`.
 
 **ToR Switch:** `10.20.13.214` (admin / Aviz@123) — shared across S1 and S2.
 
-**DPF Operator VM:** `10.4.5.136` dpu-vm/admin — k3s cluster, DPF Operator v25.7.0 installed; manages S4's BF3 via DPF provisioning.
+**DPF Operator VM:** `10.4.5.136` dpu-vm/admin — k3s cluster, DPF Operator v25.10.1 installed; manages S4's BF3 via DPF provisioning.
 
 VSCode tasks (`.vscode/tasks.json`) auto-open SSH sessions to all 4 servers on folder open.
 
@@ -119,6 +119,12 @@ The DPF stack is completely separate from the HBN scripts above.
 - BFB file placed at `/opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`
 - BMC reachable: `10.20.13.250` (S4)
 
+**Upgrade DPF Operator (handles all post-upgrade fixes automatically):**
+```bash
+./dpf/scripts/bringup_dpf.sh --upgrade                    # upgrade to v25.10.1
+./dpf/scripts/bringup_dpf.sh --upgrade --version v25.10.2 # upgrade to specific version
+```
+
 **Provision BF3 via DPF (idempotent, safe to re-run):**
 ```bash
 ./dpf/scripts/bringup_dpf.sh
@@ -187,6 +193,8 @@ ssh aviz@<x86-host> 'sudo dmidecode -t system | grep -A2 "System Information" | 
 | `kubeadm join: no route to host` | TCP blocked between subnets — run `tunnel_dpf.sh start` then `tunnel_dpf.sh bf3` |
 | etcd-defrag jobs accumulating | Run `bringup_dpf.sh` — step 3 cleans them up |
 | `sudo` slow on BF3 | `echo "127.0.0.1 s4-dpu" \| sudo tee -a /etc/hosts` |
+| `servicechainset-controller` CrashLoopBackOff | Run `bringup_dpf.sh --upgrade` — fixes credentials secret, bootstraps CRDs on DPU cluster, creates RBAC |
+| After upgrade, DPUServices still Pending | Sub-controller images not updated — `bringup_dpf.sh --upgrade` handles this |
 
 ---
 
