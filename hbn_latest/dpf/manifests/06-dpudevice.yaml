@@ -1,7 +1,7 @@
 apiVersion: provisioning.dpu.nvidia.com/v1alpha1
 kind: DPUDevice
 metadata:
-  name: s4-bf3
+  name: SERVER_NAME-bf3
   namespace: dpf-operator-system
 spec:
   # bmcIp is immutable once set — update serial/IP carefully per environment.

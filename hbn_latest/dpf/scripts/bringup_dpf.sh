@@ -22,6 +22,11 @@ MANIFESTS_DIR="$(cd "${SCRIPT_DIR}/../manifests" && pwd)"
 DPF_KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 DPF_NAMESPACE="dpf-operator-system"
 
+SERVER_NAME="s4"                   # Server identifier — used to name all k8s resources.
+                                   # Change per server: "s1", "s2", etc.
+                                   # Creates: ${SERVER_NAME}-dpu, ${SERVER_NAME}-node,
+                                   #          ${SERVER_NAME}-bf3, ${SERVER_NAME}-dpu-cluster
+
 BF3_BMC_IP="10.20.13.250"          # S4 BMC (Redfish endpoint)
 BF3_OOB_IP="10.20.13.249"          # S4 BF3 OOB management IP
 BF3_SERIAL="MT2437600HGY"          # BF3 serial number (from: dmidecode -t system)
@@ -64,6 +69,8 @@ usage() {
 Usage: $0 [OPTIONS]
 
 Options:
+  --server <name>      Server identifier for k8s resource names (default: ${SERVER_NAME})
+                       e.g. --server s1 creates s1-dpu, s1-node, s1-bf3, s1-dpu-cluster
   --bfb-url <url>      Override BFB download URL (default: http://BFB_REGISTRY_IP:PORT/filename)
   --bmc-ip <ip>        Override BF3 BMC IP (default: ${BF3_BMC_IP})
   --oob-ip <ip>        Override BF3 OOB IP (default: ${BF3_OOB_IP})
@@ -80,9 +87,9 @@ Options:
   -h, --help           Show this help
 
 Examples:
-  $0
-  $0 --bfb-url http://fileserver.local/bf-bundle-3.3.0.bfb
-  $0 --bmc-ip 10.20.13.250 --serial MT2437600HGY
+  $0                                             # provision S4 (default)
+  $0 --server s1 --bmc-ip 10.20.13.216 --oob-ip 10.20.13.247 --serial <SN>  # S1
+  $0 --server s2 --bmc-ip 10.20.13.212 --oob-ip 10.20.13.228 --serial <SN>  # S2
   $0 --rshim-install --x86-host 10.20.13.207
   $0 --upgrade                        # upgrade to default version (${DPF_VERSION})
   $0 --upgrade --version v25.10.2     # upgrade to specific version
@@ -92,6 +99,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --server)         SERVER_NAME="$2";      shift ;;
     --bfb-url)        BFB_URL="$2";          shift ;;
     --bmc-ip)         BF3_BMC_IP="$2";      shift ;;
     --oob-ip)         BF3_OOB_IP="$2";      shift ;;
@@ -172,7 +180,7 @@ if [[ "${DO_UPGRADE}" == "true" ]]; then
   CURRENT_HOST=$(kube get secret servicechainset-controller-manager-credentials \
     -n "${DPF_NAMESPACE}" \
     -o jsonpath='{.data.KUBERNETES_SERVICE_HOST}' 2>/dev/null | base64 -d || echo "")
-  DPU_SVC_HOST="s4-dpu-cluster.${DPF_NAMESPACE}.svc"
+  DPU_SVC_HOST="${SERVER_NAME}-dpu-cluster.${DPF_NAMESPACE}.svc"
   if [[ "${CURRENT_HOST}" == "${DPU_SVC_HOST}" ]]; then
     skip "credentials secret already uses DNS hostname"
   else
@@ -608,28 +616,206 @@ fi
 # Note: Kamaji v1.0.0 only supports k8s ≤1.30.x. DPF v25.10.1 requests v1.33.0.
 # The validating webhook check is deleted in Step 1b; the underlying kamaji etcd supports it.
 info "Step 9/11 — DPUCluster (virtual k8s control plane for DPU)"
-if kube get dpucluster s4-dpu-cluster -n "${DPF_NAMESPACE}" &>/dev/null; then
-  skip "DPUCluster 's4-dpu-cluster' already exists"
+if kube get dpucluster ${SERVER_NAME}-dpu-cluster -n "${DPF_NAMESPACE}" &>/dev/null; then
+  skip "DPUCluster '${SERVER_NAME}-dpu-cluster' already exists"
 else
-  apply "${MANIFESTS_DIR}/08-dpucluster.yaml"
-  ok "DPUCluster 's4-dpu-cluster' created"
+  sed "s|SERVER_NAME|${SERVER_NAME}|g" "${MANIFESTS_DIR}/08-dpucluster.yaml" | kube apply -f -
+  ok "DPUCluster '${SERVER_NAME}-dpu-cluster' created"
+fi
+
+# ─── Step 9b: Post-DPUCluster setup ──────────────────────────────────────────
+# These steps are required for DPUServices to deploy to the BF3. Without them:
+#   - flannel, multus, ovs-cni never deploy (no ArgoCD cluster registration)
+#   - servicechainset-controller CrashLoopBackOff (wrong API endpoint + missing CRDs/RBAC)
+#
+# Root causes (verified in lab with DPF v25.10.1):
+#   1. kamaji-cm-controller does not auto-create the ArgoCD cluster secret
+#   2. servicechainset-controller credentials secret uses NodePort IP (k3s intercepts)
+#   3. DPU cluster missing svc.dpu.nvidia.com CRDs (chicken-and-egg with DPUService)
+#   4. dpuservice-controller SA missing dpunodemaintenances permission (new in v25.10.1)
+if [[ "${DRY_RUN}" != "true" ]]; then
+  # Wait for TenantControlPlane to be Ready before creating its ArgoCD secret
+  info "  Waiting for TenantControlPlane '${SERVER_NAME}-dpu-cluster' to be Ready..."
+  elapsed=0
+  while [[ $elapsed -lt 120 ]]; do
+    tcp_ready=$(kube get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" \
+      -n "${DPF_NAMESPACE}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+    [[ "$tcp_ready" == "True" ]] && { ok "TenantControlPlane Ready"; break; }
+    sleep 10; elapsed=$((elapsed + 10))
+    info "  waiting for TenantControlPlane... ${elapsed}s/120s"
+  done
+  [[ "$tcp_ready" != "True" ]] && warn "TenantControlPlane not Ready after 120s — continuing anyway"
+
+  # Fetch DPU cluster kubeconfig
+  kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/dpu-tc-kubeconfig 2>/dev/null || true
+
+  if [[ -s /tmp/dpu-tc-kubeconfig ]]; then
+    dkube() { kubectl --kubeconfig /tmp/dpu-tc-kubeconfig "$@"; }
+
+    # 1. Register DPU cluster with ArgoCD (required for DPUService deployment)
+    if kube get secret "${SERVER_NAME}-dpu-cluster" -n argocd &>/dev/null; then
+      skip "ArgoCD cluster secret '${SERVER_NAME}-dpu-cluster' already exists"
+    else
+      info "  Registering DPU cluster with ArgoCD..."
+      CA=$(python3 -c "
+import yaml, sys
+with open('/tmp/dpu-tc-kubeconfig') as f:
+    kc = yaml.safe_load(f)
+print(kc['clusters'][0]['cluster']['certificate-authority-data'])
+")
+      CERT=$(python3 -c "
+import yaml, sys
+with open('/tmp/dpu-tc-kubeconfig') as f:
+    kc = yaml.safe_load(f)
+print(kc['users'][0]['user'].get('client-certificate-data',''))
+")
+      KEY=$(python3 -c "
+import yaml, sys
+with open('/tmp/dpu-tc-kubeconfig') as f:
+    kc = yaml.safe_load(f)
+print(kc['users'][0]['user'].get('client-key-data',''))
+")
+      CONFIG=$(python3 -c "
+import json
+print(json.dumps({'tlsClientConfig':{'caData':'${CA}','certData':'${CERT}','keyData':'${KEY}'}}))
+")
+      kube apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${SERVER_NAME}-dpu-cluster
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: ${SERVER_NAME}-dpu-cluster
+  server: https://${SERVER_NAME}-dpu-cluster.${DPF_NAMESPACE}.svc:6443
+  config: '${CONFIG}'
+EOF
+      ok "ArgoCD cluster secret created for '${SERVER_NAME}-dpu-cluster'"
+    fi
+
+    # 2. Fix servicechainset credentials secret (NodePort IP → DNS name)
+    CURRENT_HOST=$(kube get secret servicechainset-controller-manager-credentials \
+      -n "${DPF_NAMESPACE}" \
+      -o jsonpath='{.data.KUBERNETES_SERVICE_HOST}' 2>/dev/null | base64 -d || echo "")
+    DPU_SVC_HOST="${SERVER_NAME}-dpu-cluster.${DPF_NAMESPACE}.svc"
+    if [[ "${CURRENT_HOST}" == "${DPU_SVC_HOST}" ]]; then
+      skip "servicechainset credentials already use DNS hostname"
+    elif [[ -n "${CURRENT_HOST}" ]]; then
+      NEW_HOST_B64=$(echo -n "${DPU_SVC_HOST}" | base64)
+      kube patch secret servicechainset-controller-manager-credentials \
+        -n "${DPF_NAMESPACE}" \
+        --type=json \
+        -p="[{\"op\": \"replace\", \"path\": \"/data/KUBERNETES_SERVICE_HOST\", \"value\": \"${NEW_HOST_B64}\"}]" \
+        2>/dev/null && ok "servicechainset credentials patched → ${DPU_SVC_HOST}" \
+        || warn "servicechainset credentials patch failed — may not exist yet"
+    fi
+
+    # 3. Bootstrap svc.dpu.nvidia.com CRDs onto DPU cluster
+    MISSING_CRDS=()
+    for crd in servicechains.svc.dpu.nvidia.com servicechainsets.svc.dpu.nvidia.com \
+               serviceinterfaces.svc.dpu.nvidia.com serviceinterfacesets.svc.dpu.nvidia.com; do
+      dkube get crd "${crd}" &>/dev/null || MISSING_CRDS+=("${crd}")
+    done
+    if [[ ${#MISSING_CRDS[@]} -eq 0 ]]; then
+      skip "svc.dpu.nvidia.com CRDs already on DPU cluster"
+    else
+      info "  Bootstrapping ${#MISSING_CRDS[@]} CRD(s) onto DPU cluster..."
+      for crd in "${MISSING_CRDS[@]}"; do
+        kube get crd "${crd}" -o json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for k in ['resourceVersion','uid','creationTimestamp','generation','managedFields']:
+    d['metadata'].pop(k, None)
+d['metadata'].pop('annotations', None)
+d.pop('status', None)
+print(json.dumps(d))
+" | dkube apply -f - 2>/dev/null \
+          && ok "  installed: ${crd}" || warn "  failed: ${crd}"
+      done
+    fi
+
+    # 4. Create RBAC on DPU cluster for servicechainset-controller
+    if dkube get clusterrolebinding servicechainset-controller-manager &>/dev/null; then
+      skip "servicechainset ClusterRoleBinding already on DPU cluster"
+    else
+      info "  Creating servicechainset RBAC on DPU cluster..."
+      dkube apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: servicechainset-controller-manager
+rules:
+- apiGroups: ["svc.dpu.nvidia.com"]
+  resources: ["servicechains","servicechainsets","serviceinterfaces","serviceinterfacesets",
+               "servicechains/status","servicechainsets/status","serviceinterfaces/status",
+               "serviceinterfacesets/status","servicechains/finalizers",
+               "servicechainsets/finalizers","serviceinterfaces/finalizers",
+               "serviceinterfacesets/finalizers"]
+  verbs: ["create","delete","get","list","patch","update","watch"]
+- apiGroups: [""]
+  resources: ["nodes","pods","events"]
+  verbs: ["get","list","watch","create","patch","update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create","delete","get","list","patch","update","watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: servicechainset-controller-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: servicechainset-controller-manager
+subjects:
+- kind: ServiceAccount
+  name: servicechainset-controller-manager
+  namespace: ${DPF_NAMESPACE}
+EOF
+      ok "servicechainset RBAC created on DPU cluster"
+    fi
+  else
+    warn "DPU cluster kubeconfig not available — skipping Step 9b"
+    warn "Re-run bringup_dpf.sh after TenantControlPlane is Ready"
+  fi
+
+  # 5. Fix dpunodemaintenances RBAC on management cluster (new CRD in v25.10.1)
+  if kube get crd dpunodemaintenances.provisioning.dpu.nvidia.com &>/dev/null; then
+    HAS_RULE=$(kube get clusterrole dpuservice-manager-role \
+      -o jsonpath='{.rules[*].resources}' 2>/dev/null | grep -c "dpunodemaintenances" || true)
+    if [[ "$HAS_RULE" -eq 0 ]]; then
+      kube patch clusterrole dpuservice-manager-role \
+        --type=json \
+        -p='[{"op":"add","path":"/rules/-","value":{"apiGroups":["provisioning.dpu.nvidia.com"],"resources":["dpunodemaintenances"],"verbs":["create","delete","get","list","patch","update","watch"]}}]' \
+        2>/dev/null && ok "dpunodemaintenances RBAC added to dpuservice-manager-role" \
+        || warn "dpunodemaintenances RBAC patch failed"
+    else
+      skip "dpunodemaintenances already in dpuservice-manager-role"
+    fi
+  fi
 fi
 
 # ─── Step 10: DPUNode + DPUDevice + DPU ───────────────────────────────────────
 info "Step 10/11 — DPUNode, DPUDevice, DPU (triggers Redfish provisioning)"
 
-if kube get dpunode s4-node -n "${DPF_NAMESPACE}" &>/dev/null; then
-  skip "DPUNode 's4-node' already exists"
+if kube get dpunode ${SERVER_NAME}-node -n "${DPF_NAMESPACE}" &>/dev/null; then
+  skip "DPUNode '${SERVER_NAME}-node' already exists"
 else
-  apply "${MANIFESTS_DIR}/05-dpunode.yaml"
-  ok "DPUNode 's4-node' created"
+  sed "s|SERVER_NAME|${SERVER_NAME}|g" "${MANIFESTS_DIR}/05-dpunode.yaml" | kube apply -f -
+  ok "DPUNode '${SERVER_NAME}-node' created"
 fi
 
-if kube get dpudevice s4-bf3 -n "${DPF_NAMESPACE}" &>/dev/null; then
-  skip "DPUDevice 's4-bf3' already exists"
+if kube get dpudevice ${SERVER_NAME}-bf3 -n "${DPF_NAMESPACE}" &>/dev/null; then
+  skip "DPUDevice '${SERVER_NAME}-bf3' already exists"
 else
   TMPFILE=$(mktemp /tmp/dpudevice-XXXXXX.yaml)
   sed \
+    -e "s|SERVER_NAME|${SERVER_NAME}|g" \
     -e "s|BF3_SERIAL|${BF3_SERIAL}|g" \
     -e "s|BF3_BMC_IP|${BF3_BMC_IP}|g" \
     "${MANIFESTS_DIR}/06-dpudevice.yaml" > "${TMPFILE}"
@@ -637,16 +823,17 @@ else
     info "[dry-run] would apply DPUDevice (serial: ${BF3_SERIAL}, bmcIp: ${BF3_BMC_IP})"
   else
     kube apply -f "${TMPFILE}"
-    ok "DPUDevice 's4-bf3' created (serial: ${BF3_SERIAL})"
+    ok "DPUDevice '${SERVER_NAME}-bf3' created (serial: ${BF3_SERIAL})"
   fi
   rm -f "${TMPFILE}"
 fi
 
-if kube get dpu s4-dpu -n "${DPF_NAMESPACE}" &>/dev/null; then
-  skip "DPU 's4-dpu' already exists"
+if kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" &>/dev/null; then
+  skip "DPU '${SERVER_NAME}-dpu' already exists"
 else
   TMPFILE=$(mktemp /tmp/dpu-XXXXXX.yaml)
   sed \
+    -e "s|SERVER_NAME|${SERVER_NAME}|g" \
     -e "s|BF3_SERIAL|${BF3_SERIAL}|g" \
     -e "s|BF3_BMC_IP|${BF3_BMC_IP}|g" \
     "${MANIFESTS_DIR}/07-dpu.yaml" > "${TMPFILE}"
@@ -654,7 +841,7 @@ else
     info "[dry-run] would apply DPU (serial: ${BF3_SERIAL}, bmcIP: ${BF3_BMC_IP})"
   else
     kube apply -f "${TMPFILE}"
-    ok "DPU 's4-dpu' created — BFB flash via Redfish starting"
+    ok "DPU '${SERVER_NAME}-dpu' created — BFB flash via Redfish starting"
   fi
   rm -f "${TMPFILE}"
 fi
@@ -684,16 +871,16 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
     info "  Waiting for DPF to generate bfcfg (BFBPrepared)..."
     elapsed=0; bfcfg_ready=false
     while [[ $elapsed -lt 600 ]]; do
-      bfb_prepared=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" \
+      bfb_prepared=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="BFBPrepared")].status}' 2>/dev/null || echo "")
-      dpu_phase=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" \
+      dpu_phase=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
       if [[ "$bfb_prepared" == "True" ]]; then
         bfcfg_ready=true; ok "BFBPrepared: True — bfcfg ready"; break
       fi
       # DPF may have already progressed to Error/FailToInstall — bfcfg still exists
       if [[ "$dpu_phase" == "Error" ]]; then
-        os_reason=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" \
+        os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
           -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].reason}' 2>/dev/null || echo "")
         [[ "$os_reason" == "FailToInstall" ]] && { bfcfg_ready=true; ok "DPF in Error/FailToInstall — bfcfg already generated"; break; }
       fi
@@ -701,7 +888,7 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       info "  DPU phase: ${dpu_phase:-unknown} ... ${elapsed}s/600s"
     done
     [[ "$bfcfg_ready" != "true" ]] \
-      && fail "bfcfg not ready after 600s — check: kubectl describe dpu s4-dpu -n ${DPF_NAMESPACE}"
+      && fail "bfcfg not ready after 600s — check: kubectl describe dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
 
     # Refresh TenantControlPlane kubeconfig (fail if not available yet)
     kube get secret s4-dpu-cluster-admin-kubeconfig -n "${DPF_NAMESPACE}" \
@@ -723,7 +910,7 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
     ok "Bootstrap token created: ${RSHIM_TOKEN}"
 
     # Locate bfcfg path from DPU status (relative path within the bfb PVC)
-    BFCFG_REL=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" \
+    BFCFG_REL=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
       -o jsonpath='{.status.bfCFGFile}' 2>/dev/null || echo "")
     [[ -z "${BFCFG_REL}" ]] \
       && fail "DPU status.bfCFGFile empty — DPF has not generated bfcfg yet"
@@ -766,10 +953,10 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
     # BF3 joined — patch DPU status to Ready so DPF can proceed with DPUService deployment.
     # Redfish 404 (same-version skip) left DPU in Error/FailToInstall; rshim flash remedied it.
     info "  Patching DPU status → Ready (rshim flash confirmed successful)..."
-    kube patch dpu s4-dpu -n "${DPF_NAMESPACE}" --subresource=status --type=merge \
+    kube patch dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" --subresource=status --type=merge \
       -p '{"status":{"phase":"Ready"}}' 2>/dev/null \
       && ok "DPU status patched to Ready" \
-      || warn "Could not patch DPU status — check manually: kubectl get dpu s4-dpu -n ${DPF_NAMESPACE}"
+      || warn "Could not patch DPU status — check manually: kubectl get dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
   fi
 fi
 
@@ -783,7 +970,7 @@ else
   elapsed=0
   last_phase=""
   while [[ $elapsed -lt $DPU_TIMEOUT ]]; do
-    phase=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" \
+    phase=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
       -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     if [[ "$phase" != "$last_phase" ]]; then
       info "  DPU phase: ${phase:-unknown}"
@@ -791,9 +978,9 @@ else
     fi
     [[ "$phase" == "Ready" ]] && break
     if [[ "$phase" == "Error" ]]; then
-      os_reason=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" \
+      os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].reason}' 2>/dev/null || echo "")
-      os_msg=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" \
+      os_msg=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].message}' 2>/dev/null || echo "")
       if [[ "$os_reason" == "FailToInstall" && "$os_msg" == *"404"* ]]; then
         # BMC returned 404 on install task poll — happens when BF3 already has the
@@ -818,13 +1005,13 @@ else
           break
         fi
       fi
-      fail "DPU provisioning failed — check: kubectl describe dpu s4-dpu -n ${DPF_NAMESPACE}"
+      fail "DPU provisioning failed — check: kubectl describe dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
     fi
     sleep 15; elapsed=$((elapsed + 15))
   done
   [[ $elapsed -ge $DPU_TIMEOUT ]] \
-    && fail "DPU not Ready after ${DPU_TIMEOUT}s — check: kubectl describe dpu s4-dpu -n ${DPF_NAMESPACE}"
-  ok "DPU 's4-dpu' phase: Ready"
+    && fail "DPU not Ready after ${DPU_TIMEOUT}s — check: kubectl describe dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
+  ok "DPU '${SERVER_NAME}-dpu' phase: Ready"
 fi
 
 echo ""

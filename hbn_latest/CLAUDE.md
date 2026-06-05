@@ -140,10 +140,14 @@ The DPF stack is completely separate from the HBN scripts above.
 **Cross-subnet tunnel (required when DPF VM and BF3 are on different subnets):**
 ```bash
 ./dpf/scripts/tunnel_dpf.sh start   # open reverse SSH tunnel DPF VM → x86 host
-./dpf/scripts/tunnel_dpf.sh bf3     # print iptables DNAT commands to run on BF3
+./dpf/scripts/tunnel_dpf.sh bf3     # print ALL 3 iptables rules to run on BF3:
+                                    #   Rule 1 (before bringup): kubeadm join routing
+                                    #   Rule 2 (after boot): host processes → API server
+                                    #   Rule 3 (after boot): pod traffic → API server
 ./dpf/scripts/tunnel_dpf.sh status  # check tunnel health
 ./dpf/scripts/tunnel_dpf.sh stop    # tear down
 ```
+Note: All 3 BF3 iptables rules are lost on reboot. Not needed on same-network deployments.
 
 **Get DPU cluster kubeconfig:**
 ```bash

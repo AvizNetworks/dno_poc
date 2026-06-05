@@ -1,7 +1,7 @@
 apiVersion: provisioning.dpu.nvidia.com/v1alpha1
 kind: DPUCluster
 metadata:
-  name: s4-dpu-cluster
+  name: SERVER_NAME-dpu-cluster
   namespace: dpf-operator-system
 spec:
   # kamaji: DPF manages the DPU cluster control plane via Kamaji TenantControlPlane.
