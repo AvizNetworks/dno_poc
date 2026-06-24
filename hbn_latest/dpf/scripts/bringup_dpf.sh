@@ -19,7 +19,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFESTS_DIR="$(cd "${SCRIPT_DIR}/../manifests" && pwd)"
 
 # ─── Configuration — edit these per environment ───────────────────────────────
-DPF_KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
+# Prefer k3s kubeconfig when available — it's always authoritative and updated on restart.
+# ~/.kube/config can go stale (e.g. after k3s IPv6 fix). KUBECONFIG env always wins.
+if [[ -n "${KUBECONFIG:-}" ]]; then
+  DPF_KUBECONFIG="${KUBECONFIG}"
+elif [[ -r /etc/rancher/k3s/k3s.yaml ]]; then
+  DPF_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+  mkdir -p "${HOME}/.kube"
+  cp /etc/rancher/k3s/k3s.yaml "${HOME}/.kube/config" 2>/dev/null || true
+else
+  DPF_KUBECONFIG="${HOME}/.kube/config"
+fi
 DPF_NAMESPACE="dpf-operator-system"
 
 SERVER_NAME="s4"                   # Server identifier — used to name all k8s resources.
@@ -31,18 +41,18 @@ BF3_BMC_IP="10.20.13.250"          # S4 BMC (Redfish endpoint)
 BF3_OOB_IP="10.20.13.249"          # S4 BF3 OOB management IP
 BF3_SERIAL="MT2437600HGY"          # BF3 serial number (from: dmidecode -t system)
 
-BFB_REGISTRY_IP="10.4.5.136"       # IP of this DPF Operator VM (serves BFB to BMC via port 8080)
+BFB_REGISTRY_IP="${BFB_REGISTRY_IP:-$(hostname -I | awk '{print $1}')}"  # auto-detect local IP; override with --registry-ip
 BFB_REGISTRY_PORT="8080"           # DPF's bfb-registry hostPort — do NOT run anything else here
 BFB_FILE="/opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 BFB_UPLOAD_PORT="9090"             # Temp HTTP port for BFB controller to download from (→ PVC)
-# BFB_URL is the SOURCE url for BFB download into PVC (must differ from bfb-registry port 8080)
-BFB_URL="http://${BFB_REGISTRY_IP}:${BFB_UPLOAD_PORT}/$(basename "${BFB_FILE}")"
+# BFB_URL is computed after arg parsing (BFB_REGISTRY_IP may be overridden by --registry-ip)
 
 WAIT_TIMEOUT=300        # seconds to wait for Kamaji + provisioner pods
 DPU_TIMEOUT=1800        # seconds to wait for BFB flash (30 min — reboot included)
 DRY_RUN=false
 DPF_VERSION="v25.10.1"  # DPF Operator Helm chart version (update when upgrading)
 DO_UPGRADE=false
+DEPLOY_HBN=false        # deploy HBN as a DaemonSet on BF3 (use --hbn flag)
 
 # ─── rshim install (alternative to DPF Redfish OS install) ────────────────────
 # Used via --rshim-install when DPF's Redfish path fails (e.g. same-version BMC skip).
@@ -71,6 +81,7 @@ Usage: $0 [OPTIONS]
 Options:
   --server <name>      Server identifier for k8s resource names (default: ${SERVER_NAME})
                        e.g. --server s1 creates s1-dpu, s1-node, s1-bf3, s1-dpu-cluster
+  --registry-ip <ip>   Override DPF VM IP for BFB registry/upload (default: auto-detect via hostname -I)
   --bfb-url <url>      Override BFB download URL (default: http://BFB_REGISTRY_IP:PORT/filename)
   --bmc-ip <ip>        Override BF3 BMC IP (default: ${BF3_BMC_IP})
   --oob-ip <ip>        Override BF3 OOB IP (default: ${BF3_OOB_IP})
@@ -81,6 +92,9 @@ Options:
   --x86-pass <pass>    x86 host SSH password (default: from config)
   --x86-bfb <path>     BFB path on x86 host (default: ${X86_BFB_PATH})
   --rshim-dev <dev>    rshim device on x86 host (default: ${RSHIM_DEVICE})
+  --hbn                Deploy HBN (doca-hbn) as a DaemonSet on BF3 — no NGC key needed.
+                       Uses image already present: nvcr.io/nvidia/doca/doca_hbn:3.3.0-doca3.3.0
+                       Equivalent to: sudo ./scripts/bringup_hbn_bf3.sh --vfs 8
   --upgrade            Upgrade DPF Operator Helm release to --version (skips bringup steps)
   --version <ver>      DPF Operator version to upgrade to (default: ${DPF_VERSION})
   --dry-run            Print steps without applying
@@ -100,6 +114,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case $1 in
     --server)         SERVER_NAME="$2";      shift ;;
+    --registry-ip)    BFB_REGISTRY_IP="$2"; shift ;;
     --bfb-url)        BFB_URL="$2";          shift ;;
     --bmc-ip)         BF3_BMC_IP="$2";      shift ;;
     --oob-ip)         BF3_OOB_IP="$2";      shift ;;
@@ -110,6 +125,7 @@ while [[ $# -gt 0 ]]; do
     --x86-pass)       X86_HOST_PASS="$2";   shift ;;
     --x86-bfb)        X86_BFB_PATH="$2";    shift ;;
     --rshim-dev)      RSHIM_DEVICE="$2";    shift ;;
+    --hbn)            DEPLOY_HBN=true ;;
     --upgrade)        DO_UPGRADE=true ;;
     --version)        DPF_VERSION="$2";     shift ;;
     --dry-run)        DRY_RUN=true ;;
@@ -118,6 +134,15 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# Compute BFB_URL after arg parsing so --registry-ip and --bfb-url both take effect
+[[ -z "${BFB_URL:-}" ]] && BFB_URL="http://${BFB_REGISTRY_IP}:${BFB_UPLOAD_PORT}/$(basename "${BFB_FILE}")"
+
+# Per-server DPUFlavor name. DPUFlavor is a cluster-shared object referenced by the
+# DPU CR; if multiple DPUs (e.g. s4-dpu + s1-dpu) shared one flavor, the immutable
+# delete/recreate in Step 8 would be blocked by the webhook ("referred to by DPU(s)").
+# Giving each server its own flavor (s1-bf3-hbn, s4-bf3-hbn, ...) keeps them isolated.
+DPU_FLAVOR_NAME="${SERVER_NAME}-bf3-hbn"
 
 # ─── Upgrade mode ─────────────────────────────────────────────────────────────
 # Upgrades the DPF Operator Helm release then applies post-upgrade fixes.
@@ -198,10 +223,10 @@ if [[ "${DO_UPGRADE}" == "true" ]]; then
   fi
 
   info "Step 4/5 — Bootstrap svc.dpu.nvidia.com CRDs onto DPU cluster"
-  kube get secret s4-dpu-cluster-admin-kubeconfig -n "${DPF_NAMESPACE}" \
-    -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/dpu-tc-kubeconfig 2>/dev/null || true
-  if [[ -s /tmp/dpu-tc-kubeconfig ]]; then
-    dkube() { kubectl --kubeconfig /tmp/dpu-tc-kubeconfig "$@"; }
+  kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
+  if [[ -s ${HOME}/dpu-tc-kubeconfig ]]; then
+    dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
     MISSING_CRDS=()
     for crd in servicechains.svc.dpu.nvidia.com servicechainsets.svc.dpu.nvidia.com \
                serviceinterfaces.svc.dpu.nvidia.com serviceinterfacesets.svc.dpu.nvidia.com; do
@@ -222,7 +247,7 @@ for k in ['resourceVersion','uid','creationTimestamp','generation','managedField
 d['metadata'].pop('annotations', None)
 d.pop('status', None)
 print(json.dumps(d))
-" | kubectl --kubeconfig /tmp/dpu-tc-kubeconfig apply -f - 2>/dev/null \
+" | kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig apply -f - 2>/dev/null \
             && ok "  installed: ${crd}" \
             || warn "  failed: ${crd}"
         done
@@ -330,13 +355,74 @@ echo ""
 # ─── Step 1: Preflight checks ─────────────────────────────────────────────────
 info "Step 1/10 — Preflight checks"
 
-kube get nodes &>/dev/null \
-  || fail "kubectl cannot reach cluster — check KUBECONFIG (${DPF_KUBECONFIG})"
+if ! kube get nodes &>/dev/null; then
+  # Common k3s-on-Ubuntu-22.04 failure modes — diagnose so the user isn't stuck.
+  if [[ -r /etc/rancher/k3s/k3s.yaml ]] && grep -q '127.0.0.1:6443' /etc/rancher/k3s/k3s.yaml 2>/dev/null \
+     && ! ss -4 -tln 2>/dev/null | grep -q ':6443 ' && ss -6 -tln 2>/dev/null | grep -q ':6443 '; then
+    warn "k3s is listening on IPv6 only, but kubeconfig points at 127.0.0.1 (IPv4)."
+    warn "Fix (permanent — survives k3s restarts):"
+    warn "  sudo sed -i 's/127.0.0.1:6443/[::1]:6443/' /etc/rancher/k3s/k3s.yaml"
+    warn "  sudo chmod 644 /etc/rancher/k3s/k3s.yaml"
+    warn "  sudo mkdir -p /etc/systemd/system/k3s.service.d"
+    warn "  sudo tee /etc/systemd/system/k3s.service.d/fix-kubeconfig.conf <<'EOF'"
+    warn "  [Service]"
+    warn "  ExecStartPost=/bin/bash -c 'sleep 10 && sed -i \"s/127.0.0.1:6443/[::1]:6443/\" /etc/rancher/k3s/k3s.yaml && chmod 644 /etc/rancher/k3s/k3s.yaml'"
+    warn "  EOF"
+    warn "  sudo systemctl daemon-reload"
+  elif [[ -e /etc/rancher/k3s/k3s.yaml && ! -r /etc/rancher/k3s/k3s.yaml ]]; then
+    warn "k3s.yaml exists but is not readable. Fix: sudo chmod 644 /etc/rancher/k3s/k3s.yaml"
+  fi
+  fail "kubectl cannot reach cluster — check KUBECONFIG (${DPF_KUBECONFIG})"
+fi
 ok "kubectl: cluster reachable"
 
-kube get deployment dpf-operator-controller-manager -n "${DPF_NAMESPACE}" &>/dev/null \
-  || fail "DPF Operator deployment not found in ${DPF_NAMESPACE} — install via Helm first"
-ok "DPF Operator deployment present"
+if kube get deployment dpf-operator-controller-manager -n "${DPF_NAMESPACE}" &>/dev/null; then
+  ok "DPF Operator deployment present"
+else
+  info "  DPF Operator not found — installing prerequisites + DPF Operator automatically..."
+
+  # NFD must be installed before DPF Operator Helm chart (its CRDs are referenced in the chart)
+  info "  Checking NFD (Node Feature Discovery)..."
+  if kube get crd nodefeatures.nfd.k8s-sigs.io &>/dev/null; then
+    skip "NFD already installed"
+  else
+    info "  Installing NFD..."
+    if [[ "${DRY_RUN}" != "true" ]]; then
+      helm repo add nfd https://kubernetes-sigs.github.io/node-feature-discovery/charts 2>/dev/null || true
+      helm repo update nfd 2>/dev/null
+      helm install nfd nfd/node-feature-discovery \
+        --namespace nfd --create-namespace --wait --timeout 5m \
+        || fail "NFD install failed — check: kubectl get pods -n nfd"
+    fi
+    ok "NFD installed"
+  fi
+
+  # Install DPF Operator — prefer local tarball in /tmp/ (avoids NGC credentials requirement)
+  info "  Installing DPF Operator ${DPF_VERSION}..."
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    info "[dry-run] would install DPF Operator ${DPF_VERSION}"
+  else
+    LOCAL_CHART=$(ls /tmp/dpf-operator-*.tgz 2>/dev/null | head -1 || echo "")
+    if [[ -n "${LOCAL_CHART}" ]]; then
+      info "  Using local chart tarball: ${LOCAL_CHART}"
+      helm install dpf-operator "${LOCAL_CHART}" \
+        --namespace "${DPF_NAMESPACE}" --create-namespace \
+        --wait --timeout 5m \
+        || fail "DPF Operator install failed — check: kubectl get pods -n ${DPF_NAMESPACE}"
+    else
+      info "  No local chart found in /tmp/ — trying Helm repo (requires NGC credentials)"
+      helm repo add dpf-repository \
+        "https://helm.ngc.nvidia.com/nvidia/doca" 2>/dev/null || true
+      helm repo update dpf-repository 2>/dev/null
+      helm install dpf-operator dpf-repository/dpf-operator \
+        --version "${DPF_VERSION}" \
+        --namespace "${DPF_NAMESPACE}" --create-namespace \
+        --wait --timeout 5m \
+        || fail "DPF Operator install failed. If NGC auth error, copy chart tarball to /tmp/dpf-operator-${DPF_VERSION}.tgz and re-run"
+    fi
+    ok "DPF Operator ${DPF_VERSION} installed"
+  fi
+fi
 
 if curl -sk --max-time 5 "https://${BF3_BMC_IP}/redfish/v1/" | grep -q "RedfishVersion"; then
   ok "BMC Redfish reachable at ${BF3_BMC_IP}"
@@ -348,6 +434,7 @@ fi
 
 # ─── Step 1b: Install missing prerequisites (cert-manager, Kamaji, ArgoCD) ───
 # DPF Operator requires these three to be present before DPFOperatorConfig.
+# NFD is installed earlier (before DPF Operator Helm chart) if needed.
 # Each check is idempotent — skipped if already installed.
 
 info "  Checking cert-manager..."
@@ -429,7 +516,7 @@ if [[ "${DRY_RUN}" != "true" ]]; then
   for proj in doca-platform-project-host doca-platform-project-dpu; do
     if ! kube get appproject "${proj}" -n argocd &>/dev/null; then
       info "  Creating AppProject ${proj} in argocd namespace..."
-      cat > "/tmp/${proj}.yaml" <<PROJEOF
+      cat > "${HOME}/${proj}.yaml" <<PROJEOF
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -451,7 +538,7 @@ spec:
   - "${DPF_NAMESPACE}"
   - "argocd"
 PROJEOF
-      kube apply -f "/tmp/${proj}.yaml"
+      kube apply -f "${HOME}/${proj}.yaml"
     else
       # Ensure sourceNamespaces is set (patch is idempotent)
       kube patch appproject "${proj}" -n argocd \
@@ -479,15 +566,16 @@ elif [[ "${DRY_RUN}" == "true" ]]; then
   info "[dry-run] would start python3 HTTP server for BFB on port ${BFB_UPLOAD_PORT}"
 else
   BFB_DIR="$(dirname "${BFB_FILE}")"
+  BFB_UPLOAD_LOG="${HOME}/bfb-upload.log"
   nohup python3 -m http.server "${BFB_UPLOAD_PORT}" \
     --directory "${BFB_DIR}" \
     --bind 0.0.0.0 \
-    >/tmp/bfb-upload.log 2>&1 &
+    >"${BFB_UPLOAD_LOG}" 2>&1 &
   disown
   sleep 2
   nc -z "${BFB_REGISTRY_IP}" "${BFB_UPLOAD_PORT}" 2>/dev/null \
-    || fail "BFB upload server failed to start on port ${BFB_UPLOAD_PORT} — check /tmp/bfb-upload.log"
-  ok "BFB upload server started on port ${BFB_UPLOAD_PORT} (log: /tmp/bfb-upload.log)"
+    || fail "BFB upload server failed to start on port ${BFB_UPLOAD_PORT} — check ${BFB_UPLOAD_LOG}"
+  ok "BFB upload server started on port ${BFB_UPLOAD_PORT} (log: ${BFB_UPLOAD_LOG})"
 fi
 
 # ─── Step 3: Clean up stale Kamaji etcd-defrag jobs ──────────────────────────
@@ -524,7 +612,7 @@ info "Step 5/10 — DPFOperatorConfig (bootstraps Kamaji + provisioning controll
 if kube get dpfoperatorconfig dpfoperatorconfig -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPFOperatorConfig already exists"
 else
-  TMPFILE=$(mktemp /tmp/dpfoperatorconfig-XXXXXX.yaml)
+  TMPFILE=$(mktemp "${HOME}/dpfoperatorconfig-XXXXXX.yaml")
   sed \
     -e "s|BFB_REGISTRY_IP|${BFB_REGISTRY_IP}|g" \
     -e "s|BFB_REGISTRY_PORT|${BFB_REGISTRY_PORT}|g" \
@@ -551,8 +639,8 @@ else
     || wait_for_pods "app.kubernetes.io/name=kamaji" "kamaji-system" "${WAIT_TIMEOUT}" \
     || fail "Kamaji pods not ready after ${WAIT_TIMEOUT}s — check: kubectl get pods -n kamaji-system"
   ok "Kamaji ready"
-  wait_for_pods "dpu.nvidia.com/component=dpf-provisioning-controller-manager" "${DPF_NAMESPACE}" 60 \
-    || warn "Provisioning controller pod not yet visible — proceeding (may still be starting)"
+  wait_for_pods "dpu.nvidia.com/component=dpf-provisioning-controller-manager" "${DPF_NAMESPACE}" "${WAIT_TIMEOUT}" \
+    || fail "Provisioning controller not ready after ${WAIT_TIMEOUT}s — webhook will block DPUFlavor operations. Check: kubectl get pods -n ${DPF_NAMESPACE} | grep provisioning"
 
   # bfb-registry DaemonSet (nginx, hostPort 8080) is deployed by DPFOperatorConfig reconciliation.
   # Wait for it and verify the BFB file is actually reachable before applying the BFB CR.
@@ -576,7 +664,7 @@ info "Step 7/11 — BFB resource (downloads BFB into PVC)"
 if kube get bfb doca-3.3.0 -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "BFB 'doca-3.3.0' already exists"
 else
-  TMPFILE=$(mktemp /tmp/bfb-XXXXXX.yaml)
+  TMPFILE=$(mktemp "${HOME}/bfb-XXXXXX.yaml")
   sed "s|BFB_URL|${BFB_URL}|g" "${MANIFESTS_DIR}/03-bfb.yaml" > "${TMPFILE}"
   if [[ "${DRY_RUN}" == "true" ]]; then
     info "[dry-run] would apply BFB (url: ${BFB_URL})"
@@ -603,11 +691,52 @@ fi
 
 # ─── Step 8: DPUFlavor ────────────────────────────────────────────────────────
 info "Step 8/11 — DPUFlavor"
-if kube get dpuflavor bf3-base -n "${DPF_NAMESPACE}" &>/dev/null; then
-  skip "DPUFlavor 'bf3-base' already exists"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  info "[dry-run] would apply DPUFlavor '${DPU_FLAVOR_NAME}'"
 else
-  apply "${MANIFESTS_DIR}/04-dpuflavor.yaml"
-  ok "DPUFlavor 'bf3-base' created"
+  # DPUFlavor spec is immutable — must delete DPU referencing it, then delete flavor
+  if kube get dpuflavor "${DPU_FLAVOR_NAME}" -n dpf-operator-system &>/dev/null; then
+    info "DPUFlavor '${DPU_FLAVOR_NAME}' exists and is immutable — will delete and recreate"
+    # DPU CR must be removed first (webhook blocks flavor deletion while referenced)
+    if kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" &>/dev/null; then
+      info "Deleting DPU '${SERVER_NAME}-dpu' so DPUFlavor can be removed"
+      # NOTE: a blocking `kubectl delete` hangs forever here — the DPU carries a
+      # provisioning.dpu.nvidia.com/dpu-protection finalizer that never auto-clears.
+      # Delete non-blocking, then strip the finalizer, then wait for real removal.
+      kube delete dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" --wait=false 2>/dev/null || true
+      if ! kube wait --for=delete dpu/"${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" --timeout=20s 2>/dev/null; then
+        info "DPU still terminating — removing dpu-protection finalizer"
+        kube patch dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
+          --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true
+        kube wait --for=delete dpu/"${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" --timeout=30s 2>/dev/null || true
+      fi
+      # Also remove the BF3 node from TenantControlPlane so step 10b rshim-install
+      # doesn't see "already joined" and skip the flash.
+      _tc_cfg=$(kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" \
+        -n "${DPF_NAMESPACE}" -o jsonpath='{.data.admin\.conf}' 2>/dev/null | base64 -d || true)
+      if [[ -n "$_tc_cfg" ]]; then
+        echo "$_tc_cfg" > ${HOME}/dpu-tc-kubeconfig-step8
+        kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig-step8 delete node "${SERVER_NAME}-dpu" \
+          --ignore-not-found 2>/dev/null \
+          && info "TC node '${SERVER_NAME}-dpu' removed (rshim-install will proceed)" \
+          || true
+      fi
+    fi
+    kube delete dpuflavor "${DPU_FLAVOR_NAME}" -n dpf-operator-system
+    kube wait --for=delete dpuflavor/"${DPU_FLAVOR_NAME}" -n dpf-operator-system --timeout=30s 2>/dev/null || true
+  fi
+  # Substitute per-server IPs + flavor name before applying:
+  #   metadata.name → ${DPU_FLAVOR_NAME}  (per-server, so multiple DPUs don't collide)
+  #   X86_HOST_IP  — x86 relay host for the SSH tunnel (iptables DNAT target)
+  #   BFB_REGISTRY_IP — DPF VM IP (kubeadm join endpoint before ClusterIP takes over)
+  _flavor_tmp=$(mktemp)
+  sed -e "s|^  name: bf3-hbn|  name: ${DPU_FLAVOR_NAME}|" \
+      -e "s|X86_HOST_IP=\"[^\"]*\"|X86_HOST_IP=\"${X86_HOST_IP}\"|g" \
+      -e "s|-d 10\\.4\\.5\\.136 -p tcp --dport 6443|-d ${BFB_REGISTRY_IP} -p tcp --dport 6443|g" \
+      "${MANIFESTS_DIR}/04-dpuflavor.yaml" > "${_flavor_tmp}"
+  kube apply -f "${_flavor_tmp}"
+  rm -f "${_flavor_tmp}"
+  ok "DPUFlavor '${DPU_FLAVOR_NAME}' applied (X86_HOST_IP=${X86_HOST_IP}, DPF_VM=${BFB_REGISTRY_IP})"
 fi
 
 # ─── Step 9: DPUCluster ───────────────────────────────────────────────────────
@@ -621,6 +750,32 @@ if kube get dpucluster ${SERVER_NAME}-dpu-cluster -n "${DPF_NAMESPACE}" &>/dev/n
 else
   sed "s|SERVER_NAME|${SERVER_NAME}|g" "${MANIFESTS_DIR}/08-dpucluster.yaml" | kube apply -f -
   ok "DPUCluster '${SERVER_NAME}-dpu-cluster' created"
+fi
+
+# DPF builds the Kamaji TenantControlPlane from the DPUCluster, but on this lab's
+# DPF/Kamaji it does NOT populate spec.networkProfile.address. Without it Kamaji
+# errors "the actual resource doesn't have yet a valid IP address", the TCP never
+# goes Ready → no kubeadm token → DPU stuck in 'Initialize Interface' (no bfcfg).
+# Patch the address to the DPF VM IP so Kamaji can build the control plane.
+# (Also resolves the multi-DPU case where a NodePort 6443 clash had to be cleared first.)
+if [[ "${DRY_RUN}" != "true" ]]; then
+  _tcp_patched=""
+  for _i in $(seq 1 30); do
+    if kube get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" &>/dev/null; then
+      _cur_addr=$(kube get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+        -o jsonpath='{.spec.networkProfile.address}' 2>/dev/null || echo "")
+      if [[ -z "${_cur_addr}" ]]; then
+        kube patch tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+          --type=merge -p "{\"spec\":{\"networkProfile\":{\"address\":\"${BFB_REGISTRY_IP}\"}}}" \
+          && ok "Patched TenantControlPlane networkProfile.address=${BFB_REGISTRY_IP}"
+      else
+        ok "TenantControlPlane networkProfile.address already set (${_cur_addr})"
+      fi
+      _tcp_patched="yes"; break
+    fi
+    sleep 2
+  done
+  [[ -z "${_tcp_patched}" ]] && warn "TenantControlPlane not created within 60s — address not patched; readiness wait below may still catch it"
 fi
 
 # ─── Step 9b: Post-DPUCluster setup ──────────────────────────────────────────
@@ -649,10 +804,10 @@ if [[ "${DRY_RUN}" != "true" ]]; then
 
   # Fetch DPU cluster kubeconfig
   kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
-    -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/dpu-tc-kubeconfig 2>/dev/null || true
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
 
-  if [[ -s /tmp/dpu-tc-kubeconfig ]]; then
-    dkube() { kubectl --kubeconfig /tmp/dpu-tc-kubeconfig "$@"; }
+  if [[ -s ${HOME}/dpu-tc-kubeconfig ]]; then
+    dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
 
     # 1. Register DPU cluster with ArgoCD (required for DPUService deployment)
     if kube get secret "${SERVER_NAME}-dpu-cluster" -n argocd &>/dev/null; then
@@ -661,19 +816,19 @@ if [[ "${DRY_RUN}" != "true" ]]; then
       info "  Registering DPU cluster with ArgoCD..."
       CA=$(python3 -c "
 import yaml, sys
-with open('/tmp/dpu-tc-kubeconfig') as f:
+with open('${HOME}/dpu-tc-kubeconfig') as f:
     kc = yaml.safe_load(f)
 print(kc['clusters'][0]['cluster']['certificate-authority-data'])
 ")
       CERT=$(python3 -c "
 import yaml, sys
-with open('/tmp/dpu-tc-kubeconfig') as f:
+with open('${HOME}/dpu-tc-kubeconfig') as f:
     kc = yaml.safe_load(f)
 print(kc['users'][0]['user'].get('client-certificate-data',''))
 ")
       KEY=$(python3 -c "
 import yaml, sys
-with open('/tmp/dpu-tc-kubeconfig') as f:
+with open('${HOME}/dpu-tc-kubeconfig') as f:
     kc = yaml.safe_load(f)
 print(kc['users'][0]['user'].get('client-key-data',''))
 ")
@@ -813,7 +968,7 @@ fi
 if kube get dpudevice ${SERVER_NAME}-bf3 -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPUDevice '${SERVER_NAME}-bf3' already exists"
 else
-  TMPFILE=$(mktemp /tmp/dpudevice-XXXXXX.yaml)
+  TMPFILE=$(mktemp "${HOME}/dpudevice-XXXXXX.yaml")
   sed \
     -e "s|SERVER_NAME|${SERVER_NAME}|g" \
     -e "s|BF3_SERIAL|${BF3_SERIAL}|g" \
@@ -831,11 +986,12 @@ fi
 if kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPU '${SERVER_NAME}-dpu' already exists"
 else
-  TMPFILE=$(mktemp /tmp/dpu-XXXXXX.yaml)
+  TMPFILE=$(mktemp "${HOME}/dpu-XXXXXX.yaml")
   sed \
     -e "s|SERVER_NAME|${SERVER_NAME}|g" \
     -e "s|BF3_SERIAL|${BF3_SERIAL}|g" \
     -e "s|BF3_BMC_IP|${BF3_BMC_IP}|g" \
+    -e "s|dpuFlavor: bf3-hbn|dpuFlavor: ${DPU_FLAVOR_NAME}|g" \
     "${MANIFESTS_DIR}/07-dpu.yaml" > "${TMPFILE}"
   if [[ "${DRY_RUN}" == "true" ]]; then
     info "[dry-run] would apply DPU (serial: ${BF3_SERIAL}, bmcIP: ${BF3_BMC_IP})"
@@ -854,11 +1010,14 @@ fi
 if [[ "${USE_RSHIM}" == "true" ]]; then
   info "Step 10b/11 — rshim BFB flash via x86 host (${X86_HOST_IP})"
   # Define dkube early so it's available for the already-joined check below
-  kube get secret s4-dpu-cluster-admin-kubeconfig -n "${DPF_NAMESPACE}" \
-    -o jsonpath='{.data.admin\.conf}' 2>/dev/null | base64 -d > /tmp/dpu-tc-kubeconfig 2>/dev/null || true
-  dkube() { kubectl --kubeconfig /tmp/dpu-tc-kubeconfig "$@"; }
-  _existing_nodes=$(dkube get nodes --no-headers 2>/dev/null | wc -l || echo 0)
-  if [[ "$_existing_nodes" -gt 0 ]]; then
+  kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
+    -o jsonpath='{.data.admin\.conf}' 2>/dev/null | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
+  dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
+  # NOTE: with `set -o pipefail`, a failing kubectl makes the pipeline fail; using
+  # `|| echo 0` would append a second "0" to wc's output ("0\n0") and break the [[ ]].
+  _existing_nodes=$(dkube get nodes --no-headers 2>/dev/null | wc -l || true)
+  _existing_nodes=${_existing_nodes:-0}
+  if [[ "${_existing_nodes}" -gt 0 ]]; then
     skip "BF3 already joined TenantControlPlane — skipping rshim flash"
     dkube get nodes
   elif [[ "${DRY_RUN}" == "true" ]]; then
@@ -891,8 +1050,8 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       && fail "bfcfg not ready after 600s — check: kubectl describe dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
 
     # Refresh TenantControlPlane kubeconfig (fail if not available yet)
-    kube get secret s4-dpu-cluster-admin-kubeconfig -n "${DPF_NAMESPACE}" \
-      -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/dpu-tc-kubeconfig \
+    kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
+      -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig \
       || fail "Cannot get TenantControlPlane kubeconfig — is DPUCluster Ready?"
 
     # Create a fresh bootstrap token (DPF's original bfcfg token expires after 24h)
@@ -948,7 +1107,7 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       info "  waiting for BF3 node... ${elapsed}s/${DPU_TIMEOUT}s"
     done
     [[ $elapsed -ge $DPU_TIMEOUT ]] \
-      && fail "BF3 did not join TenantControlPlane after ${DPU_TIMEOUT}s — check: kubectl get nodes --kubeconfig /tmp/dpu-tc-kubeconfig"
+      && fail "BF3 did not join TenantControlPlane after ${DPU_TIMEOUT}s — check: kubectl get nodes --kubeconfig ${HOME}/dpu-tc-kubeconfig"
 
     # BF3 joined — patch DPU status to Ready so DPF can proceed with DPUService deployment.
     # Redfish 404 (same-version skip) left DPU in Error/FailToInstall; rshim flash remedied it.
@@ -1014,20 +1173,116 @@ else
   ok "DPU '${SERVER_NAME}-dpu' phase: Ready"
 fi
 
+# ─── HBN DaemonSet deployment (--hbn) ────────────────────────────────────────
+# Deploys doca-hbn as a Kubernetes DaemonSet on the BF3 TenantControlPlane.
+# NO NGC API key needed — uses image already on the BF3 from standalone bringup.
+#
+# Equivalent to: sudo ./scripts/bringup_hbn_bf3.sh --vfs 8
+# Topology: 2 PFs, 4 VFs per PF (8 VFs total)
+#   Uplinks:  p0, p1        → ToR switch
+#   Host reps: pf0hpf, pf1hpf → x86 host (PF0, PF1)
+#   VF reps:  pf0vf0-3, pf1vf0-3 → workload VMs
+#
+# IMPORTANT: BF3 must be RE-FLASHED with the updated DPUFlavor (04-dpuflavor.yaml)
+# for hugepages, nvconfig, mlnx-sf.conf, sfc.conf to take effect.
+# Run bringup_dpf.sh --rshim-install again after updating the DPUFlavor.
+if [[ "${DEPLOY_HBN}" == "true" ]]; then
+  echo ""
+  echo "============================================================"
+  echo "  HBN Deployment (doca-hbn DaemonSet on BF3)"
+  echo "============================================================"
+  echo ""
+
+  # Refresh DPU cluster kubeconfig
+  kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
+  if [[ ! -s ${HOME}/dpu-tc-kubeconfig ]]; then
+    fail "DPU cluster kubeconfig not available — is BF3 joined and TenantControlPlane Ready?"
+  fi
+  dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
+
+  info "Step HBN-1 — Creating hostPath directories on BF3"
+  # These are created by bringup_hbn_bf3.sh Step 3 / DPUFlavor cloud-init.
+  # Ensure they exist (idempotent).
+  BF3_OOB_PASS_HBN="Aviz@AIF12345"
+  for dir in \
+    /var/lib/hbn/etc/nvue.d \
+    /var/lib/hbn/etc/frr \
+    /var/lib/hbn/etc/network \
+    /var/lib/hbn/etc/cumulus \
+    /var/lib/hbn/etc/hbn-users \
+    /var/lib/hbn/etc/supervisor/conf.d \
+    /var/lib/hbn/var/lib/nvue \
+    /var/lib/hbn/var/support \
+    /var/log/doca/hbn; do
+    sshpass -p "${BF3_OOB_PASS_HBN}" \
+      ssh -o StrictHostKeyChecking=no "ubuntu@${BF3_OOB_IP}" \
+      "sudo mkdir -p ${dir}" 2>/dev/null || true
+  done
+  ok "hostPath directories ready on BF3"
+
+  info "Step HBN-2 — Deploying doca-hbn DaemonSet to TenantControlPlane"
+  if dkube get daemonset doca-hbn -n doca-hbn &>/dev/null; then
+    skip "doca-hbn DaemonSet already exists in TenantControlPlane"
+  else
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      info "[dry-run] would apply 09-hbn-daemonset.yaml to TenantControlPlane"
+    else
+      dkube apply -f "${MANIFESTS_DIR}/09-hbn-daemonset.yaml" \
+        && ok "doca-hbn DaemonSet deployed to TenantControlPlane" \
+        || fail "Failed to deploy doca-hbn DaemonSet"
+    fi
+  fi
+
+  if [[ "${DRY_RUN}" != "true" ]]; then
+    info "  Waiting for doca-hbn pod to be Running (up to 10 min)..."
+    elapsed=0
+    while [[ $elapsed -lt 600 ]]; do
+      pod_status=$(dkube get pods -n doca-hbn --no-headers 2>/dev/null \
+        | grep doca-hbn | awk '{print $3}' | head -1 || echo "")
+      [[ "$pod_status" == "Running" ]] && { ok "doca-hbn pod: Running"; break; }
+      sleep 15; elapsed=$((elapsed + 15))
+      info "  doca-hbn pod status: ${pod_status:-Pending} (${elapsed}s/600s)"
+    done
+    if [[ $elapsed -ge 600 ]]; then
+      warn "doca-hbn not Running after 10 min"
+      warn "Check: kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig describe pods -n doca-hbn"
+    fi
+
+    # Bring up interfaces inside container (same as bringup_hbn_bf3.sh Step 11)
+    info "  Bringing up HBN interfaces inside container..."
+    CONT=$(dkube get pods -n doca-hbn --no-headers 2>/dev/null \
+      | grep "doca-hbn.*Running" | awk '{print $1}' | head -1 || echo "")
+    if [[ -n "${CONT}" ]]; then
+      for iface in p0_if p1_if pf0hpf_if pf1hpf_if \
+                   pf0vf0_if pf0vf1_if pf0vf2_if pf0vf3_if \
+                   pf1vf0_if pf1vf1_if pf1vf2_if pf1vf3_if; do
+        dkube exec -n doca-hbn "${CONT}" -- \
+          ip link set "${iface}" up 2>/dev/null && true || true
+      done
+      ok "HBN interfaces brought up"
+    else
+      warn "doca-hbn pod not Running — skipping interface bring-up"
+    fi
+  fi
+fi
+
 echo ""
 echo "============================================================"
 echo "  DPF Bringup Complete"
 echo "============================================================"
 echo ""
-info "BF3 is now a managed DPU node. Next steps:"
+info "BF3 is now a managed DPU node."
 echo ""
-echo "  Check status:    ./status_dpf.sh"
+echo "  Check status:    ./dpf/scripts/status_dpf.sh"
 echo ""
 echo "  Get DPU cluster kubeconfig:"
-echo "    kubectl get secret -n dpf-operator-system s4-dpu-cluster-admin-kubeconfig \\"
-echo "      -o jsonpath='{.data.admin\\.conf}' | base64 -d > /tmp/dpu-kubeconfig"
-echo "    kubectl get nodes --kubeconfig /tmp/dpu-kubeconfig"
+echo "    kubectl get secret -n ${DPF_NAMESPACE} ${SERVER_NAME}-dpu-cluster-admin-kubeconfig \\"
+echo "      -o jsonpath='{.data.admin\\.conf}' | base64 -d > \${HOME}/dpu-kubeconfig"
+echo "    kubectl get nodes --kubeconfig \${HOME}/dpu-kubeconfig"
 echo ""
-echo "  Deploy HBN (future step):"
-echo "    kubectl apply -f dpf/manifests/hbn/  --kubeconfig /tmp/dpu-kubeconfig"
-echo ""
+if [[ "${DEPLOY_HBN}" != "true" ]]; then
+  echo "  Deploy HBN (no NGC key needed):"
+  echo "    $0 --hbn"
+  echo ""
+fi

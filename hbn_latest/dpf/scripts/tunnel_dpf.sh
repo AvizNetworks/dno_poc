@@ -57,18 +57,46 @@
 
 set -euo pipefail
 
-# ─── Configuration ────────────────────────────────────────────────────────────
+# ─── Configuration (defaults = S4; override per server via flags) ───────────────
+SERVER_NAME="s4"                 # DPU cluster name prefix → <server>-dpu-cluster svc
 X86_HOST_IP="10.20.13.207"       # x86 host — on same subnet as BF3, reachable from DPF VM
 X86_HOST_USER="aviz"
 X86_HOST_PASS="aviz@123"
 
-KAMAJI_CLUSTER_IP="10.43.62.50"  # Kamaji TenantControlPlane ClusterIP (k3s internal)
+KAMAJI_CLUSTER_IP=""             # auto-discovered from <server>-dpu-cluster svc if empty
 KAMAJI_PORT="6443"               # Kamaji API server port
 
 DPF_VM_IP="10.4.5.136"          # DPF Operator VM (this machine) — in kubeadm bfcfg endpoint
 BF3_OOB_IP="10.20.13.249"       # BF3 OOB IP
 BF3_OOB_PASS="Aviz@AIF12345"    # BF3 ubuntu password
+DPF_NAMESPACE="dpf-operator-system"
+KUBECONFIG_PATH="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
+[[ -r "${KUBECONFIG_PATH}" ]] || KUBECONFIG_PATH="${HOME}/.kube/config"
 # ──────────────────────────────────────────────────────────────────────────────
+
+# ─── Per-server presets ─────────────────────────────────────────────────────────
+# Flags override these. Example: ./tunnel_dpf.sh --server s1 start
+apply_server_preset() {
+  case "${SERVER_NAME}" in
+    s1) X86_HOST_IP="10.20.13.13";  X86_HOST_USER="admin"; X86_HOST_PASS="Aviz@AIF123";
+        BF3_OOB_IP="10.20.13.247";  BF3_OOB_PASS="Aviz@AIF12345" ;;
+    s2) X86_HOST_IP="10.20.13.12";  X86_HOST_USER="admin"; X86_HOST_PASS="Aviz@AIF123";
+        BF3_OOB_IP="10.20.13.228";  BF3_OOB_PASS="Aviz@AIF12345" ;;
+    s4) X86_HOST_IP="10.20.13.207"; X86_HOST_USER="aviz";  X86_HOST_PASS="aviz@123";
+        BF3_OOB_IP="10.20.13.249";  BF3_OOB_PASS="Aviz@AIF12345" ;;
+  esac
+}
+
+discover_kamaji_ip() {
+  [[ -n "${KAMAJI_CLUSTER_IP}" ]] && return 0
+  local ip
+  ip=$(KUBECONFIG="${KUBECONFIG_PATH}" kubectl get svc "${SERVER_NAME}-dpu-cluster" \
+        -n "${DPF_NAMESPACE}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+  [[ -n "${ip}" && "${ip}" != "None" ]] \
+    || fail "Could not auto-discover Kamaji ClusterIP from svc '${SERVER_NAME}-dpu-cluster' (ns ${DPF_NAMESPACE}). Is the DPUCluster created yet? Pass --kamaji-ip <IP> explicitly."
+  KAMAJI_CLUSTER_IP="${ip}"
+  info "Discovered Kamaji ClusterIP: ${KAMAJI_CLUSTER_IP} (svc ${SERVER_NAME}-dpu-cluster)"
+}
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
@@ -89,6 +117,7 @@ cmd_start() {
   echo ""
 
   command -v sshpass &>/dev/null || fail "sshpass not installed — apt install sshpass"
+  discover_kamaji_ip
 
   # Step 1: Enable GatewayPorts on x86 host sshd
   # By default, SSH reverse tunnels only bind on 127.0.0.1 of the remote host.
@@ -98,15 +127,16 @@ cmd_start() {
   if _ssh 'grep -q "^GatewayPorts yes" /etc/ssh/sshd_config'; then
     ok "GatewayPorts already enabled"
   else
-    _ssh 'echo "aviz@123" | sudo -S sed -i "s/#GatewayPorts no/GatewayPorts yes/" /etc/ssh/sshd_config'
+    _ssh "echo '${X86_HOST_PASS}' | sudo -S sed -i 's/#GatewayPorts no/GatewayPorts yes/' /etc/ssh/sshd_config"
     _ssh 'grep -q "^GatewayPorts yes" /etc/ssh/sshd_config' \
       || fail "Failed to set GatewayPorts — check /etc/ssh/sshd_config on ${X86_HOST_IP}"
-    _ssh 'echo "aviz@123" | sudo -S systemctl restart sshd'
+    _ssh "echo '${X86_HOST_PASS}' | sudo -S sh -c 'systemctl restart ssh 2>/dev/null || systemctl restart sshd'"
     ok "GatewayPorts enabled and sshd restarted"
   fi
 
-  # Step 2: Kill any existing tunnel on this port
-  pkill -f "ssh.*-R 0.0.0.0:${KAMAJI_PORT}" 2>/dev/null || true
+  # Step 2: Kill only THIS server's existing tunnel (match destination ClusterIP,
+  # not just the port) so a second DPU's tunnel on the same VM is left alone.
+  pkill -f "ssh.*-R 0.0.0.0:${KAMAJI_PORT}:${KAMAJI_CLUSTER_IP}:" 2>/dev/null || true
 
   # Step 3: Open reverse tunnel
   # -N         : no remote command — tunnel only
@@ -147,21 +177,23 @@ cmd_start() {
 }
 
 cmd_stop() {
-  info "Stopping reverse tunnel..."
-  if pkill -f "ssh.*-R 0.0.0.0:${KAMAJI_PORT}" 2>/dev/null; then
+  discover_kamaji_ip
+  info "Stopping reverse tunnel for ${SERVER_NAME} (Kamaji ${KAMAJI_CLUSTER_IP})..."
+  if pkill -f "ssh.*-R 0.0.0.0:${KAMAJI_PORT}:${KAMAJI_CLUSTER_IP}:" 2>/dev/null; then
     ok "Tunnel process killed"
   else
-    warn "No tunnel process found"
+    warn "No tunnel process found for ${SERVER_NAME}"
   fi
 }
 
 cmd_status() {
+  discover_kamaji_ip
   echo ""
-  echo "--- Tunnel process (this DPF VM) ---"
-  if pgrep -a -f "ssh.*-R 0.0.0.0:${KAMAJI_PORT}" 2>/dev/null; then
+  echo "--- Tunnel process (this DPF VM) for ${SERVER_NAME} → ${KAMAJI_CLUSTER_IP} ---"
+  if pgrep -a -f "ssh.*-R 0.0.0.0:${KAMAJI_PORT}:${KAMAJI_CLUSTER_IP}:" 2>/dev/null; then
     ok "SSH tunnel process running"
   else
-    warn "No SSH tunnel process found"
+    warn "No SSH tunnel process found for ${SERVER_NAME}"
   fi
 
   echo ""
@@ -243,18 +275,52 @@ cmd_bf3() {
   echo ""
 }
 
-case "${1:-}" in
+ACTION=""
+# Explicit-override holders (empty = not set on command line)
+_o_x86_host=""; _o_x86_user=""; _o_x86_pass=""; _o_bf3_oob=""; _o_bf3_pass=""; _o_dpf_vm=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --server)    SERVER_NAME="$2"; shift 2 ;;
+    --x86-host)  _o_x86_host="$2"; shift 2 ;;
+    --x86-user)  _o_x86_user="$2"; shift 2 ;;
+    --x86-pass)  _o_x86_pass="$2"; shift 2 ;;
+    --bf3-oob)   _o_bf3_oob="$2"; shift 2 ;;
+    --bf3-pass)  _o_bf3_pass="$2"; shift 2 ;;
+    --kamaji-ip) KAMAJI_CLUSTER_IP="$2"; shift 2 ;;
+    --dpf-vm)    _o_dpf_vm="$2"; shift 2 ;;
+    start|stop|status|bf3) ACTION="$1"; shift ;;
+    *) echo "Unknown argument: $1"; exit 1 ;;
+  esac
+done
+
+# Preset first (by --server), then explicit flags win.
+apply_server_preset
+[[ -n "${_o_x86_host}" ]] && X86_HOST_IP="${_o_x86_host}"
+[[ -n "${_o_x86_user}" ]] && X86_HOST_USER="${_o_x86_user}"
+[[ -n "${_o_x86_pass}" ]] && X86_HOST_PASS="${_o_x86_pass}"
+[[ -n "${_o_bf3_oob}"  ]] && BF3_OOB_IP="${_o_bf3_oob}"
+[[ -n "${_o_bf3_pass}" ]] && BF3_OOB_PASS="${_o_bf3_pass}"
+[[ -n "${_o_dpf_vm}"   ]] && DPF_VM_IP="${_o_dpf_vm}"
+
+case "${ACTION}" in
   start)  cmd_start ;;
   stop)   cmd_stop  ;;
   status) cmd_status ;;
   bf3)    cmd_bf3   ;;
   *)
-    echo "Usage: $0 {start|stop|status|bf3}"
+    echo "Usage: $0 [--server s1|s2|s4] [--x86-host IP] [--x86-user U] [--x86-pass P]"
+    echo "          [--bf3-oob IP] [--bf3-pass P] [--kamaji-ip IP] [--dpf-vm IP] {start|stop|status|bf3}"
     echo ""
     echo "  start   — enable GatewayPorts on x86 host and open reverse SSH tunnel"
     echo "  stop    — kill the tunnel process"
     echo "  status  — check tunnel health"
     echo "  bf3     — print iptables DNAT commands to run on the BF3"
+    echo ""
+    echo "  --server applies a preset (x86 host/user/pass + BF3 OOB). Explicit flags override."
+    echo "  Kamaji ClusterIP is auto-discovered from <server>-dpu-cluster svc unless --kamaji-ip given."
+    echo ""
+    echo "  Example (S1 from DPF VM 10.4.5.136):"
+    echo "    ./tunnel_dpf.sh --server s1 start"
     echo ""
     echo "Run 'start' before bringup_dpf.sh --rshim-install on a fresh BF3."
     exit 1
