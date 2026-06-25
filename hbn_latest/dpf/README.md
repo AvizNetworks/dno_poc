@@ -2,6 +2,10 @@
 
 NVIDIA DPF Operator v25.10.1 — Kubernetes-native lifecycle management for BlueField-3 DPUs.
 
+> **Bringing up a DPU? Start with the runbook → [`QUICKSTART.md`](QUICKSTART.md)** — linear,
+> copy-paste steps with what to expect (incl. the BF3 first-boot manual steps). This README is
+> the reference (architecture, every known issue, the `--upgrade`/recovery flows).
+
 ---
 
 ## What DPF Does
