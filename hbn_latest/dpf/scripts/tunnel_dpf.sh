@@ -82,7 +82,7 @@ apply_server_preset() {
         BF3_OOB_IP="10.20.13.247";  BF3_OOB_PASS="Aviz@AIF12345" ;;
     s2) X86_HOST_IP="10.20.13.12";  X86_HOST_USER="admin"; X86_HOST_PASS="Aviz@AIF123";
         BF3_OOB_IP="10.20.13.228";  BF3_OOB_PASS="Aviz@AIF12345" ;;
-    s4) X86_HOST_IP="10.20.13.207"; X86_HOST_USER="aviz";  X86_HOST_PASS="aviz@123";
+    s4) X86_HOST_IP="10.20.13.226"; X86_HOST_USER="aviz";  X86_HOST_PASS="aviz@123";
         BF3_OOB_IP="10.20.13.249";  BF3_OOB_PASS="Aviz@AIF12345" ;;
   esac
 }

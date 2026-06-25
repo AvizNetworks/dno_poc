@@ -8,7 +8,7 @@ spec:
   bmcIP: "BF3_BMC_IP"
   serialNumber: "BF3_SERIAL"
   bfb: doca-3.3.0
-  dpuFlavor: bf3-base
+  dpuFlavor: bf3-hbn
   dpuNodeName: SERVER_NAME-node
   dpuDeviceName: SERVER_NAME-bf3
   nodeEffect:

@@ -23,7 +23,7 @@ DPF Operator VM (10.4.5.136)
   └── bfb-registry (nginx, port 8080 — serves BFB to BMC)
 
 S4 Server
-  ├── x86 host   10.20.13.207  (aviz / aviz@123)      — NOT in k8s
+  ├── x86 host   10.20.13.226  (aviz / aviz@123)      — NOT in k8s (BF3 rshim + SR-IOV VFs)
   ├── BF3 OOB    10.20.13.249  (ubuntu / Aviz@AIF12345) — joins DPU cluster
   └── BF3 BMC    10.20.13.250  (root / Aviz@AIF12345)   — Redfish endpoint
 
@@ -42,7 +42,9 @@ All scripts run from the **DPF Operator VM** (`10.4.5.136`). No sudo required.
 |---|---|
 | `scripts/bringup_dpf.sh` | End-to-end idempotent provisioning |
 | `scripts/status_dpf.sh` | Health check — all DPF components |
-| `scripts/tunnel_dpf.sh` | SSH tunnel for cross-subnet kubeadm join |
+| `scripts/tunnel_dpf.sh` | SSH tunnel for cross-subnet kubeadm join (per-server presets, Kamaji IP auto-discovery) |
+| `scripts/setup_host_vfs.sh` | Run on the **x86 host**: enable SR-IOV VFs + rename to `vf0..vfN` (auto-detects the BF3 PFs; errors if >1 BF3) |
+| `scripts/explain_stack.sh` | Generate an educational HTML map of the stack (cluster→node→pod→container→namespace→interface→data plane) with live values |
 
 ---
 
@@ -85,21 +87,30 @@ Use `--upgrade` mode — handles the Helm upgrade plus all post-upgrade manual f
 # Place BFB file on DPF VM
 scp bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb dpu-vm@10.4.5.136:/opt/bfb/
 
-# Place BFB file on x86 host (for rshim flash)
-scp bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb aviz@10.20.13.207:~/
+# Place BFB file on x86 host (for rshim flash) — S4 host is 10.20.13.226
+scp bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb aviz@10.20.13.226:~/
 
-# Step 1 — set up SSH tunnel (needed: DPF VM on 10.4.5.x, BF3 on 10.20.13.x)
-./dpf/scripts/tunnel_dpf.sh start
+# Step 0 — confirm the operator is healthy BEFORE provisioning (v25.10.1)
+kubectl get dpfoperatorconfig -n dpf-operator-system   # must be Ready=True
 
-# Step 2 — run BF3-side iptables rule (print and paste into BF3 terminal)
-./dpf/scripts/tunnel_dpf.sh bf3
+# Step 1 — provision (creates the DPUCluster so the tunnel can find the Kamaji IP)
+./dpf/scripts/bringup_dpf.sh --server s4 \
+  --bmc-ip 10.20.13.250 --oob-ip 10.20.13.249 --serial MT2437600HGY \
+  --x86-host 10.20.13.226 --x86-user aviz --x86-pass aviz@123 --rshim-install --hbn
 
-# Step 3 — provision
-./dpf/scripts/bringup_dpf.sh --rshim-install
+# Step 2 — once s4-dpu-cluster exists, open the cross-subnet tunnel (auto-discovers Kamaji IP)
+./dpf/scripts/tunnel_dpf.sh --server s4 start
+./dpf/scripts/tunnel_dpf.sh --server s4 bf3    # prints BF3 iptables rules (auto-applied by sfc.service too)
 
-# Step 4 — check
+# Step 3 — check
 ./dpf/scripts/status_dpf.sh
+
+# Step 4 — host SR-IOV VFs (on the x86 host 10.20.13.226)
+sudo ./dpf/scripts/setup_host_vfs.sh           # vf0..vf7
 ```
+
+> See **"v25.10.1 provisioning changes"** and **"BF3 first-boot operational gotchas"** below — a fresh
+> BF3 may need a one-time console password, `dhclient oob_net0`, and `systemctl enable --now sfc.service`.
 
 ---
 
@@ -130,7 +141,7 @@ BF3_OOB_IP="10.20.13.249"    # BF3 OOB management IP
 BF3_SERIAL="MT2437600HGY"    # from: dmidecode -t system | grep Serial (on x86 host)
 BFB_FILE="/opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 BFB_REGISTRY_IP="10.4.5.136" # this DPF VM
-X86_HOST_IP="10.20.13.207"   # x86 host with PCIe rshim to BF3 (for --rshim-install)
+X86_HOST_IP="10.20.13.226"   # S4 x86 host with PCIe rshim to BF3 (pass --x86-host per server)
 ```
 
 ---
@@ -283,22 +294,236 @@ echo "New token: ${TOKEN_ID}.${TOKEN_SECRET}"
 
 ---
 
+## v25.10.1 provisioning changes (validated on S4, 2026-06)
+
+The v25.7.0 → v25.10.1 upgrade changed the provisioning flow in several breaking ways.
+`bringup_dpf.sh` and the manifests now handle all of these automatically — documented here so
+the behavior is understood and recognizable.
+
+### 5. Operator must be fully Ready, or clusters stall at `Pending`
+**Symptom:** new `DPUCluster` stuck `phase: Pending`; cluster-manager logs `skip Pending cluster`;
+no TenantControlPlane is ever created.
+**Cause:** a half-finished operator upgrade (e.g. `servicechainset` CrashLoopBackOff, sub-controllers
+still tagged v25.7.0) leaves `DPFOperatorConfig` `Ready=False` (`PreUpgradeValidationReady`/
+`SystemComponentsReady` failing). While not Ready, the cluster-manager defers all new clusters.
+**Fix:** finish the upgrade (`bringup_dpf.sh --upgrade`) or, if wedged, do a **clean operator reinstall**
+(`helm uninstall dpf-operator` + delete `DPFOperatorConfig` and DPF CRs with finalizers stripped, then
+re-run `bringup_dpf.sh` — Step 1 reinstalls a fresh v25.10.1 operator). Always confirm
+`kubectl get dpfoperatorconfig -n dpf-operator-system` shows `Ready=True` before provisioning.
+
+### 6. DPUNode needs `nodeRebootMethod: external` (else controller panics)
+**Symptom:** DPU stuck `phase: Initializing`, reason `DPUInstallInterfaceNotProvided`; provisioning
+controller logs a nil-pointer **panic** in `HandleRebootSync` for the DPUNode.
+**Cause:** v25.10.1 defaults `nodeRebootMethod` to `hostAgent`, which assumes an in-cluster host agent.
+OOB setups (x86 host NOT in k8s) have none → panic → DPU never initializes.
+**Fix (in `05-dpunode.yaml`):**
+```yaml
+spec:
+  nodeRebootMethod:
+    external: {}
+```
+
+### 7. DPUNode must list its DPUDevice (`spec.dpus`)
+**Symptom:** DPU stuck `Initialize Interface`, reason `DPUDeviceNotReady`; DPUDevice condition
+`NodeAttached=False` ("No DPUNode found").
+**Cause:** v25.10.1 requires the DPUNode to reference its attached device(s).
+**Fix (in `05-dpunode.yaml`):**
+```yaml
+spec:
+  dpus:
+    - name: SERVER_NAME-bf3
+```
+
+### 8. Per-server DPUFlavor name (multi-DPU collision)
+**Symptom:** `DPUFlavor is being referred to by DPU(s) [...], you must delete the DPU(s) first`.
+**Cause:** an immutable `DPUFlavor` shared across DPUs can't be recreated without deleting the other DPU.
+**Fix:** `bringup_dpf.sh` names the flavor per server (`<server>-bf3-hbn`) so each DPU is independent.
+
+### 9. bfcfg URL double `/bfb/` (404 on rshim deploy)
+**Symptom:** `Failed to deploy bfcfg — .../bfb//bfb/bfcfg/...` (404).
+**Cause:** v25.10.1 reports `status.bfCFGFile` as an absolute path (`/bfb/bfcfg/...`); the old script
+prepended `/bfb/` again. `bringup_dpf.sh` now normalizes the path.
+
+### 10. Stale ArgoCD cluster secret after a DPUCluster recreate → no CNI
+**Symptom:** DPUService Applications `Sync: Unknown`; flannel/multus never deploy to the DPU cluster;
+pods stuck `ContainerCreating` with `plugin type="loopback" failed (add): missing network name`.
+**Cause:** deleting+recreating a `DPUCluster` gives Kamaji a new CA/cert/key, but the ArgoCD cluster
+secret (`<server>-dpu-cluster` in `argocd`) still holds the old creds → ArgoCD can't reach the cluster.
+**Fix:** `bringup_dpf.sh` Step 9b now **always refreshes** that secret (was skip-if-exists). Manual:
+delete the secret and re-run, or rebuild it from the fresh `*-dpu-cluster-admin-kubeconfig`.
+
+### 11. BF3 first-boot operational gotchas (hands-on, not script bugs)
+After a fresh flash the BF3 may need three one-time things on first boot:
+1. **First-login password prompt** on the console — the BF3 sits at it and looks "hung" (OOB SSH
+   refused, BMC `BootProgress=OEM`, console quiet). It isn't hung — set the password (default
+   `ubuntu`/`Aviz@AIF12345`) on the BMC ARM console.
+2. **`oob_net0` has no IP** — first boot can leave it down. On the BF3: `sudo dhclient oob_net0`.
+3. **`sfc.service` ships disabled** — it must run to apply the tunnel iptables + wire `br-hbn`.
+   On the BF3: `sudo systemctl enable --now sfc.service`, then `sudo systemctl restart kubeadm-join.service`.
+   (Also: the reflash changes the BF3 SSH host key — clear it: `ssh-keygen -R 10.20.13.249`.)
+
+---
+
+## Host SR-IOV VFs (after HBN is up)
+
+Run on the **x86 host** (not the BF3), after the BF3 is flashed with `NUM_OF_VFS` set:
+```bash
+sudo ./dpf/scripts/setup_host_vfs.sh            # auto-detect BF3 PFs → vf0..vf7
+sudo ./dpf/scripts/setup_host_vfs.sh --persist  # survive reboot (systemd oneshot)
+```
+Auto-detects the BlueField-3 PFs by PCI device id `0xa2dc` (ignores standalone ConnectX-7), and
+**refuses to run if more than one BF3 is present** (avoids ambiguous VF naming).
+
+---
+
+## Team Handoff: Provisioning a New BF3
+
+### Server Reference Table
+
+| Server | BF3 OOB (ARM) | BF3 BMC | x86 Host | Notes |
+|---|---|---|---|---|
+| S1 | `10.20.13.247` ubuntu/Aviz@AIF12345 | `10.20.13.216` root/Aviz@AIF12345 | `10.20.13.13` admin/Aviz@AIF123 | — |
+| S2 | `10.20.13.228` ubuntu/Aviz@AIF12345 | `10.20.13.212` root/Aviz@AIF12345 | `10.20.13.12` admin/Aviz@AIF123 | — |
+| S4 | `10.20.13.249` ubuntu/Aviz@AIF12345 | `10.20.13.250` root/Aviz@AIF12345 | `10.20.13.226` aviz/aviz@123 | provisioned via DPF + HBN (DPU Ready) |
+
+### Prerequisites (do once per session)
+
+1. **SSH to the DPF Operator VM** — all scripts must run from there:
+   ```bash
+   ssh dpu-vm@10.4.5.136   # password: admin
+   cd ~/hbn
+   ```
+
+2. **BFB on DPF VM:**
+   ```bash
+   ls /opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb
+   ```
+
+3. **BFB on the x86 host** (needed for rshim flash):
+   ```bash
+   # From DPF VM
+   scp /opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb <x86-user>@<x86-ip>:~/
+   ```
+
+4. **Start the SSH tunnel** (required — BF3 can't reach DPF VM directly over TCP):
+   ```bash
+   ./dpf/scripts/tunnel_dpf.sh start
+   ./dpf/scripts/tunnel_dpf.sh status   # verify it's up
+   ```
+
+5. **Get the BF3 serial number:**
+   ```bash
+   ssh ubuntu@<BF3-OOB-IP> 'sudo dmidecode -t system | grep Serial'
+   # or from x86 host if BF3 not yet accessible:
+   ssh <x86-user>@<x86-host> 'sudo dmidecode -t system | grep -A2 "System Information" | grep Serial'
+   ```
+
+### Run the Provisioning
+
+```bash
+# Generic form
+./dpf/scripts/bringup_dpf.sh \
+  --server <s1|s2|s3> \
+  --bmc-ip <BF3-BMC-IP> \
+  --oob-ip <BF3-OOB-IP> \
+  --serial <BF3-SERIAL> \
+  --x86-host <X86-HOST-IP> \
+  --x86-user <X86-USER> \
+  --x86-pass <X86-PASS> \
+  --rshim-install --hbn
+```
+
+**S1 example:**
+```bash
+./dpf/scripts/bringup_dpf.sh \
+  --server s1 \
+  --bmc-ip 10.20.13.216 --oob-ip 10.20.13.247 \
+  --serial <SN> \
+  --x86-host 10.20.13.13 --x86-user admin --x86-pass 'Aviz@AIF123' \
+  --rshim-install --hbn
+```
+
+**S2 example:**
+```bash
+./dpf/scripts/bringup_dpf.sh \
+  --server s2 \
+  --bmc-ip 10.20.13.212 --oob-ip 10.20.13.228 \
+  --serial <SN> \
+  --x86-host 10.20.13.12 --x86-user admin --x86-pass 'Aviz@AIF123' \
+  --rshim-install --hbn
+```
+
+> **Note:** `--x86-pass` is for the x86 host SSH login. The script also needs to sudo on that host — if sudo requires a password, pass the same password. For passwordless-sudo hosts, omit `--x86-pass`.
+
+### Expected Timeline
+
+| Phase | Duration | What's happening |
+|---|---|---|
+| Steps 1–9 | ~2 min | DPF resources created, BFB already in PVC |
+| BFB flash via rshim | 10–20 min | `bfb-install` writes ~1.5GB over PCIe rshim |
+| BF3 first boot | ~5 min | cloud-init runs, sets hugepages, starts services |
+| kubeadm join | ~2 min | BF3 joins TenantControlPlane via SSH tunnel |
+| DPUServices deploy | ~5 min | HBN pod pulls and starts |
+| **Total** | **~25–40 min** | |
+
+### Success Verification
+
+```bash
+# 1. DPU phase should be Ready
+./dpf/scripts/status_dpf.sh
+
+# 2. BF3 node in TenantControlPlane
+kubectl get secret s1-dpu-cluster-admin-kubeconfig -n dpf-operator-system \
+  -o jsonpath='{.data.admin\.conf}' | base64 -d > /tmp/dpu-kc
+kubectl get nodes --kubeconfig /tmp/dpu-kc
+
+# 3. doca-hbn pod Running 1/1 on BF3
+kubectl get pods --kubeconfig /tmp/dpu-kc -A | grep hbn
+
+# 4. FRR interfaces inside doca-hbn
+CONT=$(ssh ubuntu@<BF3-OOB> 'sudo crictl ps | grep doca-hbn | grep -v init | awk "{print \$1}"')
+ssh ubuntu@<BF3-OOB> "sudo crictl exec $CONT vtysh -c 'show interface brief'"
+# All 12 interfaces (p0_if, p1_if, pf0hpf_if, pf1hpf_if, pf0vf0-3_if, pf1vf0-3_if) must be UP.
+```
+
+### Known First-Boot Issue: Hugepages Not Allocated
+
+On a **brand-new BF3** (first flash ever), hugepages may not be available immediately after boot because cloud-init writes the GRUB config on the first boot — the kernel doesn't see the hugepages parameter until the *second* boot. The script handles this automatically by pre-allocating via `/proc/sys/vm/compact_memory`, but if doca-hbn fails to start with `DPDK: Not enough memory`, do:
+
+```bash
+ssh ubuntu@<BF3-OOB>
+echo 1 | sudo tee /proc/sys/vm/compact_memory
+echo 3072 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+sudo systemctl restart ovs-vswitchd ovs-config
+# wait ~60s, then check if the pod came up
+sudo crictl ps | grep doca-hbn
+```
+
+### Known Issue: "sudo: unable to resolve host s4-dpu"
+
+Cosmetic noise in logs — add hostname to `/etc/hosts`:
+```bash
+ssh ubuntu@<BF3-OOB> 'echo "127.0.0.1 $(hostname)" | sudo tee -a /etc/hosts'
+```
+
+---
+
 ## Replicating to Other Servers
 
-To provision a new BF3 on S1, S2, etc.:
-
-1. Update the config variables at the top of `bringup_dpf.sh`
-2. Update manifest resource names (`s4-` prefix → `s1-` etc.) or add `--server` flag (future work)
-3. If DPF VM is on a different subnet than the BF3, run `tunnel_dpf.sh start` first
+The `--server` flag sets the prefix for all Kubernetes resource names (`s1-dpu`, `s1-node`, `s1-bf3`, `s1-dpu-cluster`). Multiple servers can coexist in the same DPF Operator instance — each gets its own TenantControlPlane (Kamaji virtual cluster).
 
 Minimum info needed per server:
 
-| Variable | How to get it |
+| Flag | How to get it |
 |---|---|
-| `BF3_BMC_IP` | From lab topology table in CLAUDE.md |
-| `BF3_OOB_IP` | From lab topology table in CLAUDE.md |
-| `BF3_SERIAL` | `ssh ubuntu@<BF3-OOB> 'sudo dmidecode -t system \| grep Serial'` |
-| `X86_HOST_IP` | x86 host with PCIe connection to that BF3 |
+| `--bmc-ip` | Server topology table above |
+| `--oob-ip` | Server topology table above |
+| `--serial` | `ssh ubuntu@<BF3-OOB> 'sudo dmidecode -t system \| grep Serial'` |
+| `--x86-host` | x86 host with PCIe connection to that BF3 |
+| `--x86-user` | SSH user on x86 host |
+| `--x86-pass` | SSH password on x86 host |
+
+The DPUFlavor sfc.sh automatically gets the correct `X86_HOST_IP` and DPF VM IP substituted from these flags — no manual YAML editing needed.
 
 ---
 

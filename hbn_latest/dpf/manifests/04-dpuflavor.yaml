@@ -1,10 +1,508 @@
 apiVersion: provisioning.dpu.nvidia.com/v1alpha1
 kind: DPUFlavor
 metadata:
-  name: bf3-base
+  name: bf3-hbn
   namespace: dpf-operator-system
 spec:
+  dpuMode: dpu
+
+  # ── Kernel parameters ──────────────────────────────────────────────────────
+  # hugepages: 3072×2MB = 6GB for OVS-DPDK
+  # net.ifnames=0 / biosdevname=0: predictable names (p0, p1, pf0hpf...)
+  # iommu.passthrough=1: required for DPDK PCIe direct access
   grub:
     kernelParameters:
-      - "console=ttyAMA1"
-      - "quiet"
+      - console=ttyAMA1
+      - quiet
+      - net.ifnames=0
+      - biosdevname=0
+      - iommu.passthrough=1
+      - cgroup_no_v1=net_prio,net_cls
+      - hugepagesz=2048kB
+      - hugepages=3072
+
+  # ── NIC firmware (nvconfig) ────────────────────────────────────────────────
+  # NUM_OF_PF=2: both PF0 and PF1 visible to x86 host (dual-port, matching
+  #   standalone bringup_hbn_bf3.sh --vfs 8)
+  # NUM_OF_VFS=8: 4 VFs per PF (pf0vf0-3, pf1vf0-3)
+  # PF_TOTAL_SF=20: base SFs (2,3,1514,1515) + 8 VF SFs (4-11) = 12 needed
+  nvconfig:
+    - device: "*"
+      parameters:
+        - PF_BAR2_ENABLE=0
+        - PER_PF_NUM_SF=1
+        - PF_TOTAL_SF=20
+        - PF_SF_BAR_SIZE=10
+        - NUM_PF_MSIX_VALID=0
+        - PF_NUM_PF_MSIX_VALID=1
+        - PF_NUM_PF_MSIX=228
+        - INTERNAL_CPU_MODEL=1
+        - INTERNAL_CPU_OFFLOAD_ENGINE=0
+        - SRIOV_EN=1
+        - NUM_OF_VFS=8
+        - LAG_RESOURCE_ALLOCATION=1
+        - LINK_TYPE_P1=ETH
+        - LINK_TYPE_P2=ETH
+        - ECPF_ESWITCH_MANAGER=1
+        - NUM_OF_PF=2
+
+  # ── OVS-DPDK config ────────────────────────────────────────────────────────
+  ovs:
+    rawConfigScript: |
+      ovs-vsctl set Open_vSwitch . other_config:dpdk-init=true
+      ovs-vsctl set Open_vSwitch . other_config:dpdk-socket-mem="4096"
+      ovs-vsctl set Open_vSwitch . other_config:dpdk-hugepage-dir=/mnt/huge_2mb
+      ovs-vsctl set Open_vSwitch . other_config:hw-offload=true
+      ovs-vsctl set Open_vSwitch . other_config:vhost-iommu-support=true
+
+  # ── BFB flash parameters ───────────────────────────────────────────────────
+  # UPDATE_BMC_FW=no: BMC has ~444MB RAM; 1.5GB BFB cannot be staged.
+  bfcfgParameters:
+    - UPDATE_ATF_UEFI=yes
+    - UPDATE_DPU_OS=yes
+    - WITH_NIC_FW_UPDATE=yes
+    - UPDATE_BMC_FW=no
+
+  # ── Config files deployed to BF3 filesystem during BFB flash ──────────────
+  configFiles:
+    - path: /etc/mellanox/mlnx-bf.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        ALLOW_SHARED_RQ="no"
+        IPSEC_FULL_OFFLOAD="no"
+
+    - path: /etc/mellanox/mlnx-ovs.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        CREATE_OVS_BRIDGES="no"
+        OVS_DOCA="yes"
+
+    # mlnx-sf.conf: provisions SubFunctions at boot.
+    # Equivalent to what bringup_hbn_bf3.sh auto-generates from p0 MAC.
+    # MACs use locally-administered format (02:xx prefix) derived from
+    # the last 3 bytes of the BF3's p0 physical MAC.
+    #
+    # ⚠ UPDATE THESE MACs per BF3:
+    #   SSH to BF3: ip link show | grep "phys_port_name: p0" -B1 | grep link/ether
+    #   Then compute: _SF2_MAC="02:${_B3}:${_B4}:${_B5}:00:02" etc.
+    #   Or run bringup_hbn_bf3.sh once — it auto-generates the correct MACs.
+    #
+    # Base SFs:  sfnum 2  → p0_if_r (PF0 uplink rep)
+    #            sfnum 3  → p1_if_r (PF1 uplink rep)
+    #            sfnum 1514 → pf0hpf_if_r (host PF0 rep)
+    #            sfnum 1515 → pf1hpf_if_r (host PF1 rep)
+    # VF SFs:    sfnum 4-7  → pf0vf0-3_if_r (PF0 VF reps)
+    #            sfnum 8-11 → pf1vf0-3_if_r (PF1 VF reps)
+    - path: /etc/mellanox/mlnx-sf.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 2 --hwaddr 02:00:00:00:00:02 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 1514 --hwaddr 02:00:00:05:ea:00 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 3 --hwaddr 02:00:00:00:00:03 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 1515 --hwaddr 02:00:00:05:eb:00 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 4 --hwaddr 02:00:00:00:04:04 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 5 --hwaddr 02:00:00:00:04:05 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 6 --hwaddr 02:00:00:00:04:06 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 7 --hwaddr 02:00:00:00:04:07 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 8 --hwaddr 02:00:00:01:04:08 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 9 --hwaddr 02:00:00:01:04:09 -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 10 --hwaddr 02:00:00:01:04:0a -t --cpu-list 0-2
+        /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 11 --hwaddr 02:00:00:01:04:0b -t --cpu-list 0-2
+
+    # hbn.conf: OVS bridge topology — uplinks, host reps, VF reps
+    # Matches: bringup_hbn_bf3.sh --p0-vfs 4 --p1-vfs 4
+    - path: /etc/mellanox/hbn.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        [hbn_profile]
+        profile_name = default
+
+        [BR_HBN_UPLINKS]
+        p0
+        p1
+
+        [BR_HBN_REPS]
+        pf0hpf
+        pf1hpf
+        pf0vf0
+        pf0vf1
+        pf0vf2
+        pf0vf3
+        pf1vf0
+        pf1vf1
+        pf1vf2
+        pf1vf3
+
+        [BR_HBN_SFS]
+
+
+        [BR_SFC_UPLINKS]
+
+
+        [BR_SFC_REPS]
+
+        [BR_SFC_SFS]
+
+
+        [BR_HBN_SFC_PATCH_PORTS]
+
+
+        [LINK_PROPAGATION]
+        p0:p0_if_r
+        p1:p1_if_r
+        pf0hpf:pf0hpf_if_r
+        pf1hpf:pf1hpf_if_r
+        pf0vf0:pf0vf0_if_r
+        pf0vf1:pf0vf1_if_r
+        pf0vf2:pf0vf2_if_r
+        pf0vf3:pf0vf3_if_r
+        pf1vf0:pf1vf0_if_r
+        pf1vf1:pf1vf1_if_r
+        pf1vf2:pf1vf2_if_r
+        pf1vf3:pf1vf3_if_r
+
+        [ENABLE_BR_SFC]
+
+
+        [ENABLE_BR_SFC_DEFAULT_FLOWS]
+
+
+        [ENABLE_VETH]
+
+    # sfc.conf: read by doca-hbn init-sfs container to map SF function netdevs
+    # into the pod's network namespace.
+    # SF function netdev prefix = enp<bus>s0f0 derived from PCI 0000:03:00.0
+    # bus=3 decimal → enp3s0f0
+    # sfnum 4-7: pf0vf0-3 (enp3s0f0s4-7)
+    # sfnum 8-11: pf1vf0-3 (enp3s0f0s8-11)
+    - path: /etc/mellanox/sfc.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        BR_HBN_NAME=br-hbn
+        MAPPINGS=(
+        "br-hbn~p0~p0_if_r~p0_if~p0_if_r"
+        "br-hbn~p1~p1_if_r~p1_if~p1_if_r"
+        "br-hbn~pf0hpf~pf0hpf_if_r~pf0hpf_if~pf0hpf_if_r"
+        "br-hbn~pf1hpf~pf1hpf_if_r~pf1hpf_if~pf1hpf_if_r"
+        "br-hbn~enp3s0f0s4~pf0vf0_if_r~pf0vf0_if~pf0vf0_if_r"
+        "br-hbn~enp3s0f0s5~pf0vf1_if_r~pf0vf1_if~pf0vf1_if_r"
+        "br-hbn~enp3s0f0s6~pf0vf2_if_r~pf0vf2_if~pf0vf2_if_r"
+        "br-hbn~enp3s0f0s7~pf0vf3_if_r~pf0vf3_if~pf0vf3_if_r"
+        "br-hbn~enp3s0f0s8~pf1vf0_if_r~pf1vf0_if~pf1vf0_if_r"
+        "br-hbn~enp3s0f0s9~pf1vf1_if_r~pf1vf1_if~pf1vf1_if_r"
+        "br-hbn~enp3s0f0s10~pf1vf2_if_r~pf1vf2_if~pf1vf2_if_r"
+        "br-hbn~enp3s0f0s11~pf1vf3_if_r~pf1vf3_if~pf1vf3_if_r"
+        )
+
+    # ── sfc.service + sfc.sh: missing from bf3-base BFB, must be deployed ──────
+    # sfc.service is the piece the production DOCA HBN BFB normally includes but
+    # bf3-base does not. init-sfs (inside the doca-hbn init container) waits for
+    # this service to create the SF function netdevs in host netns and log
+    # "SFC Completed". Without it, the pod hangs in Init:0/1 forever.
+    #
+    # sfc.sh also:
+    #   - allocates 3072 × 2MB hugepages (belt-and-suspenders alongside GRUB param)
+    #   - mounts /mnt/huge_2mb (required by OVS-DPDK)
+    #   - fixes OVS dpdk-socket-mem for single-NUMA BF3 (avoids EAL "Invalid arg")
+    #   - starts ovs-vswitchd after hugepages are ready
+    #   - adds all ports to br-hbn: p0, p1, pf0hpf, pf1hpf, p0_if_r, p1_if_r,
+    #     pf0hpf_if_r, pf1hpf_if_r, pf0vf0-3, pf1vf0-3 (16 ports total)
+    #   - applies iptables DNAT rules so kubelet can reach the Kamaji TC at
+    #     10.4.5.136:6443 via the SSH tunnel on the x86 host (10.20.13.207:6443)
+    #     ⚠ UPDATE X86_HOST_IP per server if x86 host IP changes
+    - path: /usr/local/bin/sfc.sh
+      operation: override
+      permissions: "0755"
+      raw: |
+        #!/bin/bash
+        # sfc.service entrypoint — DPF mode SF and OVS setup for DOCA HBN
+        set -e
+        LOG_TAG="sfc.service"
+        log() { echo "$*"; logger -t "$LOG_TAG" "$*"; }
+
+        X86_HOST_IP="10.20.13.207"   # x86 relay host for cross-subnet API server tunnel
+
+        log "SFC: starting"
+
+        # 1. Hugepages (belt-and-suspenders; GRUB params also set these at boot)
+        HP_PATH="/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+        if [ -f "$HP_PATH" ]; then
+          CURRENT=$(cat "$HP_PATH")
+          if [ "$CURRENT" -lt 3072 ]; then
+            log "SFC: allocating hugepages (currently $CURRENT, need 3072)"
+            echo 3072 > "$HP_PATH"
+          fi
+        fi
+
+        # 2. Mount hugepages (required by OVS-DPDK)
+        if ! mountpoint -q /mnt/huge_2mb 2>/dev/null; then
+          mkdir -p /mnt/huge_2mb
+          mount -t hugetlbfs -o pagesize=2M hugetlbfs /mnt/huge_2mb
+          log "SFC: mounted hugetlbfs at /mnt/huge_2mb"
+        fi
+
+        # 3. Ensure SFs exist — openibd should run mlnx-sf.conf but may not on first
+        #    boot if cloud-init races ahead of openibd writing the file. Run it here
+        #    as belt-and-suspenders, then wait up to 30s for netdevs to appear.
+        if ! ip link show enp3s0f0s2 &>/dev/null && \
+           ! ip link show p0_if &>/dev/null; then
+          log "SFC: SFs not found, running mlnx-sf.conf"
+          bash /etc/mellanox/mlnx-sf.conf 2>&1 | logger -t sfc.service || true
+          for i in $(seq 1 30); do
+            ip link show enp3s0f0s2 &>/dev/null && break
+            sleep 1
+          done
+          log "SFC: SF netdevs ready after ${i}s"
+        fi
+
+        # 4. Rename SF function netdevs — init-sfs waits for these in host netns
+        #    then moves them into the pod's netns. Mapping: enp3s0f0sN → <name>_if
+        declare -A SF_RENAMES=(
+          [enp3s0f0s2]=p0_if     [enp3s0f0s3]=p1_if
+          [enp3s0f0s1514]=pf0hpf_if  [enp3s0f0s1515]=pf1hpf_if
+          [enp3s0f0s4]=pf0vf0_if [enp3s0f0s5]=pf0vf1_if
+          [enp3s0f0s6]=pf0vf2_if [enp3s0f0s7]=pf0vf3_if
+          [enp3s0f0s8]=pf1vf0_if [enp3s0f0s9]=pf1vf1_if
+          [enp3s0f0s10]=pf1vf2_if [enp3s0f0s11]=pf1vf3_if
+        )
+        for src in "${!SF_RENAMES[@]}"; do
+          dst="${SF_RENAMES[$src]}"
+          if ip link show "$src" &>/dev/null 2>&1; then
+            ip link set "$src" down 2>/dev/null || true
+            ip link set "$src" name "$dst"
+            ip link set "$dst" up 2>/dev/null || true
+            log "SFC: renamed $src → $dst"
+          elif ip link show "$dst" &>/dev/null 2>&1; then
+            log "SFC: $dst already exists"
+          else
+            log "SFC: WARNING $src not found"
+          fi
+        done
+
+        # 4b. SF rename watchdog — the BF3 SF driver recreates enp3s0f0sN netdevs
+        #     in the host netns whenever they are moved to another netns (pod netns).
+        #     init-sfs waits for the RENAMED names (p0_if etc.) before moving them.
+        #     This background loop continuously re-renames until init-sfs has taken
+        #     all of them (they disappear from host netns entirely).
+        {
+          declare -A SF_WATCH=(
+            [enp3s0f0s2]=p0_if     [enp3s0f0s3]=p1_if
+            [enp3s0f0s1514]=pf0hpf_if  [enp3s0f0s1515]=pf1hpf_if
+            [enp3s0f0s4]=pf0vf0_if [enp3s0f0s5]=pf0vf1_if
+            [enp3s0f0s6]=pf0vf2_if [enp3s0f0s7]=pf0vf3_if
+            [enp3s0f0s8]=pf1vf0_if [enp3s0f0s9]=pf1vf1_if
+            [enp3s0f0s10]=pf1vf2_if [enp3s0f0s11]=pf1vf3_if
+          )
+          while sleep 2; do
+            ALL_GONE=1
+            for src in "${!SF_WATCH[@]}"; do
+              dst="${SF_WATCH[$src]}"
+              if ip link show "$src" &>/dev/null 2>&1; then
+                ALL_GONE=0
+                ip link set "$src" down 2>/dev/null || true
+                ip link set "$src" name "$dst" 2>/dev/null && \
+                  ip link set "$dst" up 2>/dev/null || true
+              elif ip link show "$dst" &>/dev/null 2>&1; then
+                ALL_GONE=0
+              fi
+            done
+            [ "$ALL_GONE" -eq 1 ] && exit 0
+          done
+        } &
+        disown
+
+        # 5. Rename SF representors — these stay in host netns as OVS ports
+        #    Main SF reps (sf2/3/1514/1515): p0_if_r, p1_if_r, pf0hpf_if_r, pf1hpf_if_r
+        #    VF SF reps (sf4-11): pf0vf0-3, pf1vf0-3 (matching hbn.conf names)
+        declare -A REP_RENAMES=(
+          [en3f0pf0sf2]=p0_if_r  [en3f0pf0sf3]=p1_if_r
+          [en3f0pf0sf1514]=pf0hpf_if_r  [en3f0pf0sf1515]=pf1hpf_if_r
+          [en3f0pf0sf4]=pf0vf0_if_r   [en3f0pf0sf5]=pf0vf1_if_r
+          [en3f0pf0sf6]=pf0vf2_if_r   [en3f0pf0sf7]=pf0vf3_if_r
+          [en3f0pf0sf8]=pf1vf0_if_r   [en3f0pf0sf9]=pf1vf1_if_r
+          [en3f0pf0sf10]=pf1vf2_if_r  [en3f0pf0sf11]=pf1vf3_if_r
+        )
+        for src in "${!REP_RENAMES[@]}"; do
+          dst="${REP_RENAMES[$src]}"
+          if ip link show "$src" &>/dev/null 2>&1; then
+            ip link set "$src" down 2>/dev/null || true
+            ip link set "$src" name "$dst"
+            ip link set "$dst" up 2>/dev/null || true
+            log "SFC: renamed rep $src → $dst"
+          elif ip link show "$dst" &>/dev/null 2>&1; then
+            log "SFC: rep $dst already exists"
+          else
+            log "SFC: WARNING rep $src not found"
+          fi
+        done
+
+        # 6. iptables cross-subnet rules — route cluster VIP to x86 host tunnel
+        #    BF3 (10.20.13.x) cannot TCP to DPF VM (10.4.5.x). These DNAT rules
+        #    redirect 10.96.0.1:443 (k8s ClusterIP) to ${X86_HOST_IP}:6443 where
+        #    the SSH reverse tunnel forwards to Kamaji. Must be at position 1
+        #    (before kube-proxy KUBE-SERVICES chain adds its own DNAT first).
+        iptables -t nat -D OUTPUT -d 10.96.0.1 -p tcp --dport 443 \
+          -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null || true
+        iptables -t nat -I OUTPUT 1 -d 10.96.0.1 -p tcp --dport 443 \
+          -j DNAT --to-destination "${X86_HOST_IP}:6443"
+        iptables -t nat -D PREROUTING -d 10.96.0.1 -p tcp --dport 443 \
+          -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null || true
+        iptables -t nat -I PREROUTING 1 -d 10.96.0.1 -p tcp --dport 443 \
+          -j DNAT --to-destination "${X86_HOST_IP}:6443"
+        iptables -t nat -C POSTROUTING -d "${X86_HOST_IP}" -p tcp --dport 6443 \
+          -j MASQUERADE 2>/dev/null || \
+        iptables -t nat -A POSTROUTING -d "${X86_HOST_IP}" -p tcp --dport 6443 \
+          -j MASQUERADE
+        # Also Rule 1: direct 10.4.5.136:6443 → x86 host (for initial kubeadm join)
+        iptables -t nat -D OUTPUT -d 10.4.5.136 -p tcp --dport 6443 \
+          -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null || true
+        iptables -t nat -I OUTPUT 1 -d 10.4.5.136 -p tcp --dport 6443 \
+          -j DNAT --to-destination "${X86_HOST_IP}:6443"
+        log "SFC: iptables cross-subnet rules applied"
+
+        # 5b. iptables watchdog — kube-proxy inserts KUBE-SERVICES at position 1 in
+        #     both OUTPUT and PREROUTING after sfc.service completes, pushing our
+        #     DNAT to position 2+. OUTPUT handles host processes (kubelet, kubeadm);
+        #     PREROUTING handles pod-originated traffic (sfc-controller, ipam-node).
+        #     This loop re-inserts both before KUBE-SERVICES every 60s.
+        {
+          while sleep 60; do
+            for CHAIN in OUTPUT PREROUTING; do
+              KUBE_POS=$(iptables -t nat -L "$CHAIN" --line-numbers -n 2>/dev/null \
+                | awk '/KUBE-SERVICES/{print $1; exit}')
+              OUR_POS=$(iptables -t nat -L "$CHAIN" --line-numbers -n 2>/dev/null \
+                | awk '/10\.96\.0\.1/{print $1; exit}')
+              [ -z "$KUBE_POS" ] && continue
+              [ -n "$OUR_POS" ] && [ "$OUR_POS" -le "$KUBE_POS" ] && continue
+              iptables -t nat -D "$CHAIN" -d 10.96.0.1 -p tcp --dport 443 \
+                -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null; true
+              iptables -t nat -I "$CHAIN" 1 -d 10.96.0.1 -p tcp --dport 443 \
+                -j DNAT --to-destination "${X86_HOST_IP}:6443"
+              logger -t sfc.service "iptables: reordered DNAT before KUBE-SERVICES in $CHAIN"
+            done
+          done
+        } &
+        disown
+
+        # 7. OVS vswitchd: fix single-NUMA socket-mem and start if not running
+        #    dpdk-socket-mem="4096,0" fails on BF3 (1 NUMA node); use "4096"
+        if ovs-vsctl get Open_vSwitch . other_config:dpdk-socket-mem 2>/dev/null \
+            | grep -q ","; then
+          ovs-vsctl set Open_vSwitch . other_config:dpdk-socket-mem="4096"
+          log "SFC: fixed dpdk-socket-mem to single-NUMA"
+        fi
+        if ! systemctl is-active --quiet ovs-vswitchd 2>/dev/null; then
+          systemctl reset-failed ovs-vswitchd 2>/dev/null || true
+          systemctl start ovs-vswitchd && log "SFC: started ovs-vswitchd" || \
+            log "SFC: WARNING ovs-vswitchd failed to start"
+          sleep 3
+        fi
+
+        # 8. br-hbn ports: add all representors and uplinks
+        #    Remove stale DPF bridges (ovsbr1/ovsbr2) before adding ports to br-hbn,
+        #    since ovs-config.service may have claimed the physical ports there first.
+        #    Create br-hbn if it doesn't exist (normally created by sfc-hbn/openibd).
+        ovs-vsctl br-exists br-hbn 2>/dev/null || \
+          { ovs-vsctl add-br br-hbn && log "SFC: created br-hbn"; }
+        for stale in ovsbr1 ovsbr2; do
+          ovs-vsctl br-exists "$stale" 2>/dev/null && \
+            ovs-vsctl del-br "$stale" && log "SFC: removed stale $stale" || true
+        done
+        # br-sfc: DPF's sfc-controller-node connects via OpenFlow to manage service
+        # chaining flows. With fail_mode=secure (the default), OVS drops the
+        # controller connection immediately. standalone lets sfc-controller connect.
+        if ovs-vsctl br-exists br-sfc 2>/dev/null; then
+          ovs-vsctl get bridge br-sfc fail_mode 2>/dev/null | grep -q "standalone" || \
+            { ovs-vsctl set bridge br-sfc fail_mode=standalone && \
+              log "SFC: set br-sfc fail_mode=standalone"; }
+        fi
+        for port in p0 p1 pf0hpf pf1hpf \
+                    p0_if_r p1_if_r pf0hpf_if_r pf1hpf_if_r \
+                    pf0vf0_if_r pf0vf1_if_r pf0vf2_if_r pf0vf3_if_r \
+                    pf1vf0_if_r pf1vf1_if_r pf1vf2_if_r pf1vf3_if_r; do
+          ip link show "$port" &>/dev/null 2>&1 || \
+            { log "SFC: skip $port (no netdev)"; continue; }
+          ovs-vsctl port-to-br "$port" &>/dev/null 2>&1 || \
+            { ovs-vsctl add-port br-hbn "$port" 2>/dev/null && \
+              log "SFC: added $port to br-hbn" || \
+              log "SFC: WARNING could not add $port to br-hbn"; }
+        done
+
+        log "SFC Completed"
+
+    - path: /etc/systemd/system/sfc.service
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Unit]
+        Description=SFC interface and OVS setup for DOCA HBN (DPF mode)
+        Documentation=https://github.com/aviznetworks/hbn
+        After=openibd.service ovsdb-server.service network.target
+        Wants=ovsdb-server.service
+        DefaultDependencies=no
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/sfc.sh
+        RemainAfterExit=yes
+        StandardOutput=journal
+        StandardError=journal
+
+        [Install]
+        WantedBy=multi-user.target
+
+    # kubeadm-join drop-in: DPF's kubeadm-join.service runs independently of kubelet.
+    # Without this, iptables DNAT rules (for cross-subnet TC reach) aren't set yet
+    # when the join attempt fires. This pulls in sfc.service before the join.
+    - path: /etc/systemd/system/kubeadm-join.service.d/10-sfc.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Unit]
+        Requires=sfc.service
+        After=sfc.service
+
+    # ovs-config drop-in: allocate hugepages BEFORE ovs-config.service runs.
+    # On first boot, GRUB hugepages (from 99-dpf.cfg) are NOT active yet — they
+    # only take effect on the second boot. Without this, ovs-vswitchd fails to
+    # initialize DPDK (no hugepages) and cloud-init hangs indefinitely, blocking
+    # sfc.service and kubeadm-join from ever running.
+    - path: /etc/systemd/system/ovs-config.service.d/10-hugepages.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Service]
+        ExecStartPre=/bin/bash -c '\
+          echo 1 > /proc/sys/vm/compact_memory; \
+          HP=/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages; \
+          [ -f "$HP" ] && [ "$(cat $HP)" -lt 3072 ] && echo 3072 > "$HP" || true; \
+          mkdir -p /mnt/huge_2mb; \
+          mountpoint -q /mnt/huge_2mb || mount -t hugetlbfs -o pagesize=2M hugetlbfs /mnt/huge_2mb || true'
+
+    # kubelet drop-in: makes kubelet wait for sfc.service so iptables rules and
+    # interface renames are in place before kubelet tries to join the TC.
+    - path: /etc/systemd/system/kubelet.service.d/10-sfc.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Unit]
+        Requires=sfc.service
+        After=sfc.service
+
+    # hugepages.d: ensure doca-hugepages (called by openibd) allocates 3072×2MB.
+    # Belt-and-suspenders alongside hugepages=3072 in the GRUB kernelParameters.
+    - path: /etc/mellanox/hugepages.d/ovs-doca (default).json
+      operation: override
+      permissions: "0644"
+      raw: |
+        {
+          "2048": {
+            "num": 3072,
+            "is_active": "active"
+          }
+        }

@@ -4,5 +4,16 @@ metadata:
   name: SERVER_NAME-node
   namespace: dpf-operator-system
 spec:
-  # No nodeRebootMethod needed — DPU CR bmcIP drives Redfish provisioning directly.
+  # nodeRebootMethod=external is REQUIRED on DPF v25.10.1 for OOB setups (x86 host NOT
+  # in k8s). The default "hostAgent" makes the DPUNode controller panic (nil deref in
+  # HandleRebootSync) because there is no in-cluster host agent — which cascades into the
+  # DPU stalling at phase=Initializing with reason=DPUInstallInterfaceNotProvided.
+  # "external" = the host is rebooted out-of-band (BMC/Redfish/rshim), not by DPF.
   # kubeNodeRef is intentionally omitted: x86 host is NOT a k8s worker node.
+  nodeRebootMethod:
+    external: {}
+  # v25.10.1 requires the DPUNode to list its attached DPUDevice(s); without this the
+  # DPUDevice stays NodeAttached=False ("No DPUNode found") and the DPU never leaves
+  # Initialize Interface (reason=DPUDeviceNotReady).
+  dpus:
+    - name: SERVER_NAME-bf3

@@ -90,15 +90,15 @@
       "problemMatcher": []
     },
     {
-      "label": "S4: Host (admin@10.20.13.207)",
+      "label": "S4: Host (admin@10.20.13.226)",
       "type": "shell",
-      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.207",
+      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.226",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server4" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
     },
     {
-      "label": "DPF operator1",
+      "label": "S5: DPF operator1(dpu-vm@10.4.5.136)",
       "type": "shell",
       "command": "sshpass -p 'admin' ssh -o StrictHostKeyChecking=no dpu-vm@10.4.5.136",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server5" },
@@ -106,10 +106,26 @@
       "problemMatcher": []
     },
     {
-      "label": "DPF operator2",
+      "label": "S5: DPF operator2(dpu-vm@10.4.5.136)",
       "type": "shell",
       "command": "sshpass -p 'admin' ssh -o StrictHostKeyChecking=no dpu-vm@10.4.5.136",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server5" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S6: DPF operator1(aviz@10.20.13.227)",
+      "type": "shell",
+      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.227",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server6" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "S6: DPF operator2(aviz@10.20.13.227)",
+      "type": "shell",
+      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.227",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server6" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
     }

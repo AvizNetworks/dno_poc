@@ -1,0 +1,241 @@
+# HBN DaemonSet — deploys doca-hbn on the BF3 via TenantControlPlane
+#
+# This is the DPF-native equivalent of:
+#   sudo ./scripts/bringup_hbn_bf3.sh --vfs 8
+#
+# NO NGC API KEY required — uses the same image already present on the BF3
+# from standalone HBN bringup (nvcr.io/nvidia/doca/doca_hbn:3.3.0-doca3.3.0).
+#
+# Prerequisites (handled by DPUFlavor + BFB reflash):
+#   - Hugepages allocated (3072×2MB)
+#   - SFs provisioned (mlnx-sf.conf with sfnums 2,3,1514,1515,4-11)
+#   - OVS bridge configured (hbn.conf, sfc.conf)
+#   - hostPath directories created by DPUFlavor cloud-init
+#
+# Applied to: TenantControlPlane (kubectl --kubeconfig /tmp/dpu-tc-kubeconfig)
+# NOT to: management k3s cluster
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: doca-hbn
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: doca-hbn
+  namespace: doca-hbn
+  labels:
+    app: doca-hbn
+spec:
+  selector:
+    matchLabels:
+      app: doca-hbn
+  template:
+    metadata:
+      labels:
+        app: doca-hbn
+    spec:
+      # Run on the BF3 ARM node only
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        kubernetes.io/os: linux
+
+      # Give sfc.service and OVS time to finish — avoid race with pod start
+      tolerations:
+        - operator: Exists
+
+      terminationGracePeriodSeconds: 120
+
+      # ── hostPath directories (must exist — created by DPUFlavor cloud-init)
+      # Mirrors exactly what bringup_hbn_bf3.sh Step 3 creates
+      volumes:
+        - name: eni
+          hostPath:
+            path: /var/lib/hbn/etc/network
+            type: DirectoryOrCreate
+        - name: frr
+          hostPath:
+            path: /var/lib/hbn/etc/frr
+            type: DirectoryOrCreate
+        - name: nvue
+          hostPath:
+            path: /var/lib/hbn/var/lib/nvue
+            type: DirectoryOrCreate
+        - name: supervisor
+          hostPath:
+            path: /var/lib/hbn/etc/supervisor/conf.d
+            type: DirectoryOrCreate
+        - name: nvuestartup
+          hostPath:
+            path: /var/lib/hbn/etc/nvue.d
+            type: DirectoryOrCreate
+        - name: hbnlogs
+          hostPath:
+            path: /var/log/doca/hbn
+            type: DirectoryOrCreate
+        - name: hbnusers
+          hostPath:
+            path: /var/lib/hbn/etc/hbn-users
+            type: DirectoryOrCreate
+        - name: support
+          hostPath:
+            path: /var/lib/hbn/var/support
+            type: DirectoryOrCreate
+        - name: etccumulus
+          hostPath:
+            path: /var/lib/hbn/etc/cumulus
+            type: DirectoryOrCreate
+        - name: openvswitch
+          hostPath:
+            path: /var/run/openvswitch
+            type: Directory
+        - name: host
+          hostPath:
+            path: /
+        - name: run-systemd
+          hostPath:
+            path: /run/systemd/system
+        - name: sys-fs-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: run-dbus
+          hostPath:
+            path: /run/dbus/system_bus_socket
+
+      # ── Init container: moves SF interfaces into pod network namespace
+      # Reads sfc.conf MAPPINGS and runs sfc.service completion check.
+      # This is identical to the standalone doca_hbn.yaml init-sfs container.
+      initContainers:
+        - name: init-sfs
+          image: nvcr.io/nvidia/doca/doca_hbn:3.3.0-doca3.3.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host
+              mountPath: /host
+            - name: openvswitch
+              mountPath: /var/run/openvswitch
+            - name: run-systemd
+              mountPath: /run/systemd/system
+            - name: sys-fs-cgroup
+              mountPath: /sys/fs/cgroup
+            - name: run-dbus
+              mountPath: /run/dbus/system_bus_socket
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # Command is identical to standalone doca_hbn.yaml init-sfs
+          command:
+            - bash
+            - "-c"
+            - |
+              /bin/bash <<'EOF'
+              /initbootstrap.sh
+
+              POD=$(chroot /host crictl pods | grep ${POD_NAME} | cut -d " " -f 1)
+              NS=$(chroot /host crictl inspectp ${POD} | grep cni | grep path | head -n 1 | tr -d '"'| cut -d "/" -f 5 | awk -F, '{print $1}')
+
+              source /host/etc/mellanox/sfc.conf
+              INTERFACES=$(for m in ${MAPPINGS[@]}; do echo "$m" | cut -d'~' -f4; done)
+
+              echo "Taking SF path"
+              for intf in $INTERFACES; do
+                intf_ready=$(chroot /host nsenter -t 1 -n ip -br link show dev ${intf} | cut -d" " -f1)
+                while [ "$intf_ready" != "$intf" ]; do
+                  sleep 1
+                  intf_ready=$(chroot /host nsenter -t 1 -n ip -br link show dev ${intf} | cut -d " " -f1)
+                done
+              done
+
+              for intf in $INTERFACES; do
+                chroot /host nsenter -t 1 -n /usr/sbin/ip link set ${intf} netns ${NS}
+              done
+
+              MTU_VALUE=$(cat /host/etc/systemd/network/30-hbn-mtu.network 2>/dev/null | grep "MTUBytes" | cut -d'=' -f2 || echo "9216")
+              [[ -z "$MTU_VALUE" ]] && MTU_VALUE=9216
+
+              for iface in $INTERFACES; do
+                ip link set dev ${iface} mtu "$MTU_VALUE"
+                sysctl -w net.ipv4.conf.${iface}.rp_filter=0
+              done
+
+              INTERFACES_REP=$(for m in ${MAPPINGS[@]}; do echo "$m" | cut -d'~' -f3; done)
+              for iface_rep in $INTERFACES_REP; do
+                chroot /host nsenter -t 1 -n ip link set dev ${iface_rep} mtu "$MTU_VALUE"
+              done
+              INTERFACES_PEER=$(for m in ${MAPPINGS[@]}; do echo "$m" | cut -d'~' -f2; done)
+              for iface_peer in $INTERFACES_PEER; do
+                chroot /host nsenter -t 1 -n ip link set dev ${iface_peer} mtu "$MTU_VALUE"
+              done
+
+              sysctl net.ipv4.tcp_l3mdev_accept=1
+              sysctl net.ipv4.udp_l3mdev_accept=1
+              mount -o rw,remount /sys
+              iptables -P FORWARD ACCEPT
+
+              # Wait for sfc.service to complete OVS bridge setup
+              MAX_WAIT=300
+              INTERVAL=5
+              start_time=$(date +%s)
+              while true; do
+                elapsed=$(( $(date +%s) - start_time ))
+                if chroot /host nsenter -t 1 -m journalctl -u sfc.service --no-pager 2>/dev/null | grep -q "SFC Completed"; then
+                  echo "SFC completed — OVS bridge ready"
+                  break
+                fi
+                if [ "$elapsed" -ge "$MAX_WAIT" ]; then
+                  echo "Timeout waiting for SFC — continuing anyway"
+                  break
+                fi
+                echo "Waiting for SFC (${elapsed}s)..."
+                sleep $INTERVAL
+              done
+
+              echo "init-sfs complete"
+              EOF
+
+      # ── Main container: doca-hbn (FRR + OVS + NVUE REST API)
+      containers:
+        - name: doca-hbn
+          image: nvcr.io/nvidia/doca/doca_hbn:3.3.0-doca3.3.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8765
+              hostPort: 8765
+              protocol: TCP
+          securityContext:
+            privileged: true
+          resources:
+            limits:
+              memory: "6Gi"
+            requests:
+              memory: "1Gi"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "ifdown -a"]
+          volumeMounts:
+            - mountPath: /etc/network
+              name: eni
+            - mountPath: /etc/frr
+              name: frr
+            - mountPath: /var/lib/nvue
+              name: nvue
+            - mountPath: /etc/supervisor/conf.d/
+              name: supervisor
+            - mountPath: /etc/nvue.d
+              name: nvuestartup
+            - mountPath: /var/log/hbn
+              name: hbnlogs
+            - mountPath: /etc/hbn-users
+              name: hbnusers
+            - mountPath: /var/support
+              name: support
+            - mountPath: /etc/cumulus
+              name: etccumulus
+            - mountPath: /var/run/openvswitch
+              name: openvswitch

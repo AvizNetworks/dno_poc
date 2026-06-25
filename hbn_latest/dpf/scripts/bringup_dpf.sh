@@ -809,11 +809,13 @@ if [[ "${DRY_RUN}" != "true" ]]; then
   if [[ -s ${HOME}/dpu-tc-kubeconfig ]]; then
     dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
 
-    # 1. Register DPU cluster with ArgoCD (required for DPUService deployment)
-    if kube get secret "${SERVER_NAME}-dpu-cluster" -n argocd &>/dev/null; then
-      skip "ArgoCD cluster secret '${SERVER_NAME}-dpu-cluster' already exists"
-    else
-      info "  Registering DPU cluster with ArgoCD..."
+    # 1. Register/refresh DPU cluster with ArgoCD (required for DPUService deployment).
+    # ALWAYS refresh: after a DPUCluster delete+recreate, Kamaji issues a new CA/cert/key.
+    # A stale ArgoCD cluster secret makes every DPUService Application show Sync=Unknown,
+    # so CNI (flannel/multus/ovs-cni) never deploys to the DPU cluster and pods (HBN,
+    # coredns) get stuck with "loopback: missing network name". apply overwrites in place.
+    if true; then
+      info "  Registering/refreshing DPU cluster with ArgoCD..."
       CA=$(python3 -c "
 import yaml, sys
 with open('${HOME}/dpu-tc-kubeconfig') as f:
@@ -1073,6 +1075,11 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       -o jsonpath='{.status.bfCFGFile}' 2>/dev/null || echo "")
     [[ -z "${BFCFG_REL}" ]] \
       && fail "DPU status.bfCFGFile empty — DPF has not generated bfcfg yet"
+    # Normalize: v25.7.0 reported a relative path ("bfcfg/..."); v25.10.1 reports an
+    # absolute one ("/bfb/bfcfg/..."). Strip any leading slash + "bfb/" so the URL below
+    # (which adds the "/bfb/" prefix) doesn't double it into ".../bfb//bfb/bfcfg/..." (404).
+    BFCFG_REL="${BFCFG_REL#/}"
+    BFCFG_REL="${BFCFG_REL#bfb/}"
     # Download bfcfg via bfb-registry HTTP server (container has no shell utilities)
     info "  Deploying bfcfg to ${X86_HOST_IP}:/tmp/dpf.cfg (token refreshed)..."
     curl -sf "http://${BFB_REGISTRY_IP}:${BFB_REGISTRY_PORT}/bfb/${BFCFG_REL}" \

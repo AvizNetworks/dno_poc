@@ -11,7 +11,8 @@ set -euo pipefail
 KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 DPU_KUBECONFIG="/tmp/dpu-tc-kubeconfig"
 DPF_NAMESPACE="dpf-operator-system"
-OUTPUT="/tmp/cluster-dump.html"
+OUTPUT="${HOME}/dpf_summary/cluster-dump.html"
+mkdir -p "${HOME}/dpf_summary"
 DETAILED=false
 [[ "${1:-}" == "--detailed" ]] && DETAILED=true
 
@@ -57,6 +58,137 @@ else
   BF3_PODS_JSON='{"items":[]}'
   BF3_SVC="N/A"
 fi
+
+# Derived status flags
+BF3_FLANNEL_RUNNING=$(echo "$BF3_PODS" | grep -cE "flannel.*Running" || true)
+BF3_MULTUS_RUNNING=$(echo "$BF3_PODS"  | grep -cE "multus.*Running"  || true)
+BF3_OVSCNI_RUNNING=$(echo "$BF3_PODS"  | grep -cE "ovs-cni.*Running" || true)
+BF3_IPAM_RUNNING=$(echo "$BF3_PODS"    | grep -cE "ipam.*Running"    || true)
+BF3_SRIOV_RUNNING=$(echo "$BF3_PODS"   | grep -cE "sriov.*Running"   || true)
+BF3_HBN_RUNNING=$(echo "$BF3_PODS"     | grep -cE "doca-hbn.*Running"|| true)
+BF3_COREDNS_CC=$(echo "$BF3_PODS"      | grep -cE "coredns.*ContainerCreating" || true)
+DPUSVC_PENDING_COUNT=$(kube get dpuservice -A 2>/dev/null | tail -n +2 | grep -c "Pending" || true)
+SVC_CTRL_RESTARTS=$(kube get pod -n "${DPF_NAMESPACE}" --no-headers 2>/dev/null \
+  | grep servicechainset | awk '{print $4}' | head -1 || echo "0")
+ETCD_DEFRAG_STUCK=$(kube get pods -n "${DPF_NAMESPACE}" --no-headers 2>/dev/null \
+  | grep -c "defrag.*ContainerCreating" || true)
+
+_arch_item() {
+  local run="${1:-0}" name="$2" ok="${3:-Running}" fail="${4:-NOT deployed}"
+  if [[ "${run}" -gt 0 ]]; then
+    printf '<div class="arch-item"><span class="dot dot-g"></span><span class="name">%s</span><span class="role ok">%s</span></div>' "${name}" "${ok}"
+  else
+    printf '<div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--muted)">%s</span><span class="role warn">%s</span></div>' "${name}" "${fail}"
+  fi
+}
+_ARCH_COREDNS=$([[ "${BF3_COREDNS_CC:-0}" -gt 0 ]] \
+  && echo '<div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--red)">coredns (x2)</span><span class="role fail">ContainerCreating</span></div>' \
+  || echo '<div class="arch-item"><span class="dot dot-g"></span><span class="name">coredns (x2)</span><span class="role ok">Running</span></div>')
+_ARCH_FLANNEL=$(_arch_item "${BF3_FLANNEL_RUNNING}" "flannel (CNI)")
+_ARCH_MULTUS=$(_arch_item  "${BF3_MULTUS_RUNNING}"  "multus")
+_ARCH_OVSCNI=$(_arch_item  "${BF3_OVSCNI_RUNNING}"  "ovs-cni")
+_ARCH_IPAM=$(_arch_item    "${BF3_IPAM_RUNNING}"    "nvidia-k8s-ipam")
+_ARCH_SRIOV=$(_arch_item   "${BF3_SRIOV_RUNNING}"   "sriov-device-plugin")
+_ARCH_HBN=$(_arch_item     "${BF3_HBN_RUNNING}"     "doca-hbn")
+
+if [[ "${BF3_HBN_RUNNING:-0}" -gt 0 ]]; then
+  _ARCH_BF3_STATUS_PANEL='<div class="arch-node">
+      <div class="arch-node-title"><span style="color:var(--green)">&#x2713;</span> <span class="ok">HBN Active</span></div>
+      <div class="arch-items">
+        <div class="arch-item" style="background:#0a2e1e;border:1px solid var(--green)">
+          <span class="dot dot-g"></span><span class="name" style="color:var(--green)">doca-hbn</span>
+          <span class="role ok">1/1 Running</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);padding:8px 4px;line-height:1.6">
+          FRR routing daemons active.<br>NVUE REST API on port 8765.<br>OVS-DPDK br-hbn: 16 ports.
+        </div>
+      </div>
+    </div>'
+elif [[ "${SVC_CTRL_RESTARTS:-0}" -gt 100 ]]; then
+  _ARCH_BF3_STATUS_PANEL="<div class=\"arch-node\">
+      <div class=\"arch-node-title\"><span style=\"color:var(--yellow)\">&#x26a0;</span> <span class=\"warn\">Blocker</span></div>
+      <div class=\"arch-items\">
+        <div class=\"arch-item\" style=\"background:#1a1000;border:1px solid var(--yellow)\">
+          <span class=\"dot dot-r\"></span><span class=\"name\" style=\"color:var(--red)\">servicechainset-controller</span>
+        </div>
+        <div style=\"font-size:11px;color:var(--muted);padding:8px 4px;line-height:1.6\">
+          ${SVC_CTRL_RESTARTS}+ CrashLoopBackOff restarts.<br>Blocks DPUService deployment.
+        </div>
+      </div>
+    </div>"
+else
+  _ARCH_BF3_STATUS_PANEL='<div class="arch-node">
+      <div class="arch-node-title"><span style="color:var(--muted)">&#x25cb;</span> <span class="info">Provisioning</span></div>
+      <div class="arch-items">
+        <div style="font-size:11px;color:var(--muted);padding:8px 4px">DPUServices being deployed...</div>
+      </div>
+    </div>'
+fi
+
+if [[ "${SVC_CTRL_RESTARTS:-0}" -gt 100 ]]; then
+  _ARCH_SVC_CTRL="<div class=\"arch-item\"><span class=\"dot dot-r\"></span><span class=\"name\" style=\"color:var(--red)\">servicechainset-ctrl</span><span class=\"role\" style=\"color:var(--red)\">CrashLoop ${SVC_CTRL_RESTARTS}x</span></div>"
+else
+  _ARCH_SVC_CTRL='<div class="arch-item"><span class="dot dot-g"></span><span class="name">servicechainset-ctrl</span><span class="role ok">Running</span></div>'
+fi
+
+_CARD_CNI=$([[ "${BF3_FLANNEL_RUNNING:-0}" -gt 0 ]] && echo '<span class="ok">Running</span>'  || echo '<span class="fail">NOT deployed</span>')
+_CARD_HBN=$([[ "${BF3_HBN_RUNNING:-0}"     -gt 0 ]] && echo '<span class="ok">Running</span>'  || echo '<span class="fail">NOT deployed</span>')
+
+_FAILING_ROWS=""
+[[ "${SVC_CTRL_RESTARTS:-0}" -gt 100 ]] && \
+  _FAILING_ROWS+="<div class=\"card-stat\"><span class=\"stat-label\">servicechainset-ctrl</span><span class=\"fail\">CrashLoop ${SVC_CTRL_RESTARTS}x</span></div>"
+[[ "${BF3_COREDNS_CC:-0}" -gt 0 ]] && \
+  _FAILING_ROWS+="<div class=\"card-stat\"><span class=\"stat-label\">CoreDNS on BF3</span><span class=\"fail\">No CNI</span></div>"
+[[ "${ETCD_DEFRAG_STUCK:-0}" -gt 0 ]] && \
+  _FAILING_ROWS+="<div class=\"card-stat\"><span class=\"stat-label\">etcd-defrag jobs</span><span class=\"warn\">Stuck (${ETCD_DEFRAG_STUCK})</span></div>"
+if [[ -z "${_FAILING_ROWS}" ]]; then
+  _ACTION_CARD='<div class="card" style="border-top:3px solid var(--green)">
+  <div class="card-title ok">All Systems OK</div>
+  <div class="card-sub">No critical issues detected</div>
+  <div class="card-stat"><span class="stat-label">doca-hbn</span><span class="ok">Running</span></div>
+  <div class="card-stat"><span class="stat-label">Cluster health</span><span class="ok">Healthy</span></div>
+</div>'
+else
+  _ACTION_CARD="<div class=\"card\" style=\"border-top:3px solid var(--red)\">
+  <div class=\"card-title fail\">Action Required</div>
+  <div class=\"card-sub\">Issues detected</div>
+  ${_FAILING_ROWS}
+</div>"
+fi
+
+if [[ "${DPUSVC_PENDING_COUNT:-0}" -gt 0 ]] && [[ "${SVC_CTRL_RESTARTS:-0}" -gt 100 ]]; then
+  _DPUSVC_BOX="<div class='warn-box'>&#x26a0; ${DPUSVC_PENDING_COUNT} DPUService(s) Pending &mdash; servicechainset-controller CrashLoopBackOff (${SVC_CTRL_RESTARTS} restarts). Fix this first.</div>"
+else
+  _DPUSVC_BOX="<div class='info-box'>DPUServices deployed by DPF via ArgoCD &mdash; flannel, multus, ovs-cni, nvidia-k8s-ipam, sriov-device-plugin, doca-hbn.</div>"
+fi
+
+if [[ "${BF3_FLANNEL_RUNNING:-0}" -gt 0 ]]; then
+  _FLOW7_CLASS="done"; _FLOW7_STATUS='<div class="flow-status ok">&#x2713; Complete &mdash; flannel, multus, ovs-cni, ipam, sriov-device-plugin running on BF3</div>'
+else
+  _FLOW7_CLASS="fail"; _FLOW7_STATUS='<div class="flow-status fail">&#x2717; BLOCKED &mdash; fix servicechainset-controller first</div>'
+fi
+if [[ "${BF3_HBN_RUNNING:-0}" -gt 0 ]]; then
+  _FLOW8_CLASS="done"; _FLOW8_STATUS='<div class="flow-status ok">&#x2713; Complete &mdash; doca-hbn Running (FRR + NVUE REST API + OVS-DPDK)</div>'
+else
+  _FLOW8_CLASS="todo"; _FLOW8_STATUS='<div class="flow-status" style="color:var(--muted)">&#x25cb; Pending &mdash; depends on step 7</div>'
+fi
+
+_fcls() { [[ "${1:-0}" -gt 0 ]] && echo "done" || echo "todo"; }
+_fst()  {
+  local run="${1:-0}" ok="$2" pend="$3"
+  [[ "${run}" -gt 0 ]] \
+    && printf '<div class="flow-status ok">&#x2713; Running &mdash; %s</div>' "${ok}" \
+    || printf '<div class="flow-status" style="color:var(--muted)">&#x25cb; %s</div>' "${pend}"
+}
+_FL_CLS=$(_fcls "${BF3_FLANNEL_RUNNING}"); _FL_ST=$(_fst "${BF3_FLANNEL_RUNNING}" "vxlan overlay active" "NOT deployed — blocking everything")
+_MT_CLS=$(_fcls "${BF3_MULTUS_RUNNING}");  _MT_ST=$(_fst "${BF3_MULTUS_RUNNING}"  "Multi-NIC support active" "Pending flannel")
+_OV_CLS=$(_fcls "${BF3_OVSCNI_RUNNING}");  _OV_ST=$(_fst "${BF3_OVSCNI_RUNNING}"  "Pod interfaces wired into br-hbn" "Pending flannel + multus")
+_IP_CLS=$(_fcls "${BF3_IPAM_RUNNING}");    _IP_ST=$(_fst "${BF3_IPAM_RUNNING}"    "IP pools active for OVS/VF ports" "Pending")
+_SR_CLS=$(_fcls "${BF3_SRIOV_RUNNING}");   _SR_ST=$(_fst "${BF3_SRIOV_RUNNING}"   "SFs advertised as k8s resources" "Pending")
+_HB_CLS=$(_fcls "${BF3_HBN_RUNNING}");     _HB_ST=$(_fst "${BF3_HBN_RUNNING}"     "FRR routing + NVUE REST API active" "Target state — not yet deployed")
+_BF3_KUBELET_DNS=$([[ "${BF3_COREDNS_CC:-0}" -gt 0 ]] && echo "&#x2717; coredns: ContainerCreating (no CNI)<br>" || echo "&#x2713; coredns: Running<br>")
+_BF3_KUBELET_FL=$([[ "${BF3_FLANNEL_RUNNING:-0}" -gt 0 ]] && echo "&#x2713; flannel: Running<br>"  || echo "&#x2717; flannel: Not deployed<br>")
+_BF3_KUBELET_HBN=$([[ "${BF3_HBN_RUNNING:-0}"   -gt 0 ]] && echo "&#x2713; doca-hbn: Running<br>" || echo "&#x2717; doca-hbn: Not deployed<br>")
 
 # Detailed data (only when --detailed)
 if [[ "${DETAILED}" == "true" ]]; then
@@ -299,7 +431,7 @@ echo "<div id='tab-overview' class='tab-panel active'>"
 
 # ── Architecture ──────────────────────────────────────────────────────────────
 echo "<h2 id='arch'><div class='h2-icon' style='background:#0e1e3a'>&#x2638;</div> Architecture</h2>"
-cat <<'ARCH'
+cat <<ARCH
 <div class="arch">
   <div class="arch-cluster">
     <div class="arch-cluster-title">
@@ -328,7 +460,7 @@ cat <<'ARCH'
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">dpf-operator</span><span class="role">DPU lifecycle</span></div>
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">dpf-provisioning</span><span class="role">Redfish / rshim</span></div>
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">dpuservice-controller</span><span class="role">deploy to BF3</span></div>
-          <div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--red)">servicechainset-ctrl</span><span class="role" style="color:var(--red)">CRASHING</span></div>
+          ${_ARCH_SVC_CTRL}
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">bfb-registry (nginx)</span><span class="role">serves BFB HTTP</span></div>
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">kamaji etcd (x3)</span><span class="role">TenantCP state</span></div>
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">s4-dpu-cluster (x3)</span><span class="role">virtual CP for BF3</span></div>
@@ -352,28 +484,16 @@ cat <<'ARCH'
         </div>
         <div class="arch-items">
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">kube-proxy</span><span class="role ok">Running</span></div>
-          <div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--red)">coredns (x2)</span><span class="role fail">ContainerCreating &mdash; no CNI</span></div>
-          <div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--muted)">flannel (CNI)</span><span class="role warn">NOT deployed</span></div>
-          <div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--muted)">multus</span><span class="role warn">NOT deployed</span></div>
-          <div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--muted)">ovs-cni</span><span class="role warn">NOT deployed</span></div>
-          <div class="arch-item"><span class="dot dot-r"></span><span class="name" style="color:var(--muted)">doca-hbn</span><span class="role warn">NOT deployed (target)</span></div>
+          ${_ARCH_COREDNS}
+          ${_ARCH_FLANNEL}
+          ${_ARCH_MULTUS}
+          ${_ARCH_OVSCNI}
+          ${_ARCH_IPAM}
+          ${_ARCH_SRIOV}
+          ${_ARCH_HBN}
         </div>
       </div>
-      <div class="arch-node">
-        <div class="arch-node-title"><span style="color:var(--yellow)">&#x26a0;</span> <span class="warn">Blocker</span></div>
-        <div class="arch-items">
-          <div class="arch-item" style="background:#1a1000;border:1px solid var(--yellow)">
-            <span class="dot dot-r"></span>
-            <span class="name" style="color:var(--red)">servicechainset-controller</span>
-          </div>
-          <div style="font-size:11px;color:var(--muted);padding:8px 4px;line-height:1.6">
-            1875+ CrashLoopBackOff restarts.<br>
-            This controller must be healthy before<br>
-            DPUServices deploy flannel/multus/ovs-cni<br>
-            onto the BF3 via ArgoCD.
-          </div>
-        </div>
-      </div>
+      ${_ARCH_BF3_STATUS_PANEL}
     </div>
   </div>
 </div>
@@ -400,7 +520,8 @@ cat <<HTML
   <div class="card-stat"><span class="stat-label">Node status</span><span class="ok">Ready</span></div>
   <div class="card-stat"><span class="stat-label">Total pods</span><span class="info">$BF3_TOTAL</span></div>
   <div class="card-stat"><span class="stat-label">Running</span><span class="ok">$BF3_RUNNING</span></div>
-  <div class="card-stat"><span class="stat-label">CNI</span><span class="fail">NOT deployed</span></div>
+  <div class="card-stat"><span class="stat-label">CNI (flannel)</span>${_CARD_CNI}</div>
+  <div class="card-stat"><span class="stat-label">doca-hbn</span>${_CARD_HBN}</div>
 </div>
 <div class="card" style="border-top:3px solid var(--purple)">
   <div class="card-title purple">DPU Provisioning</div>
@@ -410,13 +531,7 @@ cat <<HTML
   <div class="card-stat"><span class="stat-label">OOB</span><span class="info">10.20.13.249</span></div>
   <div class="card-stat"><span class="stat-label">Flash method</span><span class="warn">rshim</span></div>
 </div>
-<div class="card" style="border-top:3px solid var(--red)">
-  <div class="card-title fail">Action Required</div>
-  <div class="card-sub">Blocking DPUService deployment</div>
-  <div class="card-stat"><span class="stat-label">servicechainset-ctrl</span><span class="fail">CrashLoop</span></div>
-  <div class="card-stat"><span class="stat-label">etcd-defrag jobs</span><span class="warn">Stuck (6)</span></div>
-  <div class="card-stat"><span class="stat-label">CoreDNS on BF3</span><span class="fail">No CNI</span></div>
-</div>
+${_ACTION_CARD}
 HTML
 echo "</div>"
 
@@ -486,7 +601,7 @@ POD_DESC = {
   'dpuservice-controller-manager': 'Translates DPUService CRs into ArgoCD Applications that deploy onto the BF3',
   'kamaji-cm-controller-manager': 'Kamaji ConfigMap controller — syncs cluster config to TenantControlPlanes',
   's4-dpu-cluster': 'Virtual k8s control plane for BF3 (3 pods = HA). Contains kube-apiserver + scheduler + controller-manager',
-  'servicechainset-controller-manager': 'Manages OVS traffic steering chains on BF3. CRASHING — blocks all DPUService deployment',
+  'servicechainset-controller-manager': 'Manages OVS traffic steering chains on BF3 — watches DPUServiceChain CRs and programs OpenFlow rules',
   'istio-egressgateway': 'Istio: controls outbound traffic from the mesh',
   'istio-ingressgateway': 'Istio: entry point for inbound traffic into the mesh',
   'istiod': 'Istio control plane — manages service mesh config, mTLS certs',
@@ -608,7 +723,7 @@ echo "<h2 id='dpf-dpu'><div class='h2-icon' style='background:#1e0e3a'>&#x1f9e0;
 echo "<h3>DPU</h3><pre>$DPF_DPU</pre>"
 
 echo "<h2 id='dpf-svcs'><div class='h2-icon' style='background:#1e0e3a'>&#x1f527;</div> DPF &mdash; DPUServices <span class='badge bg-dpf'>dpf</span></h2>"
-echo "<div class='warn-box'>&#x26a0; All DPUServices are <strong>Pending</strong> &mdash; servicechainset-controller is CrashLoopBackOff (1875+ restarts). Fix this first before DPUService deployment to BF3 will work.</div>"
+echo "${_DPUSVC_BOX}"
 echo "<h3>DPUServices</h3><pre>$DPF_SVC</pre>"
 echo "<h3>servicechainset-controller Logs</h3>"
 echo "<div class='error-box'>&#x1f525; This pod is blocking all DPUService deployments</div>"
@@ -633,14 +748,18 @@ fi
 
 echo "<h2 id='bf3-pods'><div class='h2-icon' style='background:#0a2e1e'>&#x1f4e6;</div> BF3 TenantControlPlane &mdash; Pods &amp; Containers <span class='badge bg-bf3'>bf3</span></h2>"
 if [[ "${DPU_KUBE_AVAILABLE}" == "true" ]]; then
-  echo "<div class='error-box'>&#x274c; CoreDNS stuck in ContainerCreating for 6+ days &mdash; flannel CNI has not been deployed onto the BF3 yet. Root cause: servicechainset-controller crash prevents DPUService deployment.</div>"
+  if [[ "${BF3_COREDNS_CC:-0}" -gt 0 ]]; then
+    echo "<div class='error-box'>&#x274c; CoreDNS stuck in ContainerCreating &mdash; flannel CNI not deployed yet.</div>"
+  elif [[ "${BF3_HBN_RUNNING:-0}" -gt 0 ]]; then
+    echo "<div class='info-box'>&#x2705; All BF3 pods healthy &mdash; doca-hbn Running, flannel CNI active.</div>"
+  fi
   echo "<div class='pod-grid'>"
   echo "$BF3_PODS_JSON" | python3 -c "
 import json, sys
 
 BF3_POD_DESC = {
   'kube-proxy':  'Runs on every node — manages iptables rules for Service routing (ClusterIP, NodePort)',
-  'coredns':     'DNS server for the BF3 cluster — stuck in ContainerCreating because no CNI plugin installed yet',
+  'coredns':     'DNS server for the BF3 cluster — resolves .cluster.local service names. Requires flannel CNI to start.',
   'flannel':     'CNI network plugin — gives each pod a unique IP. Must deploy first before any other pod works',
   'multus':      'Multi-NIC CNI — lets HBN pod have separate mgmt + data plane interfaces',
   'ovs-cni':     'Connects pod interfaces directly into the OVS-DPDK bridge (br-hbn)',
@@ -713,7 +832,7 @@ echo "</div>"
 if [[ "${DETAILED}" == "true" ]]; then
 echo "<div id='tab-dpf' class='tab-panel'>"
 
-cat <<'DPFTAB'
+cat <<DPFTAB
 <h2><div class='h2-icon' style='background:#1e0e3a'>&#x1f9e0;</div> DPF Deep Dive <span class='badge bg-dpf'>dpf</span></h2>
 
 <div class='info-box'>
@@ -811,15 +930,15 @@ cat <<'DPFTAB'
     <div class='flow-desc'>kubeadm-join.service ran on first boot. kubeadm joined 10.4.5.136:6443 (via SSH tunnel workaround — TCP from 10.20.13.x to 10.4.5.x is blocked by lab firewall). BF3 kubelet now connected.</div>
     <div class='flow-status ok'>&#x2713; Complete — s4-dpu node Ready, kubelet v1.34.4</div></div>
   </div>
-  <div class='flow-step fail'>
+  <div class='flow-step ${_FLOW7_CLASS}'>
     <div><div class='flow-title'>7. DPUServices deploy to BF3</div>
-    <div class='flow-desc'>DPF should deploy flannel, multus, ovs-cni, nvidia-k8s-ipam, sriov-device-plugin onto the BF3 via ArgoCD. BLOCKED — servicechainset-controller is CrashLoopBackOff (1880+ restarts). This controller must be healthy before DPUService deployment proceeds.</div>
-    <div class='flow-status fail'>&#x2717; BLOCKED — fix servicechainset-controller first</div></div>
+    <div class='flow-desc'>DPF deploys flannel, multus, ovs-cni, nvidia-k8s-ipam, sriov-device-plugin onto the BF3 via ArgoCD. Requires servicechainset-controller healthy on management cluster.</div>
+    ${_FLOW7_STATUS}</div>
   </div>
-  <div class='flow-step todo'>
+  <div class='flow-step ${_FLOW8_CLASS}'>
     <div><div class='flow-title'>8. Deploy HBN as DPUService</div>
-    <div class='flow-desc'>Create DPUService CR pointing to the doca-hbn Helm chart. DPF deploys it onto the BF3 via ArgoCD. HBN pod connects to OVS bridge via ovs-cni. FRR starts routing traffic.</div>
-    <div class='flow-status' style='color:var(--muted)'>&#x25cb; Pending — depends on step 7</div></div>
+    <div class='flow-desc'>doca-hbn DaemonSet running on BF3 ARM. FRR handles routing (static + BGP). NVUE REST API on port 8765. OVS-DPDK br-hbn connects p0/p1 uplinks to host PFs and VFs.</div>
+    ${_FLOW8_STATUS}</div>
   </div>
 </div>
 
@@ -843,7 +962,7 @@ echo "</div>"
 # ── BF3 ARM Deep Dive Tab ────────────────────────────────────────────────────
 echo "<div id='tab-bf3arm' class='tab-panel'>"
 
-cat <<'BF3TAB'
+cat <<BF3TAB
 <h2><div class='h2-icon' style='background:#0a2e1e'>&#x1f4f0;</div> BF3 ARM Deep Dive <span class='badge bg-bf3'>bf3</span></h2>
 
 <div class='info-box'>
@@ -906,35 +1025,35 @@ FRR (zebra, staticd, bgpd) + NVUE REST :8765 &larr; routing daemons
 
 <h3>How Pods Work on the BF3 (CNI stack)</h3>
 <div class='flow'>
-  <div class='flow-step fail'>
+  <div class='flow-step ${_FL_CLS}'>
     <div><div class='flow-title'>1. flannel — Pod overlay network (CNI)</div>
-    <div class='flow-desc'>Every pod needs an IP address. flannel creates a vxlan overlay network (10.244.0.0/16) and writes the CNI config to /etc/cni/net.d/. Without this, no pod can start — kubelet creates the container but cannot set up networking. CoreDNS is stuck here right now.</div>
-    <div class='flow-status fail'>&#x2717; NOT deployed — blocking everything</div></div>
+    <div class='flow-desc'>Every pod needs an IP address. flannel creates a vxlan overlay network (10.244.0.0/16) and writes the CNI config to /etc/cni/net.d/. Without this, no pod can start — kubelet creates the container but cannot set up networking.</div>
+    ${_FL_ST}</div>
   </div>
-  <div class='flow-step todo'>
+  <div class='flow-step ${_MT_CLS}'>
     <div><div class='flow-title'>2. multus — Multiple network interfaces per pod</div>
     <div class='flow-desc'>Normal k8s gives each pod one interface. Multus is a meta-CNI that lets a pod attach multiple interfaces via NetworkAttachmentDefinitions. HBN needs: eth0 (flannel, management) + net1 (ovs-cni, data plane).</div>
-    <div class='flow-status' style='color:var(--muted)'>&#x25cb; Pending flannel</div></div>
+    ${_MT_ST}</div>
   </div>
-  <div class='flow-step todo'>
+  <div class='flow-step ${_OV_CLS}'>
     <div><div class='flow-title'>3. ovs-cni — Connect pods to OVS bridge</div>
     <div class='flow-desc'>ovs-cni attaches a pod's network interface directly into the OVS-DPDK bridge (br-hbn). When the doca-hbn pod starts, ovs-cni wires net1 into br-hbn so HBN's FRR can see physical traffic from p0/p1.</div>
-    <div class='flow-status' style='color:var(--muted)'>&#x25cb; Pending flannel + multus</div></div>
+    ${_OV_ST}</div>
   </div>
-  <div class='flow-step todo'>
+  <div class='flow-step ${_IP_CLS}'>
     <div><div class='flow-title'>4. nvidia-k8s-ipam — Data plane IP management</div>
-    <div class='flow-desc'>Manages IP address pools for OVS ports and SR-IOV VFs/SFs. This is DPF's answer to "who assigns IPs to PFs and VFs?" — nvidia-k8s-ipam does, for the data plane interfaces.</div>
-    <div class='flow-status' style='color:var(--muted)'>&#x25cb; Pending</div></div>
+    <div class='flow-desc'>Manages IP address pools for OVS ports and SR-IOV VFs/SFs. Assigns IPs to PFs and VFs for the data plane interfaces.</div>
+    ${_IP_ST}</div>
   </div>
-  <div class='flow-step todo'>
+  <div class='flow-step ${_SR_CLS}'>
     <div><div class='flow-title'>5. sriov-device-plugin — Expose SFs as k8s resources</div>
     <div class='flow-desc'>Discovers BF3 SubFunctions (SFs) and advertises them as schedulable Kubernetes resources (nvidia.com/bf3_sf). Pods can request an SF like a GPU — k8s assigns it exclusively to that pod.</div>
-    <div class='flow-status' style='color:var(--muted)'>&#x25cb; Pending</div></div>
+    ${_SR_ST}</div>
   </div>
-  <div class='flow-step todo'>
+  <div class='flow-step ${_HB_CLS}'>
     <div><div class='flow-title'>6. doca-hbn — HBN workload pod</div>
-    <div class='flow-desc'>The actual networking workload. Runs FRR (BGP, static routing), OVS-DPDK configuration, and the NVUE REST API. Connected to br-hbn via ovs-cni. Manages p0, p1, pf0hpf interfaces. This is what the whole DPF stack is building towards.</div>
-    <div class='flow-status' style='color:var(--muted)'>&#x25cb; Target state — not yet deployed</div></div>
+    <div class='flow-desc'>The actual networking workload. Runs FRR (BGP, static routing), OVS-DPDK configuration, and the NVUE REST API. Connected to br-hbn via ovs-cni. Manages p0, p1, pf0hpf interfaces.</div>
+    ${_HB_ST}</div>
   </div>
 </div>
 
@@ -958,9 +1077,9 @@ FRR (zebra, staticd, bgpd) + NVUE REST :8765 &larr; routing daemons
       &#x2713; kubelet active (systemd service)<br>
       &#x2713; Node s4-dpu: Ready, v1.34.4<br>
       &#x2713; kube-proxy: Running<br>
-      &#x2717; coredns: ContainerCreating (no CNI)<br>
-      &#x2717; flannel: Not deployed<br>
-      &#x2717; HBN: Not deployed<br><br>
+      ${_BF3_KUBELET_DNS}
+      ${_BF3_KUBELET_FL}
+      ${_BF3_KUBELET_HBN}<br>
       <span style='color:var(--muted)'>Tunnel must be active for kubelet to stay connected:<br>
       tunnel_dpf.sh start</span>
     </div>

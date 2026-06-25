@@ -131,6 +131,11 @@ Automates all bringup steps:
 echo 4 > /sys/class/net/enp65s0f0np0/device/sriov_numvfs
 echo 4 > /sys/class/net/enp65s0f1np1/device/sriov_numvfs
 ```
+Or use the helper, which auto-detects the BF3 PFs and renames the VFs to `vf0..vfN`:
+```bash
+sudo ./dpf/scripts/setup_host_vfs.sh            # enable + rename → vf0..vf7
+sudo ./dpf/scripts/setup_host_vfs.sh --persist  # survive reboot (systemd oneshot)
+```
 
 ---
 
