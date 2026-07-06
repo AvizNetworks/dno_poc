@@ -3,25 +3,31 @@
 Day-2 commands for a DPF-provisioned BF3 running HBN. **Run everything from the DPF Operator VM.**
 For bringup see [`QUICKSTART.md`](QUICKSTART.md); for deep issues see [`README.md`](README.md).
 
-> `<SERVER>` = `s4` in the examples. The **DPU cluster** (where the BF3 node + HBN live) is reached
-> with a separate kubeconfig — set the `$D` handle once per shell.
+> Each DPU has its **own cluster** with its own kubeconfig. With multi-DPU use
+> **per-server files** (`~/s4-tc-kubeconfig`, `~/s2-tc-kubeconfig`) — the old shared
+> `~/dpu-tc-kubeconfig` is silently overwritten by whichever bringup ran last.
+> `$D` below = the handle for whichever server you're working on.
 
 ---
 
-## Setup — `$D` handle for the DPU cluster (do this first)
+## Setup — one `$D` handle per DPU cluster (do this first)
 ```bash
-kubectl get secret <SERVER>-dpu-cluster-admin-kubeconfig -n dpf-operator-system \
-  -o jsonpath='{.data.admin\.conf}' | base64 -d > /home/dpu-vm/dpu-tc-kubeconfig
-D="kubectl --kubeconfig /home/dpu-vm/dpu-tc-kubeconfig"     # absolute path — ~ won't expand in a var
-echo "$D"                                                    # sanity: should print the kubectl line
+for S in s4 s2; do   # regenerate per-server kubeconfigs (idempotent)
+  kubectl get secret ${S}-dpu-cluster-admin-kubeconfig -n dpf-operator-system \
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > /home/dpu-vm/${S}-tc-kubeconfig
+done
+D="kubectl --kubeconfig /home/dpu-vm/s4-tc-kubeconfig"   # or s2- — absolute path, ~ won't expand in a var
+echo "$D"                                                 # sanity: should print the kubectl line
 ```
 
-## 1 · Is the cluster up?
+## 1 · Is the fleet up?
 ```bash
+./dpf/scripts/fleet_status.sh                               # ALL workers: DPU/cluster/node/HBN
+./dpf/scripts/fleet_status.sh --frr                         # + FRR interface/VF counts (slower)
 kubectl get dpfoperatorconfig -n dpf-operator-system        # operator: Ready=True
 kubectl get dpu,dpucluster,tenantcontrolplane -n dpf-operator-system
 ./dpf/scripts/status_dpf.sh                                  # all-in-one DPF health
-$D get --raw='/readyz'                                       # DPU cluster API: prints "ok"
+$D get --raw='/readyz'                                       # this DPU cluster API: prints "ok"
 ```
 
 ## 2 · Nodes & pods (DPU cluster)
@@ -100,7 +106,9 @@ sudo ./dpf/scripts/setup_host_vfs.sh                         # (re)create + rena
 
 ## Gotchas
 - **`error: pod … must be specified`** → `$POD` is empty; re-run the `POD=$(...)` line (new shell loses it).
-- **`error loading config … ~/...`** → never put `~` inside `$D`; use the absolute path `/home/dpu-vm/dpu-tc-kubeconfig`.
+- **`error loading config … ~/...`** → never put `~` inside `$D`; use the absolute path `/home/dpu-vm/<server>-tc-kubeconfig`.
+- **Commands hit the WRONG DPU** → you used the shared `~/dpu-tc-kubeconfig`, which the last bringup overwrote. Always use the per-server files (Setup section).
+- **HBN pod re-stuck `Init:0/1` after deleting it** → SF netdevs lost their names; on the BF3: `sudo systemctl restart sfc.service`.
 - **`kubectl: command not found` on the BF3** → the BF3 is a *worker* (kubelet + `crictl`, no `kubectl`). Run kubectl from the DPF VM; use `crictl` on the BF3.
 - **SSH `REMOTE HOST IDENTIFICATION HAS CHANGED`** (after a reflash) → `ssh-keygen -R <BF3_OOB_IP>`.
 - **Interfaces show `down`** → expected after a pod (re)start; bring up via `vtysh` config or NVUE.

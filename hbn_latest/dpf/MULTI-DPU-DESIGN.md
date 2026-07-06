@@ -1,9 +1,20 @@
 # Multi-DPU Support — Design & TODO
 
-> **Status: DESIGN ONLY — not implemented.** Goal: have one DPF Operator VM manage **2+ DPUs
-> simultaneously**. Today the scripts provision **one** DPU cleanly (validated on S4); a second
-> DPU collides on the Kamaji NodePort. Findings below are from a read-only investigation on S5
-> (2026-06-25). Estimated effort to implement + validate: **~1 day**.
+> **Status: IMPLEMENTED & VALIDATED (2026-07-06).** s4 (:6443) and s2 (:6444) run
+> simultaneously on the S5 operator — both DPUs Ready, both HBN pods Running with 8 VF
+> interfaces. Implementation matches this design: per-worker `apiserver_port` in
+> `config.yaml` → `bringup_dpf.sh` patches TC `networkProfile.port` → flavor `sfc.sh`
+> iptables parametrized (`DPF_VM_IP`/`APISERVER_PORT`) → `tunnel_dpf.sh` auto-discovers
+> the port from the cluster's Service. Both design "unknowns" confirmed: the port patch
+> sticks, and the generated bfcfg join endpoint picks it up (`kubeadm join 10.4.5.136:6444`).
+> Day-2 fleet view: `./scripts/fleet_status.sh [--frr]`.
+>
+> Validation-run findings (see README Known Issues): Lenovo OEM PSID rejected by the
+> DPUDevice CRD (regex relaxed on S5 — reapply after operator upgrades); 2nd
+> TenantControlPlane needs `replicas=1` on a small operator VM; stale ArgoCD cluster
+> secret still needs the refresh+restart treatment on a recreate.
+>
+> Original design (2026-06-25) kept below for reference.
 
 ---
 

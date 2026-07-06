@@ -125,30 +125,34 @@ The DPF stack is completely separate from the HBN scripts above.
 ./dpf/scripts/bringup_dpf.sh --upgrade --version v25.10.2 # upgrade to specific version
 ```
 
-**Provision BF3 + deploy HBN (idempotent, safe to re-run):**
+**Provision BF3 + deploy HBN (idempotent, safe to re-run). MULTI-DPU validated:**
+Workers are defined in `dpf/config.yaml` (topology + unique `apiserver_port` per worker:
+s4=6443, s2=6444) and `dpf/config.local.yaml` (per-worker passwords, gitignored — copy
+`config.local.sample.yaml`). CLI flags override config. NO NGC key needed anywhere
+(operator chart from /opt/dpf/*.tgz, HBN image cached/public).
 ```bash
-# Step 1: Provision BF3 OS via rshim (first time)
-./dpf/scripts/bringup_dpf.sh --rshim-install
+# provision + HBN for a worker from config.yaml (the normal path)
+./dpf/scripts/bringup_dpf.sh --worker worker1 --rshim-install --hbn   # S4
+./dpf/scripts/bringup_dpf.sh --worker worker2 --rshim-install --hbn   # S2 (Lenovo — see CRD note)
 
-# Step 2: Deploy HBN — NO NGC key needed, uses image already on BF3
-# NOTE: BF3 must be re-flashed first for DPUFlavor changes (hugepages, VFs) to apply
-./dpf/scripts/bringup_dpf.sh --hbn
+# NOTE: BF3 must be re-flashed for DPUFlavor changes (hugepages, VFs, configFiles) to apply
+./dpf/scripts/bringup_dpf.sh --worker worker1 --hbn      # HBN only (already provisioned)
+./dpf/scripts/bringup_dpf.sh --dry-run                   # preview (first worker)
 
-# Combined: provision + deploy HBN in one run
-./dpf/scripts/bringup_dpf.sh --rshim-install --hbn
-
-# For a different server (S1, S2 etc):
-./dpf/scripts/bringup_dpf.sh --server s1 \
-  --bmc-ip 10.20.13.216 --oob-ip 10.20.13.247 --serial <SN> \
-  --rshim-install --hbn
-
-./dpf/scripts/bringup_dpf.sh --dry-run          # preview steps without applying
+# legacy explicit-flags form still works:
+./dpf/scripts/bringup_dpf.sh --server s2 --bmc-ip 10.20.13.212 --oob-ip 10.20.13.228 \
+  --serial 53FV46T002X --rshim-install --hbn
 ```
+First boot after a flash = 2 console commands (password + `sudo systemctl start
+dpf-firstboot-kick`); every later boot is hands-off (flavor bakes oob-net0-dhcp + kicker).
 
 **DPF health check:**
 ```bash
-./dpf/scripts/status_dpf.sh
+./dpf/scripts/fleet_status.sh [--frr]    # ALL workers: DPU/cluster/node/HBN (+FRR counts)
+./dpf/scripts/status_dpf.sh              # single-cluster deep check
 ```
+Per-DPU cluster access — use PER-SERVER kubeconfigs (shared ~/dpu-tc-kubeconfig gets
+overwritten by the last bringup): `kubectl --kubeconfig ~/s4-tc-kubeconfig ...` / `~/s2-tc-kubeconfig`.
 
 **Cross-subnet tunnel (required when DPF VM and BF3 are on different subnets):**
 ```bash
@@ -236,6 +240,12 @@ ssh aviz@<x86-host> 'sudo dmidecode -t system | grep -A2 "System Information" | 
 | DPUServices `Sync: Unknown`, CNI never deploys, pods `ContainerCreating` with `loopback: missing network name` | Stale ArgoCD cluster secret after a DPUCluster recreate — `bringup_dpf.sh` Step 9b now always refreshes it; manual: delete `<server>-dpu-cluster` secret in `argocd` and re-run |
 | Fresh BF3 looks "hung" after flash (OOB down, console quiet, BMC `BootProgress=OEM`) | NOT hung — it's at the **first-login password prompt** on the BMC ARM console. Set password (`ubuntu`/`Aviz@AIF12345`), then `sudo dhclient oob_net0`, `sudo systemctl enable --now sfc.service`, `sudo systemctl restart kubeadm-join.service` |
 | Re-flashed BF3: SSH `REMOTE HOST IDENTIFICATION HAS CHANGED` | New host key after flash — `ssh-keygen -R 10.20.13.249` |
+| DPU stuck `Initialize Interface`, logs `status.psid: Invalid value ... '^MT_?[A-Z0-9]+$'` | **Lenovo/OEM card** — DPUDevice CRD only accepts NVIDIA PSIDs. Relax the CRD `status.psid.pattern` to `^[A-Za-z0-9_-]+$` (re-apply after operator upgrades). Prefer NVIDIA-branded cards |
+| 2nd DPUCluster's TCP pods `Pending` (`Insufficient cpu`) | Two 3-replica TCPs don't fit S5 — patch the new TCP: `{"spec":{"controlPlane":{"deployment":{"replicas":1}}}}` |
+| 2nd DPU's pods stuck `ContainerCreating` (`loopback: missing network name`), apps `Sync: Unknown` | Rebuild the ArgoCD cluster secret from the CURRENT tenant kubeconfig + `kubectl rollout restart statefulset/argocd-application-controller -n argocd` |
+| doca-hbn pod deleted → new pod stuck `Init:0/1` forever | init-sfs deadlock: SF netdevs back in host netns unnamed — on the BF3: `sudo systemctl restart sfc.service` |
+| First boot ignores baked systemd units (kicker/oob) | DPF writes flavor configFiles via **cloud-init mid-first-boot** — units can't self-start on boot #1. Console: `sudo systemctl start dpf-firstboot-kick`. Boot #2+ is hands-off |
+| Host VFs impossible on S4's x86 host | `.226` is a **VMware VM** — PCI passthrough doesn't expose SR-IOV (`sriov_totalvfs` empty). Use S2 (bare metal, `/opt/dpf/setup_host_vfs.sh`, rshim0=BF3 rshim1=BF2) for host-VF work |
 
 ---
 

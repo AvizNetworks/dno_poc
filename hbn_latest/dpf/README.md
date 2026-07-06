@@ -27,15 +27,32 @@ DPF Operator VM (10.4.5.136)
   ├── ArgoCD (GitOps for DPU workloads)
   └── bfb-registry (nginx, port 8080 — serves BFB to BMC)
 
-S4 Server
-  ├── x86 host   10.20.13.226  (aviz / aviz@123)      — NOT in k8s (BF3 rshim + SR-IOV VFs)
-  ├── BF3 OOB    10.20.13.249  (ubuntu / Aviz@AIF12345) — joins DPU cluster
+S4 Server — worker1, apiserver :6443
+  ├── x86 host   10.20.13.226  (aviz / aviz@123)      — a VMware VM with the BF3
+  │              passed through. ⚠ Passthrough does NOT expose SR-IOV, so HOST
+  │              VFs (vf0..vf7) are IMPOSSIBLE here — S4 is the control-plane
+  │              validation box; use S2 for host-VF data-path work.
+  ├── BF3 OOB    10.20.13.249  (ubuntu / Aviz@AIF12345) — joins s4-dpu-cluster
   └── BF3 BMC    10.20.13.250  (root / Aviz@AIF12345)   — Redfish endpoint
+
+S2 Server — worker2, apiserver :6444 (bare metal — full host-VF data path)
+  ├── x86 host   10.20.13.12   (admin / Aviz@AIF123)  — TWO DPUs on this host:
+  │              rshim0 = BF3 (c1:00), rshim1 = BF2 (01:00) — always rshim0!
+  │              Host VFs vf0..vf7 via /opt/dpf/setup_host_vfs.sh (host-vfs.service)
+  ├── BF3 OOB    10.20.13.228  (ubuntu / Aviz@AIF12345) — joins s2-dpu-cluster
+  └── BF3 BMC    10.20.13.212  (root / Aviz@AIF12345)   — Lenovo OEM card
+                 (needs the DPUDevice CRD psid-regex relaxation — see Known Issues)
 
 SUBNET NOTE: 10.4.5.x and 10.20.13.x are on different subnets.
   ICMP works both ways. TCP is one-way: DPF VM → x86 host (OK), BF3 → DPF VM (BLOCKED).
   See tunnel_dpf.sh for the workaround.
 ```
+
+**Multi-DPU:** one operator manages many workers. Each worker is an entry in
+`dpf/config.yaml` with a **unique `apiserver_port`** (s4=6443, s2=6444, next=6445…);
+secrets live per-worker in `dpf/config.local.yaml` (gitignored — copy
+`config.local.sample.yaml`). Select with `--worker <name|server>`. Validated 2026-07-06
+with s4+s2 simultaneously Ready. Details: `MULTI-DPU-DESIGN.md`.
 
 ---
 
@@ -45,7 +62,8 @@ All scripts run from the **DPF Operator VM** (`10.4.5.136`). No sudo required.
 
 | Script | Purpose |
 |---|---|
-| `scripts/bringup_dpf.sh` | End-to-end idempotent provisioning |
+| `scripts/bringup_dpf.sh` | End-to-end idempotent provisioning — `--worker <name>` reads `config.yaml`/`config.local.yaml` |
+| `scripts/fleet_status.sh` | **All-DPU status** from config.yaml workers (`--frr` adds interface/VF counts) |
 | `scripts/status_dpf.sh` | Health check — all DPF components |
 | `scripts/tunnel_dpf.sh` | SSH tunnel for cross-subnet kubeadm join (per-server presets, Kamaji IP auto-discovery) |
 | `scripts/setup_host_vfs.sh` | Run on the **x86 host**: enable SR-IOV VFs + rename to `vf0..vfN` (auto-detects the BF3 PFs; errors if >1 BF3) |
@@ -381,15 +399,37 @@ secret (`<server>-dpu-cluster` in `argocd`) still holds the old creds → ArgoCD
 **Fix:** `bringup_dpf.sh` Step 9b now **always refreshes** that secret (was skip-if-exists). Manual:
 delete the secret and re-run, or rebuild it from the fresh `*-dpu-cluster-admin-kubeconfig`.
 
-### 11. BF3 first-boot operational gotchas (hands-on, not script bugs)
-After a fresh flash the BF3 may need three one-time things on first boot:
-1. **First-login password prompt** on the console — the BF3 sits at it and looks "hung" (OOB SSH
-   refused, BMC `BootProgress=OEM`, console quiet). It isn't hung — set the password (default
-   `ubuntu`/`Aviz@AIF12345`) on the BMC ARM console.
-2. **`oob_net0` has no IP** — first boot can leave it down. On the BF3: `sudo dhclient oob_net0`.
-3. **`sfc.service` ships disabled** — it must run to apply the tunnel iptables + wire `br-hbn`.
-   On the BF3: `sudo systemctl enable --now sfc.service`, then `sudo systemctl restart kubeadm-join.service`.
-   (Also: the reflash changes the BF3 SSH host key — clear it: `ssh-keygen -R 10.20.13.249`.)
+### 11. BF3 first-boot: TWO commands on the console (improved 2026-07-06)
+The flavor now bakes `oob-net0-dhcp` + `dpf-firstboot-kick` (see 04-dpuflavor.yaml), which
+automate OOB DHCP, `sfc.service`, and `kubeadm-join` — **but only from the 2nd boot onward**:
+DPF delivers `configFiles` via **cloud-init DURING the first boot**, so no unit written that
+way can self-start on boot #1. First boot after a flash therefore needs exactly one console
+session (BMC ARM console):
+1. Set the password at the first-login prompt (default `ubuntu`/`ubuntu` — the BF3 looks
+   "hung" here: OOB down, `BootProgress=OEM`; it isn't).
+2. `sudo systemctl start dpf-firstboot-kick` — starts OOB DHCP + sfc + kubeadm-join.
+Every subsequent boot is fully hands-off. (Reflash changes the SSH host key —
+`ssh-keygen -R <oob-ip>`.)
+
+### 12. Lenovo OEM BF3: DPUDevice CRD rejects the PSID (v25.10.1)
+**Symptom:** DPU stuck `Initialize Interface` (`DPUDeviceNotReady`); provisioning-controller
+logs `status.psid: Invalid value: "...": psid in body should match '^MT_?[A-Z0-9]+$'`.
+**Cause:** the DPUDevice CRD hard-codes NVIDIA-format PSIDs; OEM cards (Lenovo `SN...`/`LNV...`)
+fail schema validation during discovery. **Fix (cluster-side, re-apply after operator
+upgrades):** relax the CRD pattern to `^[A-Za-z0-9_-]+$` (edit
+`crd/dpudevices.provisioning.dpu.nvidia.com`, `status.properties.psid.pattern`).
+Prefer NVIDIA-branded cards (`900-...` / `MT_...`) — see the buying checklist.
+
+### 13. 2nd TenantControlPlane Pending — `Insufficient cpu`
+Each TCP defaults to 3 replicas; two TCPs don't fit a small operator VM (S5 is ~89% CPU
+requests with one). **Fix:** `kubectl patch tcp <server>-dpu-cluster -n dpf-operator-system
+--type=merge -p '{"spec":{"controlPlane":{"deployment":{"replicas":1}}}}'` — Ready in seconds.
+Size the operator VM up before adding a 3rd DPU.
+
+### 14. doca-hbn pod deleted/rescheduled → stuck `Init:0/1` again
+Deleting the HBN pod re-triggers the init-sfs deadlock: the SF netdevs return to the host
+netns with default names (`enp3s0f0sN`) and sfc's rename watchdog has already exited.
+**Fix on the BF3:** `sudo systemctl restart sfc.service` (re-renames; watchdog re-arms).
 
 ---
 
