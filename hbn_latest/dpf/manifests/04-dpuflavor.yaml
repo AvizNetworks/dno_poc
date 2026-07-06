@@ -199,6 +199,52 @@ spec:
         "br-hbn~enp3s0f0s11~pf1vf3_if_r~pf1vf3_if~pf1vf3_if_r"
         )
 
+    # ── OOB management port auto-DHCP (zero-touch first boot) ─────────────────
+    # oob_net0 (mlxbf_gige) appears late and is left 'unmanaged' by networkd/NM,
+    # so it never gets a DHCP lease on its own — kubeadm-join then can't reach the
+    # API server (the manual "dhclient oob_net0" first-boot step). This oneshot
+    # forces a lease at boot. It is pulled in AND ordered before kubeadm-join via
+    # the drop-in below, so no separate "systemctl enable" is required.
+    - path: /usr/local/bin/oob-net0-up.sh
+      operation: override
+      permissions: "0755"
+      raw: |
+        #!/bin/bash
+        # Ensure the BF3 OOB management port has an IPv4 (DHCP) address at boot.
+        for i in $(seq 1 30); do
+          ip link show oob_net0 >/dev/null 2>&1 && break
+          sleep 2
+        done
+        ip link set oob_net0 up 2>/dev/null || true
+        if ! ip -4 addr show oob_net0 2>/dev/null | grep -q "inet "; then
+          dhclient -1 -v oob_net0 2>&1 | logger -t oob-net0-up || true
+        fi
+        exit 0
+
+    - path: /etc/systemd/system/oob-net0-dhcp.service
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Unit]
+        Description=Ensure oob_net0 has an IPv4 (DHCP) address
+        After=systemd-networkd.service NetworkManager.service
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/local/bin/oob-net0-up.sh
+        [Install]
+        WantedBy=multi-user.target
+
+    # Pull oob-net0-dhcp in *before* kubeadm-join (already enabled) so the OOB
+    # link has an address before the node attempts to join the cluster.
+    - path: /etc/systemd/system/kubeadm-join.service.d/10-oob-net0.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Unit]
+        Wants=oob-net0-dhcp.service
+        After=oob-net0-dhcp.service
+
     # ── sfc.service + sfc.sh: missing from bf3-base BFB, must be deployed ──────
     # sfc.service is the piece the production DOCA HBN BFB normally includes but
     # bf3-base does not. init-sfs (inside the doca-hbn init container) waits for
