@@ -543,6 +543,32 @@ spec:
               log "SFC: WARNING could not add $port to br-hbn"; }
         done
 
+        # 9. Port-pair patch flows — br-hbn runs the sfc-controller OpenFlow
+        #    pipeline, which DROPS traffic with no matching chain. No
+        #    DPUServiceChain objects are defined in this deployment, so patch
+        #    each eswitch port to its HBN SF rep directly (what a chain would
+        #    program). Without these, host<->FRR traffic dies inside br-hbn.
+        # (every command || true — a DPDK-owned port can make ovs-vsctl/ofctl fail,
+        #  and under set -e that would fail sfc.service → kubeadm-join won't start)
+        for pair in "p0:p0_if_r" "p1:p1_if_r" "pf0hpf:pf0hpf_if_r" "pf1hpf:pf1hpf_if_r" \
+                    "pf0vf0:pf0vf0_if_r" "pf0vf1:pf0vf1_if_r" "pf0vf2:pf0vf2_if_r" "pf0vf3:pf0vf3_if_r" \
+                    "pf1vf0:pf1vf0_if_r" "pf1vf1:pf1vf1_if_r" "pf1vf2:pf1vf2_if_r" "pf1vf3:pf1vf3_if_r"; do
+          esw="${pair%%:*}"; rep="${pair##*:}"
+          # register a late-appearing eswitch port (VF reps only exist after the
+          # host creates its SR-IOV VFs)
+          { ip link show "$esw" &>/dev/null 2>&1 && \
+            timeout 15 ovs-vsctl --may-exist add-port br-hbn "$esw" 2>/dev/null; } || true
+          # guard by OpenFlow attachment (ofport>0), not kernel netdev or DB
+          # membership: a port can sit in the OVS DB with ofport=-1 (e.g. p0/p1
+          # when DPDK-attached to br-sfc) and add-flow rejects it as in_port
+          _op_e=$(timeout 15 ovs-vsctl get Interface "$esw" ofport 2>/dev/null) || continue
+          _op_r=$(timeout 15 ovs-vsctl get Interface "$rep" ofport 2>/dev/null) || continue
+          { [ "${_op_e:--1}" -gt 0 ] && [ "${_op_r:--1}" -gt 0 ]; } 2>/dev/null || continue
+          timeout 15 ovs-ofctl add-flow br-hbn "priority=500,in_port=${esw},actions=output:${rep}" 2>/dev/null || true
+          timeout 15 ovs-ofctl add-flow br-hbn "priority=500,in_port=${rep},actions=output:${esw}" 2>/dev/null \
+            && log "SFC: pair flow ${esw} <-> ${rep}" || true
+        done
+
         log "SFC Completed"
 
     - path: /etc/systemd/system/sfc.service
