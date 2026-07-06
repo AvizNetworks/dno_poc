@@ -1,0 +1,338 @@
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#141b27; --bd:#27313f; --fg:#e9eef5; --mut:#93a1b3;
+    --nv:#76b900;
+    --cluster:#a371f7; --node:#3fb950; --pod:#58a6ff; --cont:#f0883e; --ns:#db61a2; --if:#39c5cf; --dp:#e3b341;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--sans)}
+  .deck{height:100vh;width:100vw;overflow:hidden;position:relative}
+  .slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;
+    padding:6vh 8vw;opacity:0;transition:opacity .35s ease}
+  @media(prefers-reduced-motion:reduce){.slide{transition:none}}
+  .slide.active{display:flex;opacity:1}
+  .eyebrow{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--nv);font-weight:700;margin-bottom:14px}
+  .eyebrow .n{color:var(--mut);font-weight:600}
+  h1{font-size:clamp(34px,6vw,68px);line-height:1.04;margin:0 0 14px;text-wrap:balance;font-weight:800;letter-spacing:-.02em}
+  h2{font-size:clamp(26px,4vw,44px);line-height:1.08;margin:0 0 22px;text-wrap:balance;font-weight:800;letter-spacing:-.015em}
+  p.lead{font-size:clamp(17px,2.1vw,22px);color:var(--mut);max-width:60ch;line-height:1.5;margin:0 0 8px}
+  ul{margin:6px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:12px;max-width:70ch}
+  li{font-size:clamp(15px,1.7vw,19px);line-height:1.45;padding-left:26px;position:relative}
+  li::before{content:"";position:absolute;left:0;top:.55em;width:9px;height:9px;border-radius:2px;background:var(--nv)}
+  li b{color:var(--fg)} .mut{color:var(--mut)}
+  code{font-family:var(--mono);font-size:.92em;background:#0a0e15;border:1px solid var(--bd);border-radius:5px;padding:1px 6px;color:#cdd9e5}
+  pre{font-family:var(--mono);background:#070a10;border:1px solid var(--bd);border-left:3px solid var(--nv);
+    border-radius:8px;padding:16px 18px;font-size:clamp(12px,1.45vw,15px);line-height:1.6;overflow:auto;margin:8px 0;max-width:92ch}
+  pre .c{color:var(--mut)} pre .g{color:var(--nv)} pre .o{color:#e9eef5}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start}
+  @media(max-width:820px){.cols{grid-template-columns:1fr;gap:16px}}
+  .card{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px 18px}
+  .card h3{margin:0 0 8px;font-size:16px;letter-spacing:.02em}
+  .card p{margin:0;color:var(--mut);font-size:14.5px;line-height:1.5}
+  .layers{display:flex;flex-direction:column;gap:0}
+  .lyr{border:2px solid;border-radius:10px;padding:10px 14px;margin:7px 0}
+  .lyr .t{font-weight:800;font-size:14px;letter-spacing:.04em}
+  .lyr .d{color:var(--mut);font-size:13px;margin-top:2px}
+  .inset{margin-left:clamp(10px,3vw,40px)}
+  .flow{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin-top:6px}
+  .step{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:12px 14px;flex:1 1 150px;min-width:140px}
+  .step .num{color:var(--nv);font-weight:800;font-family:var(--mono);font-size:13px}
+  .step .x{font-weight:700;margin:4px 0 2px;font-size:15px} .step .y{color:var(--mut);font-size:13px;line-height:1.4}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:820px){.grid3{grid-template-columns:1fr}}
+  table{border-collapse:collapse;width:100%;max-width:80ch;font-size:clamp(13px,1.5vw,16px)}
+  td,th{border:1px solid var(--bd);padding:8px 12px;text-align:left;vertical-align:top}
+  th{background:#1a2230;color:var(--fg)} td .k{font-family:var(--mono);color:var(--if)} .k{font-family:var(--mono);color:var(--if)}
+  .foot{position:absolute;left:8vw;right:8vw;bottom:3.2vh;display:flex;justify-content:space-between;align-items:center;
+    color:var(--mut);font-size:12.5px;border-top:1px solid var(--bd);padding-top:10px}
+  .dots{display:flex;gap:7px;flex-wrap:wrap} .dot{width:8px;height:8px;border-radius:50%;background:#2c3645;cursor:pointer;border:0;padding:0}
+  .dot.on{background:var(--nv)}
+  .brand{font-weight:800;letter-spacing:-.01em} .brand .g{color:var(--nv)}
+  .hint{position:absolute;right:8vw;top:3.2vh;color:var(--mut);font-size:12px}
+  kbd{font-family:var(--mono);background:#0a0e15;border:1px solid var(--bd);border-radius:4px;padding:0 5px;font-size:11px}
+  #dlbtn{position:fixed;left:8vw;top:3vh;z-index:50;background:var(--nv);color:#0b0f17;border:0;
+    border-radius:7px;font:600 13px var(--sans);padding:7px 13px;cursor:pointer;letter-spacing:.01em}
+  #dlbtn:hover{filter:brightness(1.08)} #dlbtn:focus-visible{outline:2px solid #fff;outline-offset:2px}
+  @media print{
+    @page{size:1280px 720px;margin:0}
+    *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}
+    html,body{height:auto;background:var(--bg)}
+    .deck{height:auto;width:auto;overflow:visible;position:static}
+    .slide{display:flex !important;opacity:1 !important;position:relative !important;inset:auto !important;
+      width:1280px;height:720px;page-break-after:always;break-after:page}
+    .slide:last-child{page-break-after:avoid;break-after:avoid}
+    .foot,.hint,#dlbtn,.dots{display:none !important}
+  }
+</style>
+
+<button id="dlbtn" onclick="window.print()" title="Download as PDF — in the print dialog choose 'Save as PDF', landscape, margins: None">⬇ PDF</button>
+<div class="deck" id="deck">
+
+  <!-- 1 title -->
+  <section class="slide active">
+    <h1>DPF&nbsp;+&nbsp;HBN on <span style="color:var(--nv)">BlueField-3</span></h1>
+    <p class="lead">Provisioning and operating DPUs the Kubernetes way — flash, join, deploy HBN, and drive FRR from one control point.</p>
+    <p class="lead" style="font-size:15px;margin-top:18px">Validated end-to-end on <b style="color:var(--fg)">S4</b> · DOCA v25.10.1 · run it with <code>dpf/QUICKSTART.md</code></p>
+    <div class="hint">Use <kbd>→</kbd> / <kbd>←</kbd> to navigate</div>
+  </section>
+
+  <!-- 2 what -->
+  <section class="slide">
+    <div class="eyebrow">1 · The idea <span class="n">/ 15</span></div>
+    <h2>What is DPF?</h2>
+    <p class="lead"><b style="color:var(--fg)">DPF = DOCA Platform Framework</b> (NVIDIA). Kubernetes-native lifecycle management for BlueField-3 DPUs.</p>
+    <ul>
+      <li>You <b>declare the desired state</b> (which OS image, which cluster, which workloads) as Kubernetes objects.</li>
+      <li>DPF <b>makes it happen</b>: flashes the BFB → boots the BF3 → joins it to a cluster → deploys services (HBN) onto it.</li>
+      <li><b>One control point for many DPUs</b> — no SSH to each box. The same <code>kubectl</code> drives 1 or 100.</li>
+    </ul>
+  </section>
+
+  <!-- 3 k8s -->
+  <section class="slide">
+    <div class="eyebrow">2 · Foundation <span class="n">/ 15</span></div>
+    <h2>Kubernetes in 60 seconds</h2>
+    <div class="cols">
+      <div class="layers">
+        <div class="lyr" style="border-color:var(--cluster)"><div class="t" style="color:var(--cluster)">CLUSTER</div><div class="d">control plane (API + scheduler + etcd) that runs & tracks everything</div>
+          <div class="lyr inset" style="border-color:var(--node)"><div class="t" style="color:var(--node)">NODE</div><div class="d">a machine running <code>kubelet</code> that workloads land on</div>
+            <div class="lyr inset" style="border-color:var(--pod)"><div class="t" style="color:var(--pod)">POD</div><div class="d">1+ containers sharing one network identity</div>
+              <div class="lyr inset" style="border-color:var(--cont)"><div class="t" style="color:var(--cont)">CONTAINER</div><div class="d">a process isolated by Linux <span style="color:var(--ns)">namespaces</span> + cgroups</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <ul>
+          <li><b>Declarative:</b> you describe the end state; controllers reconcile to it.</li>
+          <li><b><code>kubectl</code></b> is the remote control — talks to the cluster API, not the machines.</li>
+          <li><b>DaemonSet</b> = "one pod on every node" → deploy once, runs fleet-wide.</li>
+        </ul>
+        <p class="lead" style="font-size:15px;margin-top:16px">DPF builds on these primitives — the BF3 becomes a <span style="color:var(--node)">node</span>, HBN becomes a <span style="color:var(--pod)">pod</span>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 building blocks -->
+  <section class="slide">
+    <div class="eyebrow">3 · NVIDIA's building blocks <span class="n">/ 15</span></div>
+    <h2>What NVIDIA built for DPF</h2>
+    <p class="lead">The <b style="color:var(--fg)">DPF Operator</b> + sub-controllers (provisioning · dpuservice · kamaji-cm · servicechainset), driven by custom resources you declare:</p>
+    <div class="grid3" style="margin-top:14px">
+      <div class="card"><h3 style="color:var(--cluster)">DPFOperatorConfig</h3><p>Bootstraps the whole system on the DPF VM.</p></div>
+      <div class="card"><h3 style="color:var(--dp)">BFB</h3><p>The DPU OS image (DOCA bf-bundle) served to the BF3.</p></div>
+      <div class="card"><h3 style="color:var(--cont)">DPUFlavor</h3><p>How to flash: NIC firmware, hugepages, SubFunctions, config files.</p></div>
+      <div class="card"><h3 style="color:var(--cluster)">DPUCluster</h3><p>A per-DPU virtual k8s control plane, run by <b>Kamaji</b> as pods on the DPF VM.</p></div>
+      <div class="card"><h3 style="color:var(--node)">DPU / DPUNode / DPUDevice</h3><p>The physical BF3 being provisioned and tracked.</p></div>
+      <div class="card"><h3 style="color:var(--pod)">DPUService</h3><p>Workloads pushed onto DPUs — CNI, and <b>HBN</b>.</p></div>
+    </div>
+  </section>
+
+  <!-- 5 topology -->
+  <section class="slide">
+    <div class="eyebrow">4 · Topology <span class="n">/ 15</span></div>
+    <h2>Our setup</h2>
+    <pre><span class="g">DPF Operator VM</span>  (S5 · 10.4.5.136)            <span class="c"># the control plane</span>
+  k3s · DPF Operator v25.10.1 · Kamaji · ArgoCD · bfb-registry
+        │
+        │  flash BFB  (rshim via x86 host, or Redfish)
+        │  Kamaji virtual control plane  ◄── BF3 kubelet joins
+        ▼
+<span class="g">BF3 / BlueField-3</span>  (S4 · OOB 10.20.13.249 · BMC 10.20.13.250)
+   a Kubernetes WORKER node → runs HBN (FRR) as a pod
+        │  PCIe
+        ▼
+<span class="g">x86 host</span>  (10.20.13.226)                       <span class="c"># NOT in k8s</span>
+   BF3 rshim (flash) · SR-IOV VFs (vf0..vf7)</pre>
+    <p class="lead" style="font-size:15px;margin-top:14px">Subnet note: in this lab, TCP <code>10.20.13.x → 10.4.5.x</code> is blocked → a small SSH tunnel bridges the BF3's join. Same-subnet setups skip it.</p>
+  </section>
+
+  <!-- 6 who -->
+  <section class="slide">
+    <div class="eyebrow">5 · Who does what <span class="n">/ 15</span></div>
+    <h2>DPF VM ↔ BF3 ↔ host</h2>
+    <table>
+      <tr><th>Box</th><th>Role</th><th>Runs</th></tr>
+      <tr><td><b>DPF VM</b><br><span class="k">10.4.5.136</span></td><td>Control plane / operator</td><td>k3s, DPF Operator, Kamaji (DPU control planes), ArgoCD, bfb-registry, <span class="k">kubectl</span></td></tr>
+      <tr><td><b>BF3</b><br><span class="k">s4-dpu</span></td><td>k8s <b>worker node</b></td><td><span class="k">kubelet</span> + <span class="k">crictl</span> (no kubectl); the <span class="k">doca-hbn</span> pod = FRR/zebra/NVUE; CNI pods</td></tr>
+      <tr><td><b>x86 host</b><br><span class="k">10.20.13.226</span></td><td>Not in k8s</td><td>BF3 PCIe <b>rshim</b> (OS flash) + <b>SR-IOV VFs</b> <span class="k">vf0..vf7</span></td></tr>
+    </table>
+    <p class="lead" style="font-size:15px;margin-top:16px">Key point: the <b style="color:var(--fg)">x86 host never joins Kubernetes</b> — only the BF3 ARM does.</p>
+  </section>
+
+  <!-- 7 bringup -->
+  <section class="slide">
+    <div class="eyebrow">6 · The bringup <span class="n">/ 15</span></div>
+    <h2>How a BF3 comes up</h2>
+    <div class="flow">
+      <div class="step"><div class="num">1</div><div class="x">Stage BFB</div><div class="y">copy the image to the DPF VM</div></div>
+      <div class="step"><div class="num">2</div><div class="x">Run bringup</div><div class="y"><code>bringup_dpf.sh</code> installs prereqs, creates the cluster, flashes the BF3</div></div>
+      <div class="step"><div class="num">3</div><div class="x">First boot</div><div class="y">set password · <code>dhclient oob_net0</code> · enable <code>sfc.service</code> → BF3 joins</div></div>
+      <div class="step"><div class="num">4</div><div class="x">Re-run</div><div class="y">DPU goes <b>Ready</b>, HBN DaemonSet deploys</div></div>
+      <div class="step"><div class="num">5</div><div class="x">Host VFs</div><div class="y"><code>setup_host_vfs.sh</code> → <code>vf0..vf7</code></div></div>
+    </div>
+    <p class="lead" style="font-size:15px;margin-top:18px">The script is <b style="color:var(--fg)">idempotent</b> — run → do the first-boot steps → re-run to finish. Full runbook: <code>dpf/QUICKSTART.md</code>.</p>
+  </section>
+
+  <!-- 8 host VFs (NEW) -->
+  <section class="slide">
+    <div class="eyebrow">7 · Host ports <span class="n">/ 15</span></div>
+    <h2>Create the workload ports (host VFs)</h2>
+    <p class="lead">SR-IOV <b style="color:var(--fg)">VFs on the x86 host</b> are the ports your VMs / workloads plug into. One command creates and names them.</p>
+    <pre><span class="c"># on the x86 host, after HBN is up</span>
+sudo ./dpf/scripts/setup_host_vfs.sh            <span class="c"># → vf0 .. vf7</span>
+sudo ./dpf/scripts/setup_host_vfs.sh --persist  <span class="c"># survive reboot</span></pre>
+    <ul>
+      <li><b>Auto-detects</b> the BlueField-3 PFs by PCI id — no NIC names to look up.</li>
+      <li>Names them <code>vf0..vf3</code> (PF0) and <code>vf4..vf7</code> (PF1).</li>
+      <li><b>Refuses to run with &gt;1 BF3</b> on a host (avoids ambiguous naming).</li>
+    </ul>
+  </section>
+
+  <!-- 9 router view (NEW) -->
+  <section class="slide">
+    <div class="eyebrow">8 · Mental model <span class="n">/ 15</span></div>
+    <h2>Think of the BF3 as a <span style="color:var(--nv)">router</span></h2>
+    <div class="cols">
+      <div>
+        <pre>          <span class="c">ToR / network</span>
+              │   │
+            <span class="g">p0</span>  <span class="g">p1</span>           <span class="c">← physical uplinks</span>
+      ┌───────┴───┴───────────┐
+      │   BF3  =  ROUTER (FRR) │
+      │   uplinks: p0_if p1_if │
+      │   ports  : pf0vfN_if   │
+      └───────────┬───────────┘
+            <span class="g">vf0 … vf7</span>          <span class="c">← workloads attach</span>
+        x86 host / VMs & apps</pre>
+      </div>
+      <div>
+        <table style="font-size:14px">
+          <tr><th>Host port</th><th>Router (FRR)</th><th>Role</th></tr>
+          <tr><td class="k">vf0</td><td class="k">pf0vf0_if</td><td>workload</td></tr>
+          <tr><td class="k">vf1</td><td class="k">pf0vf1_if</td><td>workload</td></tr>
+          <tr><td class="k">vf2</td><td class="k">pf0vf2_if</td><td>workload</td></tr>
+          <tr><td class="k">vf3</td><td class="k">pf0vf3_if</td><td>workload</td></tr>
+          <tr><td class="k">vf4</td><td class="k">pf1vf0_if</td><td>workload</td></tr>
+          <tr><td class="k">vf5</td><td class="k">pf1vf1_if</td><td>workload</td></tr>
+          <tr><td class="k">vf6</td><td class="k">pf1vf2_if</td><td>workload</td></tr>
+          <tr><td class="k">vf7</td><td class="k">pf1vf3_if</td><td>workload</td></tr>
+          <tr><td class="k">p0 / p1</td><td class="k">p0_if / p1_if</td><td>uplinks</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 demo up -->
+  <section class="slide">
+    <div class="eyebrow">9 · Demo <span class="n">/ 15</span></div>
+    <h2>Is everything up?</h2>
+    <pre><span class="c"># on the DPF Operator VM — operator + provisioning state</span>
+kubectl get dpfoperatorconfig -n dpf-operator-system        <span class="c"># Ready=True</span>
+kubectl get dpu,dpucluster,tenantcontrolplane -n dpf-operator-system
+./dpf/scripts/status_dpf.sh                                  <span class="c"># one-shot health</span></pre>
+    <pre><span class="o">DPU s4-dpu:        Ready</span>
+<span class="o">DPUCluster:        True   Ready   kamaji</span>
+<span class="o">TenantControlPlane:  Ready  10.4.5.136:6443</span></pre>
+  </section>
+
+  <!-- 11 demo node -->
+  <section class="slide">
+    <div class="eyebrow">10 · Demo <span class="n">/ 15</span></div>
+    <h2>The BF3 is a worker node</h2>
+    <pre><span class="c"># point kubectl at the DPU cluster (Kamaji)</span>
+D="kubectl --kubeconfig /home/dpu-vm/dpu-tc-kubeconfig"
+
+$D get nodes -o wide
+<span class="o">NAME     STATUS   ROLES    VERSION</span>
+<span class="o">s4-dpu   Ready    &lt;none&gt;   v1.34.4</span>      <span class="c"># ← the BF3</span>
+
+$D get pods -A | grep -E 'doca-hbn|flannel|coredns'
+<span class="o">doca-hbn   doca-hbn-xxxxx   1/1   Running</span>   <span class="c"># ← HBN</span></pre>
+    <p class="lead" style="font-size:15px;margin-top:12px">100 DPUs = 100 worker nodes in this view. Add one → its HBN DaemonSet pod schedules automatically.</p>
+  </section>
+
+  <!-- 12 demo payoff -->
+  <section class="slide">
+    <div class="eyebrow">11 · Demo — the payoff <span class="n">/ 15</span></div>
+    <h2>Reach FRR with <code>kubectl</code> — no SSH</h2>
+    <pre>POD=$($D get pod -n doca-hbn -o jsonpath='{.items[0].metadata.name}')
+
+<span class="c"># drop into FRR's CLI (zebra/bgpd/staticd answer through vtysh)</span>
+$D exec -it -n doca-hbn $POD -- <span class="g">vtysh</span>
+
+doca-hbn# show interface brief        <span class="c"># p0_if, pf0vf0_if …</span>
+doca-hbn# show ip route               <span class="c"># zebra's RIB</span>
+
+<span class="c"># one-shot, no shell:</span>
+$D exec -n doca-hbn $POD -- vtysh -c "show interface brief"</pre>
+    <p class="lead" style="font-size:15px;margin-top:10px"><code>kubectl exec</code> rides the cluster → BF3 kubelet → into the HBN container. <b style="color:var(--fg)">Same command for any DPU in the fleet.</b></p>
+  </section>
+
+  <!-- 13 caveats -->
+  <section class="slide">
+    <div class="eyebrow">12 · Current scope &amp; caveats <span class="n">/ 15</span></div>
+    <h2>What works today — and what doesn't <span style="color:var(--nv)">yet</span></h2>
+    <ul>
+      <li><b>One DPU per DPF VM</b> — validated for a single BF3.</li>
+      <li><b>Flashing is via rshim, not Redfish.</b> The OS flash goes through the x86 host's PCIe <b>rshim</b> (<code>--rshim-install</code>), so the <b>x86 host must be reachable with a working rshim</b>. <span class="mut">Redfish works only for a genuine BFB version change; S4 was already on the target version, so rshim was required.</span></li>
+      <li><b>Fresh-flash first boot is hands-on</b> — console password, <code>dhclient oob_net0</code>, enable <code>sfc.service</code> (all in <code>QUICKSTART.md</code>).</li>
+    </ul>
+  </section>
+
+  <!-- 14 workflow -->
+  <section class="slide">
+    <div class="eyebrow">13 · Your workflow <span class="n">/ 15</span></div>
+    <h2>Day-to-day for the team</h2>
+    <div class="grid3">
+      <div class="card"><h3 style="color:var(--nv)">Provision</h3><p><code>bringup_dpf.sh</code> → BF3 flashed, joined, HBN running. Follow <code>QUICKSTART.md</code>.</p></div>
+      <div class="card"><h3 style="color:var(--nv)">Operate FRR</h3><p>Your <b>UI / NVUE / REST</b> manages routing on the FRR interfaces — the primary path.</p></div>
+      <div class="card"><h3 style="color:var(--nv)">Debug</h3><p><code>kubectl exec → vtysh</code>, pod logs, <code>status_dpf.sh</code>. See <code>CHEATSHEET.md</code>.</p></div>
+    </div>
+    <ul style="margin-top:18px">
+      <li><b>Fleet model:</b> one DPF VM, many BF3 nodes — provision and inspect them all from one place.</li>
+      <li><b>First bringup of a new server:</b> do it with support on hand (BMC behavior varies per box).</li>
+    </ul>
+  </section>
+
+  <!-- 15 references -->
+  <section class="slide">
+    <div class="eyebrow">14 · References <span class="n">/ 15</span></div>
+    <h2>Where everything lives</h2>
+    <table>
+      <tr><th>Doc</th><th>Use it for</th></tr>
+      <tr><td><span class="k">dpf/QUICKSTART.md</span></td><td>Run it — linear bringup steps + first-boot</td></tr>
+      <tr><td><span class="k">dpf/CHEATSHEET.md</span></td><td>Operate it — pods/nodes/HBN/<code>vtysh</code></td></tr>
+      <tr><td><span class="k">dpf/README.md</span></td><td>Understand it — architecture + every known issue</td></tr>
+    </table>
+    <p class="lead" style="font-size:16px;color:var(--nv);font-weight:700;margin-top:18px">Questions? → live demo.</p>
+  </section>
+
+  <div class="foot">
+    <div class="brand">DPF<span class="g">+</span>HBN · BlueField-3</div>
+    <div class="dots" id="dots"></div>
+    <div id="counter">01 / 15</div>
+  </div>
+</div>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')], dotsWrap=document.getElementById('dots'),
+        counter=document.getElementById('counter'); let i=0;
+  slides.forEach((_,k)=>{const b=document.createElement('button');b.className='dot'+(k?'':' on');
+    b.setAttribute('aria-label','Slide '+(k+1));b.onclick=()=>go(k);dotsWrap.appendChild(b);});
+  const dots=[...dotsWrap.children];
+  function go(n){i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    dots.forEach((d,k)=>d.classList.toggle('on',k===i));
+    counter.textContent=String(i+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');}
+  function next(){go(i+1)} function prev(){go(i-1)}
+  addEventListener('keydown',e=>{
+    if(['ArrowRight','PageDown',' '].includes(e.key)){e.preventDefault();next();}
+    else if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();prev();}
+    else if(e.key==='Home'){go(0)} else if(e.key==='End'){go(slides.length-1)}});
+  document.getElementById('deck').addEventListener('click',e=>{
+    if(e.target.closest('.dot')||e.target.closest('a'))return;
+    (e.clientX > innerWidth*0.62) ? next() : (e.clientX < innerWidth*0.38 ? prev() : null);});
+</script>

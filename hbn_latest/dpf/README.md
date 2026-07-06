@@ -203,6 +203,30 @@ X86_HOST_IP="10.20.13.226"   # S4 x86 host with PCIe rshim to BF3 (pass --x86-ho
 | `06-dpudevice.yaml` | DPUDevice | Physical BF3 (serial + BMC IP) |
 | `07-dpu.yaml` | DPU | Ties everything together, triggers flash |
 | `08-dpucluster.yaml` | DPUCluster | Kamaji TenantControlPlane definition |
+| `09-hbn-daemonset.yaml` | DaemonSet | HBN (doca-hbn) pod on the DPU cluster — see note below |
+
+### Design note: HBN is a raw DaemonSet, not a DPUService (deliberate)
+
+At the pod level HBN is a DaemonSet in *every* deployment method — even NVIDIA's
+DPF-native flow (`DPUService → ArgoCD → doca-hbn Helm chart`) ultimately renders a
+DaemonSet. The difference is only who manages it. We apply the DaemonSet directly
+(`09-hbn-daemonset.yaml`), bypassing the DPUService layer, on purpose:
+
+- **No NGC dependency** — uses the `doca_hbn` image already on the BF3; the
+  DPUService path pulls the Helm chart from NGC.
+- **Determinism on v25.10.1** — the DPUService/ArgoCD layer was the fragile part of
+  this release (stale cluster secrets, `Sync: Unknown`); keeping HBN out of it made
+  bringup reliable.
+- **Our data-plane wiring** — the flavor's `sfc.sh` does the SF renames + `br-hbn`
+  setup that sfc-controller/DPUServiceChain would otherwise own.
+
+Trade-off: DPF cannot lifecycle HBN (`kubectl get dpuservice` won't show it; image
+upgrades are a manual DaemonSet edit), and there is no DPUServiceChain/IPAM
+integration. **Migrate to a DPUService/DPUDeployment when** you go fleet-scale and
+want DPF-managed HBN upgrades, or want NVIDIA's service-chain/IPAM (or EVPN overlay)
+model instead of maintaining `sfc.sh`. Provisioning, the DPUFlavor, and the NVUE/FRR
+config surface are unchanged by that migration — only the layer that applies the
+DaemonSet changes.
 
 ---
 
