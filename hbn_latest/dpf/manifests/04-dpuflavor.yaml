@@ -525,7 +525,13 @@ spec:
             { ovs-vsctl set bridge br-sfc fail_mode=standalone && \
               log "SFC: set br-sfc fail_mode=standalone"; }
         fi
+        # NOTE: pf0vf0..pf1vf3 are the VF ESWITCH representors — the entry point for
+        # x86-host VF traffic into br-hbn. They only exist once the HOST has created
+        # its SR-IOV VFs; if that happens after boot (fresh flash), re-run:
+        #   sudo systemctl restart sfc.service
         for port in p0 p1 pf0hpf pf1hpf \
+                    pf0vf0 pf0vf1 pf0vf2 pf0vf3 \
+                    pf1vf0 pf1vf1 pf1vf2 pf1vf3 \
                     p0_if_r p1_if_r pf0hpf_if_r pf1hpf_if_r \
                     pf0vf0_if_r pf0vf1_if_r pf0vf2_if_r pf0vf3_if_r \
                     pf1vf0_if_r pf1vf1_if_r pf1vf2_if_r pf1vf3_if_r; do
