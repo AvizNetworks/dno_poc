@@ -245,6 +245,62 @@ spec:
         Wants=oob-net0-dhcp.service
         After=oob-net0-dhcp.service
 
+    # ── First-boot kicker (fixes two first-boot races) ─────────────────────────
+    # 1) A unit file written via configFiles is never *enabled* ([Install] needs a
+    #    symlink that only 'systemctl enable' creates) → oob-net0-dhcp never fires.
+    # 2) cloud-init enables kubeadm-join MID-first-boot — too late for systemd to
+    #    start it that boot → node never joins without a manual 'systemctl start'.
+    # Fix: hook the already-enabled cloud-final.service via a drop-in (drop-ins on
+    # enabled units DO load). It Wants= this kicker, which runs after cloud-final
+    # completes, waits for cloud-init to have written kubeadm-join.service, then
+    # starts the chain (kubeadm-join Requires=sfc, Wants=oob-net0-dhcp).
+    # Idempotent: on later boots everything is already enabled → no-op.
+    - path: /usr/local/bin/dpf-firstboot-kick.sh
+      operation: override
+      permissions: "0755"
+      raw: |
+        #!/bin/bash
+        # First-boot kicker: start the DPF join chain once cloud-init has staged it.
+        log() { logger -t dpf-firstboot-kick "$*"; }
+        systemctl start oob-net0-dhcp.service 2>/dev/null || true
+        for i in $(seq 1 120); do
+          [ -f /etc/systemd/system/kubeadm-join.service ] && break
+          sleep 5
+        done
+        if [ ! -f /etc/systemd/system/kubeadm-join.service ]; then
+          log "kubeadm-join.service never appeared after 600s — giving up"
+          exit 0
+        fi
+        systemctl daemon-reload
+        if ! systemctl is-active --quiet kubeadm-join.service; then
+          log "starting kubeadm-join (pulls sfc.service + oob-net0-dhcp)"
+          systemctl start --no-block kubeadm-join.service
+        else
+          log "kubeadm-join already active — nothing to do"
+        fi
+        exit 0
+
+    - path: /etc/systemd/system/dpf-firstboot-kick.service
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Unit]
+        Description=DPF first-boot kicker - start join chain after cloud-init
+        After=cloud-final.service
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/local/bin/dpf-firstboot-kick.sh
+
+    # Drop-in on cloud-final.service (ALREADY ENABLED in the BFB image) — this is
+    # what actually activates the kicker at boot, no 'systemctl enable' needed.
+    - path: /etc/systemd/system/cloud-final.service.d/10-dpf-firstboot.conf
+      operation: override
+      permissions: "0644"
+      raw: |
+        [Unit]
+        Wants=dpf-firstboot-kick.service
+
     # ── sfc.service + sfc.sh: missing from bf3-base BFB, must be deployed ──────
     # sfc.service is the piece the production DOCA HBN BFB normally includes but
     # bf3-base does not. init-sfs (inside the doca-hbn init container) waits for
