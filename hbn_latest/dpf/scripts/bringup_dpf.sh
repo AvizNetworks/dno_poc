@@ -57,13 +57,21 @@ DEPLOY_HBN=false        # deploy HBN as a DaemonSet on BF3 (use --hbn flag)
 # ─── rshim install (alternative to DPF Redfish OS install) ────────────────────
 # Used via --rshim-install when DPF's Redfish path fails (e.g. same-version BMC skip).
 # The x86 host SSHes over rshim to flash the BF3 directly with the DPF bfcfg applied.
-X86_HOST_IP="10.20.13.207"    # x86 host with rshim access to BF3
-X86_HOST_USER="aviz"           # SSH user on x86 host
-X86_HOST_PASS="aviz@123"       # SSH password (or leave empty for key-based auth)
+X86_HOST_IP="10.20.13.226"    # x86 host with rshim access to BF3 (set in config.yaml)
+X86_HOST_USER=""               # SSH user on x86 host      — set in config.local.yaml
+X86_HOST_PASS=""               # SSH password on x86 host  — set in config.local.yaml
+                               # (empty = key-based auth)
 X86_BFB_PATH="~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 RSHIM_DEVICE="rshim0"
 USE_RSHIM=false
+
+# Populated from config.local.yaml (per-worker blocks) — reserved for steps that need them.
+ARM_PASSWORD=""
+BMC_PASSWORD=""
+WORKER_NAME=""                 # --worker <name> selects a worker from config.yaml
 # ──────────────────────────────────────────────────────────────────────────────
+# NOTE: the values above are BUILT-IN DEFAULTS. Precedence (lowest → highest):
+#   built-in defaults  <  dpf/config.yaml  <  dpf/config.local.yaml  <  CLI flags
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
@@ -78,7 +86,15 @@ usage() {
   cat <<EOF
 Usage: $0 [OPTIONS]
 
+Config files (recommended — see dpf/config.yaml):
+  dpf/config.yaml        Topology: operator VM, BFB, workers (worker1, worker2, ...)
+  dpf/config.local.yaml  Secrets: ARM/BMC/x86 passwords (gitignored; copy from
+                         config.local.sample.yaml)
+  Precedence: built-in defaults < config.yaml < config.local.yaml < CLI flags
+
 Options:
+  --worker <name>      Select a worker from config.yaml by name or server id
+                       (e.g. --worker worker1 or --worker s4; default: first worker)
   --server <name>      Server identifier for k8s resource names (default: ${SERVER_NAME})
                        e.g. --server s1 creates s1-dpu, s1-node, s1-bf3, s1-dpu-cluster
   --registry-ip <ip>   Override DPF VM IP for BFB registry/upload (default: auto-detect via hostname -I)
@@ -101,18 +117,108 @@ Options:
   -h, --help           Show this help
 
 Examples:
-  $0                                             # provision S4 (default)
-  $0 --server s1 --bmc-ip 10.20.13.216 --oob-ip 10.20.13.247 --serial <SN>  # S1
-  $0 --server s2 --bmc-ip 10.20.13.212 --oob-ip 10.20.13.228 --serial <SN>  # S2
-  $0 --rshim-install --x86-host 10.20.13.207
+  $0 --worker worker1 --rshim-install --hbn      # everything from config.yaml
+  $0 --worker worker2                            # 2nd worker from config.yaml
+  $0                                             # first worker in config.yaml
+                                                 # (or built-in defaults if no config)
+  $0 --server s2 --bmc-ip 10.20.13.212 --oob-ip 10.20.13.228 --serial <SN>  # flags only
   $0 --upgrade                        # upgrade to default version (${DPF_VERSION})
   $0 --upgrade --version v25.10.2     # upgrade to specific version
 EOF
   exit 0
 }
 
+# ─── Config file loading (dpf/config.yaml + dpf/config.local.yaml) ────────────
+# Values override the built-in defaults above; CLI flags (parsed after this)
+# override everything. --worker is pre-scanned here because worker selection
+# must happen while loading the config, before the main flag loop runs.
+CONFIG_FILE="${SCRIPT_DIR}/../config.yaml"
+CONFIG_LOCAL_FILE="${SCRIPT_DIR}/../config.local.yaml"
+
+_args=("$@")
+for ((_i=0; _i<${#_args[@]}; _i++)); do
+  [[ "${_args[$_i]}" == "--worker" ]] && WORKER_NAME="${_args[$((_i+1))]:-}"
+done
+
+load_yaml_config() {
+  [[ -f "${CONFIG_FILE}" || -f "${CONFIG_LOCAL_FILE}" ]] || return 0
+  if ! python3 -c 'import yaml' 2>/dev/null; then
+    warn "config.yaml found but python3-yaml missing (apt install python3-yaml) — using built-in defaults + flags"
+    return 0
+  fi
+  local _out
+  _out=$(python3 - "${CONFIG_FILE}" "${CONFIG_LOCAL_FILE}" "${WORKER_NAME}" <<'PYEOF'
+import os, shlex, sys, yaml
+
+cfg_f, lcl_f, worker_name = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def load(p):
+    if os.path.exists(p):
+        with open(p) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+def merge(a, b):  # b wins
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(a.get(k), dict):
+            merge(a[k], v)
+        else:
+            a[k] = v
+    return a
+
+c = merge(load(cfg_f), load(lcl_f))
+
+workers = c.get("workers") or []
+w = None
+if worker_name:
+    w = next((x for x in workers
+              if x.get("name") == worker_name or x.get("server") == worker_name), None)
+    if w is None:
+        names = ", ".join(str(x.get("name")) for x in workers) or "<none>"
+        print(f'fail "worker {shlex.quote(worker_name)} not in config.yaml (have: {names})"')
+        sys.exit(0)
+elif workers:
+    w = workers[0]
+
+def emit(var, val):
+    if val not in (None, ""):
+        print(f"{var}={shlex.quote(str(val))}")
+
+bfb = c.get("bfb") or {}
+emit("BFB_FILE", bfb.get("file"))
+emit("BFB_REGISTRY_IP", bfb.get("registry_ip"))
+
+# Credentials from config.local.yaml: one top-level block per worker,
+# keyed by the worker's name (worker1) or server id (s4).
+cred = {}
+if w:
+    for key in (w.get("name"), w.get("server")):
+        if key and isinstance(c.get(key), dict):
+            cred = c[key]
+            break
+emit("X86_HOST_USER", cred.get("x86_host_user"))
+emit("X86_HOST_PASS", cred.get("x86_host_password"))
+emit("ARM_PASSWORD", cred.get("arm_password"))
+emit("BMC_PASSWORD", cred.get("bmc_password"))
+
+if w:
+    emit("SERVER_NAME", w.get("server") or w.get("name"))
+    emit("BF3_BMC_IP", w.get("bmc_ip"))
+    emit("BF3_OOB_IP", w.get("oob_ip"))
+    emit("BF3_SERIAL", w.get("serial"))
+    emit("X86_HOST_IP", w.get("x86_host_ip"))
+    emit("RSHIM_DEVICE", w.get("rshim"))
+    emit("X86_BFB_PATH", w.get("x86_bfb"))
+PYEOF
+  ) || fail "Could not parse ${CONFIG_FILE} / ${CONFIG_LOCAL_FILE}"
+  eval "${_out}"
+  [[ -f "${CONFIG_FILE}" ]] && info "Loaded ${CONFIG_FILE}$( [[ -f "${CONFIG_LOCAL_FILE}" ]] && echo " + config.local.yaml" ) — worker: ${WORKER_NAME:-<first>} → server '${SERVER_NAME}'"
+}
+load_yaml_config
+
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --worker)         shift ;;  # consumed by the config pre-scan above
     --server)         SERVER_NAME="$2";      shift ;;
     --registry-ip)    BFB_REGISTRY_IP="$2"; shift ;;
     --bfb-url)        BFB_URL="$2";          shift ;;
@@ -397,12 +503,13 @@ else
     ok "NFD installed"
   fi
 
-  # Install DPF Operator — prefer local tarball in /tmp/ (avoids NGC credentials requirement)
+  # Install DPF Operator — prefer a local chart tarball (avoids NGC credentials).
+  # /opt/dpf/ is the persistent home (survives reboot); /tmp/ still checked for compat.
   info "  Installing DPF Operator ${DPF_VERSION}..."
   if [[ "${DRY_RUN}" == "true" ]]; then
     info "[dry-run] would install DPF Operator ${DPF_VERSION}"
   else
-    LOCAL_CHART=$(ls /tmp/dpf-operator-*.tgz 2>/dev/null | head -1 || echo "")
+    LOCAL_CHART=$(ls /opt/dpf/dpf-operator-*.tgz /tmp/dpf-operator-*.tgz 2>/dev/null | head -1 || echo "")
     if [[ -n "${LOCAL_CHART}" ]]; then
       info "  Using local chart tarball: ${LOCAL_CHART}"
       helm install dpf-operator "${LOCAL_CHART}" \
@@ -410,7 +517,7 @@ else
         --wait --timeout 5m \
         || fail "DPF Operator install failed — check: kubectl get pods -n ${DPF_NAMESPACE}"
     else
-      info "  No local chart found in /tmp/ — trying Helm repo (requires NGC credentials)"
+      info "  No local chart in /opt/dpf/ or /tmp/ — trying Helm repo (requires NGC credentials)"
       helm repo add dpf-repository \
         "https://helm.ngc.nvidia.com/nvidia/doca" 2>/dev/null || true
       helm repo update dpf-repository 2>/dev/null
@@ -418,7 +525,7 @@ else
         --version "${DPF_VERSION}" \
         --namespace "${DPF_NAMESPACE}" --create-namespace \
         --wait --timeout 5m \
-        || fail "DPF Operator install failed. If NGC auth error, copy chart tarball to /tmp/dpf-operator-${DPF_VERSION}.tgz and re-run"
+        || fail "DPF Operator install failed. If NGC auth error, copy chart tarball to /opt/dpf/dpf-operator-${DPF_VERSION}.tgz and re-run"
     fi
     ok "DPF Operator ${DPF_VERSION} installed"
   fi

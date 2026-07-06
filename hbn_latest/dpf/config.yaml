@@ -1,0 +1,35 @@
+# dpf/config.yaml — cluster topology for bringup_dpf.sh (committed — NO SECRETS here)
+#
+# Passwords live in dpf/config.local.yaml (gitignored) — copy config.local.sample.yaml.
+# Select a worker with:  ./scripts/bringup_dpf.sh --worker worker1 ...
+# If --worker is omitted, the FIRST worker in the list is used.
+# CLI flags (--bmc-ip, --oob-ip, ...) still override anything set here.
+
+operator:                # the VM this script runs on (DPF Operator VM)
+  name: s5
+  ip: 10.4.5.136
+
+bfb:
+  file: /opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb
+  # registry_ip: 10.4.5.136   # optional — default: auto-detect (hostname -I)
+
+workers:
+  - name: worker1
+    server: s4               # k8s resource prefix → s4-dpu, s4-node, s4-bf3, s4-dpu-cluster
+    bmc_ip: 10.20.13.250     # BF3 BMC (Redfish endpoint)
+    oob_ip: 10.20.13.249     # BF3 OOB management IP
+    serial: MT2437600HGY     # from: sudo dmidecode -t system | grep Serial (on the BF3)
+    x86_host_ip: 10.20.13.226  # x86 host with rshim access (for --rshim-install)
+    rshim: rshim0
+    x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"  # BFB path on x86 host
+
+  # - name: worker2
+  #   server: s2
+  #   bmc_ip: 10.20.13.212
+  #   oob_ip: 10.20.13.228
+  #   serial: <SN>             # fill before use: sudo dmidecode -t system | grep Serial
+  #   x86_host_ip: 10.20.13.12
+  #   rshim: rshim0
+
+  # S1 (10.20.13.216) is DPF-INCOMPATIBLE: BMC has no /redfish/v1/Chassis/Card1
+  # and the host-side rshim is broken — use scripts/bringup_hbn_bf3.sh standalone instead.

@@ -1,0 +1,11 @@
+# secrets — never commit
+dpf/config.local.yaml
+# local/session artifacts
+.claude/
+cluster-dump.html
+dedup_architecture.html
+nvidia_ra1_architecture.html
+*.tgz
+# NVIDIA vendor drops (reference only, not our deliverable)
+dpf-poc-*/
+dpf-setup-py-*/

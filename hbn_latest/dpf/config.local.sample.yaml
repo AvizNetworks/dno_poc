@@ -1,0 +1,18 @@
+# dpf/config.local.sample.yaml — TEMPLATE for secrets.
+#
+#   cp config.local.sample.yaml config.local.yaml   # then fill in real values
+#
+# config.local.yaml is GITIGNORED — never commit it.
+# One block per worker, same names as in config.yaml.
+
+worker1:
+  arm_password: "<ubuntu password on the BF3 ARM>"    # ubuntu@<oob_ip>
+  bmc_password: "<BF3 BMC root password>"             # root@<bmc_ip> (Redfish)
+  x86_host_user: "<ssh user on x86 host>"             # for --rshim-install
+  x86_host_password: "<ssh password on x86 host>"
+
+# worker2:
+#   arm_password: "..."
+#   bmc_password: "..."
+#   x86_host_user: "..."
+#   x86_host_password: "..."
