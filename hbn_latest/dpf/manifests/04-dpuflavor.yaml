@@ -328,6 +328,8 @@ spec:
         log() { echo "$*"; logger -t "$LOG_TAG" "$*"; }
 
         X86_HOST_IP="10.20.13.207"   # x86 relay host for cross-subnet API server tunnel
+        DPF_VM_IP="10.4.5.136"       # DPF VM (kubeadm join endpoint address)
+        APISERVER_PORT="6443"        # this cluster's TCP NodePort — UNIQUE per worker
 
         log "SFC: starting"
 
@@ -445,27 +447,27 @@ spec:
 
         # 6. iptables cross-subnet rules — route cluster VIP to x86 host tunnel
         #    BF3 (10.20.13.x) cannot TCP to DPF VM (10.4.5.x). These DNAT rules
-        #    redirect 10.96.0.1:443 (k8s ClusterIP) to ${X86_HOST_IP}:6443 where
-        #    the SSH reverse tunnel forwards to Kamaji. Must be at position 1
+        #    redirect 10.96.0.1:443 (k8s ClusterIP) to ${X86_HOST_IP}:${APISERVER_PORT}
+        #    where the SSH reverse tunnel forwards to Kamaji. Must be at position 1
         #    (before kube-proxy KUBE-SERVICES chain adds its own DNAT first).
         iptables -t nat -D OUTPUT -d 10.96.0.1 -p tcp --dport 443 \
-          -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null || true
+          -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}" 2>/dev/null || true
         iptables -t nat -I OUTPUT 1 -d 10.96.0.1 -p tcp --dport 443 \
-          -j DNAT --to-destination "${X86_HOST_IP}:6443"
+          -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}"
         iptables -t nat -D PREROUTING -d 10.96.0.1 -p tcp --dport 443 \
-          -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null || true
+          -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}" 2>/dev/null || true
         iptables -t nat -I PREROUTING 1 -d 10.96.0.1 -p tcp --dport 443 \
-          -j DNAT --to-destination "${X86_HOST_IP}:6443"
-        iptables -t nat -C POSTROUTING -d "${X86_HOST_IP}" -p tcp --dport 6443 \
+          -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}"
+        iptables -t nat -C POSTROUTING -d "${X86_HOST_IP}" -p tcp --dport "${APISERVER_PORT}" \
           -j MASQUERADE 2>/dev/null || \
-        iptables -t nat -A POSTROUTING -d "${X86_HOST_IP}" -p tcp --dport 6443 \
+        iptables -t nat -A POSTROUTING -d "${X86_HOST_IP}" -p tcp --dport "${APISERVER_PORT}" \
           -j MASQUERADE
-        # Also Rule 1: direct 10.4.5.136:6443 → x86 host (for initial kubeadm join)
-        iptables -t nat -D OUTPUT -d 10.4.5.136 -p tcp --dport 6443 \
-          -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null || true
-        iptables -t nat -I OUTPUT 1 -d 10.4.5.136 -p tcp --dport 6443 \
-          -j DNAT --to-destination "${X86_HOST_IP}:6443"
-        log "SFC: iptables cross-subnet rules applied"
+        # Also Rule 1: direct ${DPF_VM_IP}:${APISERVER_PORT} → x86 host (initial kubeadm join)
+        iptables -t nat -D OUTPUT -d "${DPF_VM_IP}" -p tcp --dport "${APISERVER_PORT}" \
+          -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}" 2>/dev/null || true
+        iptables -t nat -I OUTPUT 1 -d "${DPF_VM_IP}" -p tcp --dport "${APISERVER_PORT}" \
+          -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}"
+        log "SFC: iptables cross-subnet rules applied (apiserver port ${APISERVER_PORT})"
 
         # 5b. iptables watchdog — kube-proxy inserts KUBE-SERVICES at position 1 in
         #     both OUTPUT and PREROUTING after sfc.service completes, pushing our
@@ -482,9 +484,9 @@ spec:
               [ -z "$KUBE_POS" ] && continue
               [ -n "$OUR_POS" ] && [ "$OUR_POS" -le "$KUBE_POS" ] && continue
               iptables -t nat -D "$CHAIN" -d 10.96.0.1 -p tcp --dport 443 \
-                -j DNAT --to-destination "${X86_HOST_IP}:6443" 2>/dev/null; true
+                -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}" 2>/dev/null; true
               iptables -t nat -I "$CHAIN" 1 -d 10.96.0.1 -p tcp --dport 443 \
-                -j DNAT --to-destination "${X86_HOST_IP}:6443"
+                -j DNAT --to-destination "${X86_HOST_IP}:${APISERVER_PORT}"
               logger -t sfc.service "iptables: reordered DNAT before KUBE-SERVICES in $CHAIN"
             done
           done

@@ -88,14 +88,25 @@ apply_server_preset() {
 }
 
 discover_kamaji_ip() {
-  [[ -n "${KAMAJI_CLUSTER_IP}" ]] && return 0
-  local ip
-  ip=$(KUBECONFIG="${KUBECONFIG_PATH}" kubectl get svc "${SERVER_NAME}-dpu-cluster" \
-        -n "${DPF_NAMESPACE}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
-  [[ -n "${ip}" && "${ip}" != "None" ]] \
-    || fail "Could not auto-discover Kamaji ClusterIP from svc '${SERVER_NAME}-dpu-cluster' (ns ${DPF_NAMESPACE}). Is the DPUCluster created yet? Pass --kamaji-ip <IP> explicitly."
-  KAMAJI_CLUSTER_IP="${ip}"
-  info "Discovered Kamaji ClusterIP: ${KAMAJI_CLUSTER_IP} (svc ${SERVER_NAME}-dpu-cluster)"
+  if [[ -z "${KAMAJI_CLUSTER_IP}" ]]; then
+    local ip
+    ip=$(KUBECONFIG="${KUBECONFIG_PATH}" kubectl get svc "${SERVER_NAME}-dpu-cluster" \
+          -n "${DPF_NAMESPACE}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+    [[ -n "${ip}" && "${ip}" != "None" ]] \
+      || fail "Could not auto-discover Kamaji ClusterIP from svc '${SERVER_NAME}-dpu-cluster' (ns ${DPF_NAMESPACE}). Is the DPUCluster created yet? Pass --kamaji-ip <IP> explicitly."
+    KAMAJI_CLUSTER_IP="${ip}"
+    info "Discovered Kamaji ClusterIP: ${KAMAJI_CLUSTER_IP} (svc ${SERVER_NAME}-dpu-cluster)"
+  fi
+  # Multi-DPU: each cluster gets a UNIQUE apiserver port (bringup patches
+  # networkProfile.port; the svc port follows). Discover it so the tunnel
+  # always forwards the right port — never assume 6443.
+  local port
+  port=$(KUBECONFIG="${KUBECONFIG_PATH}" kubectl get svc "${SERVER_NAME}-dpu-cluster" \
+          -n "${DPF_NAMESPACE}" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
+  if [[ -n "${port}" && "${port}" != "${KAMAJI_PORT}" ]]; then
+    info "Discovered per-cluster apiserver port: ${port} (was assuming ${KAMAJI_PORT})"
+    KAMAJI_PORT="${port}"
+  fi
 }
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -219,6 +230,7 @@ cmd_status() {
 }
 
 cmd_bf3() {
+  discover_kamaji_ip   # also discovers this cluster's unique apiserver port
   # Print the commands to run on the BF3 (ubuntu@10.20.13.249).
   # These cannot be run automatically because the DPF VM can't SSH to the BF3
   # (TCP from 10.4.5.x to 10.20.13.x is blocked).

@@ -1,0 +1,91 @@
+Building configuration...
+
+Current configuration:
+!
+frr version 8.4.3
+frr defaults datacenter
+hostname doca-hbn-service-localhost
+log syslog informational
+service integrated-vtysh-config
+!
+ip route 5.5.5.0/24 5.5.5.1
+ip route 192.168.201.0/24 192.168.201.1
+!
+vrf VrfBlue
+ vni 4001
+exit-vrf
+!
+vrf VrfStorage
+ vni 3996
+exit-vrf
+!
+router bgp 4210000004
+ bgp router-id 10.253.0.2
+ bgp bestpath as-path multipath-relax
+ bgp bestpath compare-routerid
+ neighbor 10.254.0.1 remote-as 4210000001
+ neighbor 10.254.0.1 advertisement-interval 0
+ neighbor 10.254.0.1 timers 3 9
+ neighbor 10.254.0.1 timers connect 10
+ neighbor 10.254.0.3 remote-as 4210000001
+ neighbor 10.254.0.3 advertisement-interval 0
+ neighbor 10.254.0.3 timers 3 9
+ neighbor 10.254.0.3 timers connect 10
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  maximum-paths 16
+  maximum-paths ibgp 64
+ exit-address-family
+ !
+ address-family l2vpn evpn
+  neighbor 10.254.0.1 activate
+  neighbor 10.254.0.3 activate
+  advertise-all-vni
+  vni 1069
+   advertise-svi-ip
+  exit-vni
+ exit-address-family
+exit
+!
+router bgp 4210000004 vrf VrfStorage
+ bgp router-id 10.253.0.2
+ bgp bestpath as-path multipath-relax
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  maximum-paths 64
+  maximum-paths ibgp 64
+ exit-address-family
+ !
+ address-family l2vpn evpn
+  advertise ipv4 unicast
+  rd 10.253.0.2:3996
+ exit-address-family
+exit
+!
+router bgp 4210000004 vrf VrfBlue
+ bgp router-id 10.253.0.2
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  maximum-paths 64
+  maximum-paths ibgp 64
+ exit-address-family
+ !
+ address-family ipv6 unicast
+  redistribute connected
+  maximum-paths 64
+  maximum-paths ibgp 64
+ exit-address-family
+ !
+ address-family l2vpn evpn
+  advertise ipv4 unicast
+  advertise ipv6 unicast
+ exit-address-family
+exit
+!
+bfd
+exit
+!
+end

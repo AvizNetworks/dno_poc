@@ -19,17 +19,22 @@ workers:
     bmc_ip: 10.20.13.250     # BF3 BMC (Redfish endpoint)
     oob_ip: 10.20.13.249     # BF3 OOB management IP
     serial: MT2437600HGY     # from: sudo dmidecode -t system | grep Serial (on the BF3)
+    apiserver_port: 6443     # Kamaji TenantControlPlane NodePort on the DPF VM —
+                             # MUST BE UNIQUE per worker (every TCP defaults to 6443;
+                             # two workers on one port = "port is already allocated")
     x86_host_ip: 10.20.13.226  # x86 host with rshim access (for --rshim-install)
     rshim: rshim0
     x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"  # BFB path on x86 host
 
-  # - name: worker2
-  #   server: s2
-  #   bmc_ip: 10.20.13.212
-  #   oob_ip: 10.20.13.228
-  #   serial: <SN>             # fill before use: sudo dmidecode -t system | grep Serial
-  #   x86_host_ip: 10.20.13.12
-  #   rshim: rshim0
+  - name: worker2
+    server: s2
+    bmc_ip: 10.20.13.212
+    oob_ip: 10.20.13.228
+    serial: 53FV46T002X
+    apiserver_port: 6444     # unique — worker1 owns 6443
+    x86_host_ip: 10.20.13.12
+    rshim: rshim0            # NOTE: S2 host has TWO DPUs — rshim0=BF3 (c1:00), rshim1=BF2
+    x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 
   # S1 (10.20.13.216) is DPF-INCOMPATIBLE: BMC has no /redfish/v1/Chassis/Card1
   # and the host-side rshim is broken — use scripts/bringup_hbn_bf3.sh standalone instead.

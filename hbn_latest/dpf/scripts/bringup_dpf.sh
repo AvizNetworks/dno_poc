@@ -69,6 +69,9 @@ USE_RSHIM=false
 ARM_PASSWORD=""
 BMC_PASSWORD=""
 WORKER_NAME=""                 # --worker <name> selects a worker from config.yaml
+APISERVER_PORT="6443"          # Kamaji TCP NodePort on the DPF VM — UNIQUE per worker
+                               # (multi-DPU: every TCP defaults to 6443 and collides;
+                               #  set per-worker apiserver_port in config.yaml)
 # ──────────────────────────────────────────────────────────────────────────────
 # NOTE: the values above are BUILT-IN DEFAULTS. Precedence (lowest → highest):
 #   built-in defaults  <  dpf/config.yaml  <  dpf/config.local.yaml  <  CLI flags
@@ -206,6 +209,7 @@ if w:
     emit("BF3_BMC_IP", w.get("bmc_ip"))
     emit("BF3_OOB_IP", w.get("oob_ip"))
     emit("BF3_SERIAL", w.get("serial"))
+    emit("APISERVER_PORT", w.get("apiserver_port"))
     emit("X86_HOST_IP", w.get("x86_host_ip"))
     emit("RSHIM_DEVICE", w.get("rshim"))
     emit("X86_BFB_PATH", w.get("x86_bfb"))
@@ -453,6 +457,7 @@ echo "  DPF Operator VM : ${BFB_REGISTRY_IP}"
 echo "  BF3 BMC         : ${BF3_BMC_IP}"
 echo "  BF3 OOB         : ${BF3_OOB_IP}"
 echo "  BF3 Serial      : ${BF3_SERIAL}"
+echo "  API server port : ${APISERVER_PORT} (Kamaji NodePort — unique per worker)"
 echo "  BFB URL         : ${BFB_URL}"
 echo "  $(date)"
 echo "============================================================"
@@ -839,11 +844,12 @@ else
   _flavor_tmp=$(mktemp)
   sed -e "s|^  name: bf3-hbn|  name: ${DPU_FLAVOR_NAME}|" \
       -e "s|X86_HOST_IP=\"[^\"]*\"|X86_HOST_IP=\"${X86_HOST_IP}\"|g" \
-      -e "s|-d 10\\.4\\.5\\.136 -p tcp --dport 6443|-d ${BFB_REGISTRY_IP} -p tcp --dport 6443|g" \
+      -e "s|DPF_VM_IP=\"[^\"]*\"|DPF_VM_IP=\"${BFB_REGISTRY_IP}\"|g" \
+      -e "s|APISERVER_PORT=\"[^\"]*\"|APISERVER_PORT=\"${APISERVER_PORT}\"|g" \
       "${MANIFESTS_DIR}/04-dpuflavor.yaml" > "${_flavor_tmp}"
   kube apply -f "${_flavor_tmp}"
   rm -f "${_flavor_tmp}"
-  ok "DPUFlavor '${DPU_FLAVOR_NAME}' applied (X86_HOST_IP=${X86_HOST_IP}, DPF_VM=${BFB_REGISTRY_IP})"
+  ok "DPUFlavor '${DPU_FLAVOR_NAME}' applied (X86_HOST_IP=${X86_HOST_IP}, DPF_VM=${BFB_REGISTRY_IP}, APISERVER_PORT=${APISERVER_PORT})"
 fi
 
 # ─── Step 9: DPUCluster ───────────────────────────────────────────────────────
@@ -877,6 +883,20 @@ if [[ "${DRY_RUN}" != "true" ]]; then
           && ok "Patched TenantControlPlane networkProfile.address=${BFB_REGISTRY_IP}"
       else
         ok "TenantControlPlane networkProfile.address already set (${_cur_addr})"
+      fi
+      # Multi-DPU: every TCP defaults to NodePort 6443 on the DPF VM — the 2nd
+      # cluster's Service fails with "port is already allocated". Patch this
+      # cluster's unique port (config.yaml apiserver_port) so they coexist.
+      # Must land BEFORE the DPU/bfcfg is generated so the kubeadm join endpoint
+      # picks up the right port. (port is an integer — no quotes in the JSON)
+      _cur_port=$(kube get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+        -o jsonpath='{.spec.networkProfile.port}' 2>/dev/null || echo "")
+      if [[ "${_cur_port}" != "${APISERVER_PORT}" ]]; then
+        kube patch tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+          --type=merge -p "{\"spec\":{\"networkProfile\":{\"port\":${APISERVER_PORT}}}}" \
+          && ok "Patched TenantControlPlane networkProfile.port=${APISERVER_PORT} (was: ${_cur_port:-unset})"
+      else
+        ok "TenantControlPlane networkProfile.port already ${APISERVER_PORT}"
       fi
       _tcp_patched="yes"; break
     fi
