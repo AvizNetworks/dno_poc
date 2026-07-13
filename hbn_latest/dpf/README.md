@@ -246,6 +246,17 @@ model instead of maintaining `sfc.sh`. Provisioning, the DPUFlavor, and the NVUE
 config surface are unchanged by that migration — only the layer that applies the
 DaemonSet changes.
 
+**Data-plane consequence of this choice (important):** in DPF's design, the
+port↔HBN wiring is owned by DPUServiceChain objects (the sfc-controller drops all
+unchained traffic by default). With no chains defined, our `sfc.sh` installs static
+**priority-500 port-pair flows** (eswitch port ↔ HBN SF rep — validated end-to-end
+on S2, all 12 ports). Two caveats: (1) **the data plane is CPU-routed** (software
+datapath) — correct for all functional/config work, not for throughput benchmarks;
+hardware (eswitch) offload comes with the DPUService migration, which also replaces
+the static flows with managed chains. (2) Do **NOT** flip `br-hbn` to
+`datapath_type=netdev` hoping for offload — tested: no offload results, and the
+sfc-controller reconciles its pipeline back within minutes, breaking the data path.
+
 ---
 
 ## Kamaji — Virtual k8s Control Planes
@@ -430,6 +441,19 @@ Size the operator VM up before adding a 3rd DPU.
 Deleting the HBN pod re-triggers the init-sfs deadlock: the SF netdevs return to the host
 netns with default names (`enp3s0f0sN`) and sfc's rename watchdog has already exited.
 **Fix on the BF3:** `sudo systemctl restart sfc.service` (re-renames; watchdog re-arms).
+
+### 15. Host↔FRR traffic dead on some/all ports (ARP leaves `pfXvfN_if`, nothing at the host VF)
+**Cause:** br-hbn's sfc-controller pipeline drops everything with no service chain, and no
+DPUServiceChains are defined — the port↔SF pair flows were missing. **Fixed in `sfc.sh`**
+(priority-500 pair flows + VF eswitch reps as bridge ports; hardened: `|| true` everywhere,
+guard `ofport>0`, `timeout 15`). If a port still doesn't pass traffic:
+`sudo ovs-ofctl dump-flows br-hbn | grep priority=500` (S2 full set = 24) and
+`sudo systemctl restart sfc.service`. Note: if the host's SR-IOV VFs are created AFTER boot,
+restart sfc once so the VF eswitch reps get wired.
+**Also applies to STANDALONE boxes upgraded with `--vfs`** (e.g. S1): the stock pair-rule
+machinery there only manages the original 4 ports — the 8 VF pairs are missing
+(`LINK_PROPAGATION` in `/etc/mellanox/hbn.conf` + VF reps must be adopted by the stock sfc,
+NOT by static flows — its refresher deletes foreign rules). Needs a maintenance window.
 
 ---
 

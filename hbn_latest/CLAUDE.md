@@ -246,6 +246,9 @@ ssh aviz@<x86-host> 'sudo dmidecode -t system | grep -A2 "System Information" | 
 | doca-hbn pod deleted → new pod stuck `Init:0/1` forever | init-sfs deadlock: SF netdevs back in host netns unnamed — on the BF3: `sudo systemctl restart sfc.service` |
 | First boot ignores baked systemd units (kicker/oob) | DPF writes flavor configFiles via **cloud-init mid-first-boot** — units can't self-start on boot #1. Console: `sudo systemctl start dpf-firstboot-kick`. Boot #2+ is hands-off |
 | Host VFs impossible on S4's x86 host | `.226` is a **VMware VM** — PCI passthrough doesn't expose SR-IOV (`sriov_totalvfs` empty). Use S2 (bare metal, `/opt/dpf/setup_host_vfs.sh`, rshim0=BF3 rshim1=BF2) for host-VF work |
+| Host↔FRR traffic dead (ARP leaves `pfXvfN_if`, nothing at host VF) | br-hbn drops unchained traffic; `sfc.sh` now installs priority-500 port-pair flows (validated S2, all 12 ports). Check `ovs-ofctl dump-flows br-hbn \| grep -c priority=500`; `systemctl restart sfc.service` re-applies (also needed once if host VFs created after boot) |
+| Throughput low / ARM cores busy under load | DPF HBN data plane is **CPU-routed** (software datapath) — by design of the raw-DaemonSet deployment. Eswitch offload = DPUService/chains migration (README design note). Do NOT flip br-hbn to netdev — tested, doesn't offload, sfc-controller reverts it |
+| **Standalone** (S1-class) `--vfs` box: VF ports pass no traffic | Stock pair-rule machinery only manages the original 4 ports; the 8 VF pairs are missing. Fix via `/etc/mellanox/hbn.conf` `LINK_PROPAGATION` + stock sfc adoption in a maintenance window — NOT static flows (its refresher deletes foreign rules) |
 
 ---
 
