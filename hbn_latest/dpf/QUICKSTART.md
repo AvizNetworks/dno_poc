@@ -15,8 +15,18 @@ cd ~/hbn/dpf
 cp config.local.sample.yaml config.local.yaml   # then fill in the real passwords
 ```
 
-### 1. Put the BFB image on the DPF VM (and the worker's x86 host for rshim)
+### 1. Get the BFB image and place it on the DPF VM (and the worker's x86 host for rshim)
+
+> **The BFB is NOT included in this package** — it is NVIDIA software, downloaded under
+> your own DOCA license from NVIDIA's DOCA downloads (BlueField BFB bundles).
+> This release is validated against exactly this build — verify the checksum:
+> ```
+> file:   bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb   (~1.5 GB)
+> sha256: f74e8a5cf8a1628094b5e77a6d9a7eae47fe15b11e5a9e64e125c7369906d8af
+> ```
+
 ```bash
+sha256sum bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb   # must match the value above
 scp bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb dpu-vm@<DPF_VM>:/opt/bfb/
 scp bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb <x86_user>@<X86_HOST>:~/
 ```
