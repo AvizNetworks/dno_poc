@@ -59,32 +59,64 @@ set -euo pipefail
 
 # ─── Configuration (defaults = S4; override per server via flags) ───────────────
 SERVER_NAME="s4"                 # DPU cluster name prefix → <server>-dpu-cluster svc
-X86_HOST_IP="10.20.13.207"       # x86 host — on same subnet as BF3, reachable from DPF VM
-X86_HOST_USER="aviz"
-X86_HOST_PASS="aviz@123"
+X86_HOST_IP="10.20.13.226"       # x86 host — on same subnet as BF3, reachable from DPF VM
+X86_HOST_USER=""                 # from config.local.yaml (x86_host_user)
+X86_HOST_PASS=""                 # from config.local.yaml (x86_host_password)
 
 KAMAJI_CLUSTER_IP=""             # auto-discovered from <server>-dpu-cluster svc if empty
-KAMAJI_PORT="6443"               # Kamaji API server port
+KAMAJI_PORT="6443"               # Kamaji API server port (auto-discovered per cluster)
 
 DPF_VM_IP="10.4.5.136"          # DPF Operator VM (this machine) — in kubeadm bfcfg endpoint
 BF3_OOB_IP="10.20.13.249"       # BF3 OOB IP
-BF3_OOB_PASS="Aviz@AIF12345"    # BF3 ubuntu password
+BF3_OOB_PASS=""                 # from config.local.yaml (arm_password)
 DPF_NAMESPACE="dpf-operator-system"
 KUBECONFIG_PATH="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 [[ -r "${KUBECONFIG_PATH}" ]] || KUBECONFIG_PATH="${HOME}/.kube/config"
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ─── Per-server presets ─────────────────────────────────────────────────────────
-# Flags override these. Example: ./tunnel_dpf.sh --server s1 start
+# IPs preset here; CREDENTIALS come from ../config.yaml + ../config.local.yaml
+# (gitignored) — the same per-worker blocks bringup_dpf.sh uses. Flags override.
 apply_server_preset() {
   case "${SERVER_NAME}" in
-    s1) X86_HOST_IP="10.20.13.13";  X86_HOST_USER="admin"; X86_HOST_PASS="Aviz@AIF123";
-        BF3_OOB_IP="10.20.13.247";  BF3_OOB_PASS="Aviz@AIF12345" ;;
-    s2) X86_HOST_IP="10.20.13.12";  X86_HOST_USER="admin"; X86_HOST_PASS="Aviz@AIF123";
-        BF3_OOB_IP="10.20.13.228";  BF3_OOB_PASS="Aviz@AIF12345" ;;
-    s4) X86_HOST_IP="10.20.13.226"; X86_HOST_USER="aviz";  X86_HOST_PASS="aviz@123";
-        BF3_OOB_IP="10.20.13.249";  BF3_OOB_PASS="Aviz@AIF12345" ;;
+    s1) X86_HOST_IP="10.20.13.13";  BF3_OOB_IP="10.20.13.247" ;;
+    s2) X86_HOST_IP="10.20.13.12";  BF3_OOB_IP="10.20.13.228" ;;
+    s4) X86_HOST_IP="10.20.13.226"; BF3_OOB_IP="10.20.13.249" ;;
   esac
+  # load credentials (and any IP overrides) for this server from the config files
+  local _dir _out
+  _dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _out=$(python3 - "${_dir}/../config.yaml" "${_dir}/../config.local.yaml" "${SERVER_NAME}" 2>/dev/null <<'PYEOF'
+import os, shlex, sys, yaml
+cfg_f, lcl_f, srv = sys.argv[1], sys.argv[2], sys.argv[3]
+def load(p):
+    if os.path.exists(p):
+        with open(p) as f: return yaml.safe_load(f) or {}
+    return {}
+def merge(a, b):
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(a.get(k), dict): merge(a[k], v)
+        else: a[k] = v
+    return a
+c = merge(load(cfg_f), load(lcl_f))
+w = next((x for x in (c.get("workers") or [])
+          if x.get("server") == srv or x.get("name") == srv), None)
+cred = {}
+if w:
+    for key in (w.get("name"), w.get("server")):
+        if key and isinstance(c.get(key), dict): cred = c[key]; break
+def emit(var, val):
+    if val not in (None, ""): print(f"{var}={shlex.quote(str(val))}")
+if w:
+    emit("X86_HOST_IP", w.get("x86_host_ip"))
+    emit("BF3_OOB_IP", w.get("oob_ip"))
+emit("X86_HOST_USER", cred.get("x86_host_user"))
+emit("X86_HOST_PASS", cred.get("x86_host_password"))
+emit("BF3_OOB_PASS", cred.get("arm_password"))
+PYEOF
+) && eval "${_out}"
+  [[ -z "${X86_HOST_PASS}" ]] && \
+    warn "no credentials for '${SERVER_NAME}' — create dpf/config.local.yaml (copy config.local.sample.yaml) or pass --x86-pass" || true
 }
 
 discover_kamaji_ip() {

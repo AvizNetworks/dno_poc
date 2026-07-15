@@ -6,7 +6,17 @@ set -euo pipefail
 DPF_KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 DPF_NAMESPACE="dpf-operator-system"
 BF3_OOB_IP="10.20.13.249"
-BF3_OOB_PASS="Aviz@AIF12345"
+BF3_OOB_PASS="${BF3_OOB_PASS:-}"   # set env var, or auto-loaded from ../config.local.yaml below
+_CFG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -z "${BF3_OOB_PASS}" && -f "${_CFG_DIR}/config.local.yaml" ]]; then
+  BF3_OOB_PASS=$(python3 -c "
+import yaml
+c = yaml.safe_load(open('${_CFG_DIR}/config.local.yaml')) or {}
+for v in c.values():
+    if isinstance(v, dict) and v.get('arm_password'):
+        print(v['arm_password']); break
+" 2>/dev/null)
+fi
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }

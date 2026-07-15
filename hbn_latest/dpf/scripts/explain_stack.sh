@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./explain_stack.sh                          # defaults: s4
-#   ./explain_stack.sh --server s4 --bf3-ip 10.20.13.249 --bf3-pass 'Aviz@AIF12345'
+#   ./explain_stack.sh --server s4 --bf3-ip 10.20.13.249 --bf3-pass '<BF3-ubuntu-password>'
 #
 # Output: ~/dpf_summary/dpf-stack-explained.html
 set -uo pipefail
@@ -17,7 +17,17 @@ set -uo pipefail
 # ─── Config ──────────────────────────────────────────────────────────────────
 SERVER_NAME="s4"
 BF3_OOB_IP="10.20.13.249"
-BF3_OOB_PASS="Aviz@AIF12345"
+BF3_OOB_PASS="${BF3_OOB_PASS:-}"   # pass --bf3-pass, set env, or add to ../config.local.yaml
+_CFG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -z "${BF3_OOB_PASS}" && -f "${_CFG_DIR}/config.local.yaml" ]]; then
+  BF3_OOB_PASS=$(python3 -c "
+import yaml
+c = yaml.safe_load(open('${_CFG_DIR}/config.local.yaml')) or {}
+for v in c.values():
+    if isinstance(v, dict) and v.get('arm_password'):
+        print(v['arm_password']); break
+" 2>/dev/null)
+fi
 DPF_NAMESPACE="dpf-operator-system"
 HBN_NAMESPACE="doca-hbn"
 HOST_KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"

@@ -1337,8 +1337,10 @@ if [[ "${DEPLOY_HBN}" == "true" ]]; then
 
   info "Step HBN-1 — Creating hostPath directories on BF3"
   # These are created by bringup_hbn_bf3.sh Step 3 / DPUFlavor cloud-init.
-  # Ensure they exist (idempotent).
-  BF3_OOB_PASS_HBN="Aviz@AIF12345"
+  # Ensure they exist (idempotent). ARM password comes from config.local.yaml.
+  BF3_OOB_PASS_HBN="${ARM_PASSWORD}"
+  [[ -z "${BF3_OOB_PASS_HBN}" ]] && \
+    warn "arm_password not set in config.local.yaml — hostPath dir creation may fail"
   for dir in \
     /var/lib/hbn/etc/nvue.d \
     /var/lib/hbn/etc/frr \

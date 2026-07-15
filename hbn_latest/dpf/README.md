@@ -28,19 +28,19 @@ DPF Operator VM (10.4.5.136)
   └── bfb-registry (nginx, port 8080 — serves BFB to BMC)
 
 S4 Server — worker1, apiserver :6443
-  ├── x86 host   10.20.13.226  (aviz / aviz@123)      — a VMware VM with the BF3
+  ├── x86 host   10.20.13.226  (aviz / <password>)      — a VMware VM with the BF3
   │              passed through. ⚠ Passthrough does NOT expose SR-IOV, so HOST
   │              VFs (vf0..vf7) are IMPOSSIBLE here — S4 is the control-plane
   │              validation box; use S2 for host-VF data-path work.
-  ├── BF3 OOB    10.20.13.249  (ubuntu / Aviz@AIF12345) — joins s4-dpu-cluster
-  └── BF3 BMC    10.20.13.250  (root / Aviz@AIF12345)   — Redfish endpoint
+  ├── BF3 OOB    10.20.13.249  (ubuntu / <password>) — joins s4-dpu-cluster
+  └── BF3 BMC    10.20.13.250  (root / <password>)   — Redfish endpoint
 
 S2 Server — worker2, apiserver :6444 (bare metal — full host-VF data path)
-  ├── x86 host   10.20.13.12   (admin / Aviz@AIF123)  — TWO DPUs on this host:
+  ├── x86 host   10.20.13.12   (admin / <password>)  — TWO DPUs on this host:
   │              rshim0 = BF3 (c1:00), rshim1 = BF2 (01:00) — always rshim0!
   │              Host VFs vf0..vf7 via /opt/dpf/setup_host_vfs.sh (host-vfs.service)
-  ├── BF3 OOB    10.20.13.228  (ubuntu / Aviz@AIF12345) — joins s2-dpu-cluster
-  └── BF3 BMC    10.20.13.212  (root / Aviz@AIF12345)   — Lenovo OEM card
+  ├── BF3 OOB    10.20.13.228  (ubuntu / <password>) — joins s2-dpu-cluster
+  └── BF3 BMC    10.20.13.212  (root / <password>)   — Lenovo OEM card
                  (needs the DPUDevice CRD psid-regex relaxation — see Known Issues)
 
 SUBNET NOTE: 10.4.5.x and 10.20.13.x are on different subnets.
@@ -119,7 +119,7 @@ kubectl get dpfoperatorconfig -n dpf-operator-system   # must be Ready=True
 # Step 1 — provision (creates the DPUCluster so the tunnel can find the Kamaji IP)
 ./dpf/scripts/bringup_dpf.sh --server s4 \
   --bmc-ip 10.20.13.250 --oob-ip 10.20.13.249 --serial MT2437600HGY \
-  --x86-host 10.20.13.226 --x86-user aviz --x86-pass aviz@123 --rshim-install --hbn
+  --x86-host 10.20.13.226 --x86-user aviz --x86-pass '<password>' --rshim-install --hbn
 
 # Step 2 — once s4-dpu-cluster exists, open the cross-subnet tunnel (auto-discovers Kamaji IP)
 ./dpf/scripts/tunnel_dpf.sh --server s4 start
@@ -475,9 +475,9 @@ Auto-detects the BlueField-3 PFs by PCI device id `0xa2dc` (ignores standalone C
 
 | Server | BF3 OOB (ARM) | BF3 BMC | x86 Host | Notes |
 |---|---|---|---|---|
-| S1 | `10.20.13.247` ubuntu/Aviz@AIF12345 | `10.20.13.216` root/Aviz@AIF12345 | `10.20.13.13` admin/Aviz@AIF123 | — |
-| S2 | `10.20.13.228` ubuntu/Aviz@AIF12345 | `10.20.13.212` root/Aviz@AIF12345 | `10.20.13.12` admin/Aviz@AIF123 | — |
-| S4 | `10.20.13.249` ubuntu/Aviz@AIF12345 | `10.20.13.250` root/Aviz@AIF12345 | `10.20.13.226` aviz/aviz@123 | provisioned via DPF + HBN (DPU Ready) |
+| S1 | `10.20.13.247` ubuntu/<pw> | `10.20.13.216` root/<pw> | `10.20.13.13` admin/<pw> | — |
+| S2 | `10.20.13.228` ubuntu/<pw> | `10.20.13.212` root/<pw> | `10.20.13.12` admin/<pw> | — |
+| S4 | `10.20.13.249` ubuntu/<pw> | `10.20.13.250` root/<pw> | `10.20.13.226` aviz/<pw> | provisioned via DPF + HBN (DPU Ready) |
 
 ### Prerequisites (do once per session)
 
@@ -532,7 +532,7 @@ Auto-detects the BlueField-3 PFs by PCI device id `0xa2dc` (ignores standalone C
   --server s1 \
   --bmc-ip 10.20.13.216 --oob-ip 10.20.13.247 \
   --serial <SN> \
-  --x86-host 10.20.13.13 --x86-user admin --x86-pass 'Aviz@AIF123' \
+  --x86-host 10.20.13.13 --x86-user admin --x86-pass '<password>' \
   --rshim-install --hbn
 ```
 
@@ -542,7 +542,7 @@ Auto-detects the BlueField-3 PFs by PCI device id `0xa2dc` (ignores standalone C
   --server s2 \
   --bmc-ip 10.20.13.212 --oob-ip 10.20.13.228 \
   --serial <SN> \
-  --x86-host 10.20.13.12 --x86-user admin --x86-pass 'Aviz@AIF123' \
+  --x86-host 10.20.13.12 --x86-user admin --x86-pass '<password>' \
   --rshim-install --hbn
 ```
 
