@@ -139,7 +139,7 @@ tt = textbox(s, ML, Inches(2.2), CW, Inches(1.8))
 add_para(tt, [("DPF + HBN on ", FG, True), ("BlueField-3", NV, True)], size=48, bold=True, first=True)
 lead(s, "Provisioning and operating DPUs the Kubernetes way — flash, join, deploy HBN, and drive FRR from one control point.", Inches(3.7), size=20, color=MUT)
 ld = textbox(s, ML, Inches(5.1), CW, Inches(0.6))
-add_para(ld, [("Validated end-to-end on S4  ·  DOCA v25.10.1  ·  run it with ", MUT, False), ("dpf/QUICKSTART.md", FG, True)], size=15, first=True)
+add_para(ld, [("Multi-DPU validated (S4 + S2 simultaneously)  ·  DOCA v25.10.1  ·  run it with ", MUT, False), ("dpf/QUICKSTART.md", FG, True)], size=15, first=True)
 
 # 2 WHAT IS DPF
 s = new_slide("1 · The idea  / 15", "What is DPF?")
@@ -196,8 +196,9 @@ topo = [
  [("        │  flash BFB  (rshim via x86 host, or Redfish)", CODEFG)],
  [("        │  Kamaji virtual control plane  ◄── BF3 kubelet joins", CODEFG)],
  [("        ▼", CODEFG)],
- [("BF3 / BlueField-3", NV),("  (S4 · OOB 10.20.13.249 · BMC 10.20.13.250)", CODEFG)],
- [("   a Kubernetes WORKER node → runs HBN (FRR) as a pod", CODEFG)],
+ [("BF3 #1 (S4)", NV),("  worker1 · apiserver :6443        ", CODEFG),("# one operator,", MUT)],
+ [("BF3 #2 (S2)", NV),("  worker2 · apiserver :6444        ", CODEFG),("# many DPUs", MUT)],
+ [("   each BF3 = a Kubernetes WORKER node → runs HBN (FRR) as a pod", CODEFG)],
  [("        │  PCIe", CODEFG)],
  [("        ▼", CODEFG)],
  [("x86 host", NV),("  (10.20.13.226)                       ", CODEFG),("# NOT in k8s", MUT)],
@@ -222,8 +223,8 @@ note(s, "Key point: the x86 host never joins Kubernetes — only the BF3 ARM doe
 # 7 BRINGUP
 s = new_slide("6 · The bringup  / 15", "How a BF3 comes up")
 steps = [("1","Stage BFB","copy the image to the DPF VM"),
-         ("2","Run bringup","bringup_dpf.sh installs prereqs, creates the cluster, flashes the BF3"),
-         ("3","First boot","set password · dhclient oob_net0 · enable sfc.service → BF3 joins"),
+         ("2","Run bringup","bringup_dpf.sh --worker worker1 — IPs/creds from config.yaml"),
+         ("3","First boot","2 console commands: password + systemctl start dpf-firstboot-kick"),
          ("4","Re-run","DPU goes Ready, HBN DaemonSet deploys"),
          ("5","Host VFs","setup_host_vfs.sh → vf0..vf7")]
 sw = Inches(2.18); sh_ = Inches(2.2); gx = Inches(0.15)
@@ -287,7 +288,7 @@ codebox(s, [
  [("# on the DPF Operator VM — operator + provisioning state", MUT)],
  [("kubectl get dpfoperatorconfig -n dpf-operator-system        ", CODEFG),("# Ready=True", MUT)],
  [("kubectl get dpu,dpucluster,tenantcontrolplane -n dpf-operator-system", CODEFG)],
- [("./dpf/scripts/status_dpf.sh                                  ", CODEFG),("# one-shot health", MUT)],
+ [("./dpf/scripts/fleet_status.sh --frr                          ", CODEFG),("# ALL DPUs: node/HBN/FRR", MUT)],
 ], Inches(2.0), Inches(1.7), size=13)
 codebox(s, [
  [("DPU s4-dpu:        Ready", FG)],
@@ -329,9 +330,10 @@ note(s, "kubectl exec rides the cluster → BF3 kubelet → into the HBN contain
 # 13 CAVEATS
 s = new_slide("12 · Current scope & caveats  / 15", "What works today — and what doesn't yet")
 tf = textbox(s, ML, Inches(2.1), CW, Inches(4.5))
-add_para(tf, [("One DPU per DPF VM", FG,True),(" — validated for a single BF3.", FG,False)], bullet=NV, first=True, size=16, space_after=14)
+add_para(tf, [("Multi-DPU works", FG,True),(" — one operator manages many BF3s (S4 :6443 + S2 :6444 validated simultaneously; unique apiserver_port per worker in config.yaml).", FG,False)], bullet=NV, first=True, size=16, space_after=14)
 add_para(tf, [("Flashing is via rshim, not Redfish. ", FG,True),("The OS flash goes through the x86 host's PCIe rshim (--rshim-install), so the x86 host must be reachable with a working rshim. Redfish works only for a genuine BFB version change; S4 was already on the target version, so rshim was required.", FG,False)], bullet=NV, size=16, space_after=14)
-add_para(tf, [("Fresh-flash first boot is hands-on", FG,True),(" — console password, dhclient oob_net0, enable sfc.service (all in QUICKSTART.md).", FG,False)], bullet=NV, size=16)
+add_para(tf, [("Fresh-flash first boot = 2 console commands", FG,True),(" — password + systemctl start dpf-firstboot-kick; later boots hands-off.", FG,False)], bullet=NV, size=16, space_after=14)
+add_para(tf, [("Data plane is CPU-routed today", FG,True),(" — fine for config/feature work; eswitch offload arrives with the DPUService migration (roadmap).", FG,False)], bullet=NV, size=16)
 
 # 14 WORKFLOW
 s = new_slide("13 · Your workflow  / 15", "Day-to-day for the team")

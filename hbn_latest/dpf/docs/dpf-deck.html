@@ -74,7 +74,7 @@
   <section class="slide active">
     <h1>DPF&nbsp;+&nbsp;HBN on <span style="color:var(--nv)">BlueField-3</span></h1>
     <p class="lead">Provisioning and operating DPUs the Kubernetes way — flash, join, deploy HBN, and drive FRR from one control point.</p>
-    <p class="lead" style="font-size:15px;margin-top:18px">Validated end-to-end on <b style="color:var(--fg)">S4</b> · DOCA v25.10.1 · run it with <code>dpf/QUICKSTART.md</code></p>
+    <p class="lead" style="font-size:15px;margin-top:18px"><b style="color:var(--fg)">Multi-DPU validated (S4 + S2 simultaneously)</b> · DOCA v25.10.1 · run it with <code>dpf/QUICKSTART.md</code></p>
     <div class="hint">Use <kbd>→</kbd> / <kbd>←</kbd> to navigate</div>
   </section>
 
@@ -140,8 +140,9 @@
         │  flash BFB  (rshim via x86 host, or Redfish)
         │  Kamaji virtual control plane  ◄── BF3 kubelet joins
         ▼
-<span class="g">BF3 / BlueField-3</span>  (S4 · OOB 10.20.13.249 · BMC 10.20.13.250)
-   a Kubernetes WORKER node → runs HBN (FRR) as a pod
+<span class="g">BF3 #1 (S4)</span>  worker1 · apiserver :6443     <span class="c"># one operator,</span>
+<span class="g">BF3 #2 (S2)</span>  worker2 · apiserver :6444     <span class="c"># many DPUs</span>
+   each BF3 = a Kubernetes WORKER node → runs HBN (FRR) as a pod
         │  PCIe
         ▼
 <span class="g">x86 host</span>  (10.20.13.226)                       <span class="c"># NOT in k8s</span>
@@ -168,8 +169,8 @@
     <h2>How a BF3 comes up</h2>
     <div class="flow">
       <div class="step"><div class="num">1</div><div class="x">Stage BFB</div><div class="y">copy the image to the DPF VM</div></div>
-      <div class="step"><div class="num">2</div><div class="x">Run bringup</div><div class="y"><code>bringup_dpf.sh</code> installs prereqs, creates the cluster, flashes the BF3</div></div>
-      <div class="step"><div class="num">3</div><div class="x">First boot</div><div class="y">set password · <code>dhclient oob_net0</code> · enable <code>sfc.service</code> → BF3 joins</div></div>
+      <div class="step"><div class="num">2</div><div class="x">Run bringup</div><div class="y"><code>bringup_dpf.sh --worker worker1</code> — all IPs/creds from <code>config.yaml</code></div></div>
+      <div class="step"><div class="num">3</div><div class="x">First boot</div><div class="y">2 commands on console: set password · <code>systemctl start dpf-firstboot-kick</code> → BF3 joins itself</div></div>
       <div class="step"><div class="num">4</div><div class="x">Re-run</div><div class="y">DPU goes <b>Ready</b>, HBN DaemonSet deploys</div></div>
       <div class="step"><div class="num">5</div><div class="x">Host VFs</div><div class="y"><code>setup_host_vfs.sh</code> → <code>vf0..vf7</code></div></div>
     </div>
@@ -232,7 +233,7 @@ sudo ./dpf/scripts/setup_host_vfs.sh --persist  <span class="c"># survive reboot
     <pre><span class="c"># on the DPF Operator VM — operator + provisioning state</span>
 kubectl get dpfoperatorconfig -n dpf-operator-system        <span class="c"># Ready=True</span>
 kubectl get dpu,dpucluster,tenantcontrolplane -n dpf-operator-system
-./dpf/scripts/status_dpf.sh                                  <span class="c"># one-shot health</span></pre>
+./dpf/scripts/fleet_status.sh --frr                          <span class="c"># ALL DPUs: node/HBN/FRR</span></pre>
     <pre><span class="o">DPU s4-dpu:        Ready</span>
 <span class="o">DPUCluster:        True   Ready   kamaji</span>
 <span class="o">TenantControlPlane:  Ready  10.4.5.136:6443</span></pre>
@@ -276,9 +277,9 @@ $D exec -n doca-hbn $POD -- vtysh -c "show interface brief"</pre>
     <div class="eyebrow">12 · Current scope &amp; caveats <span class="n">/ 15</span></div>
     <h2>What works today — and what doesn't <span style="color:var(--nv)">yet</span></h2>
     <ul>
-      <li><b>One DPU per DPF VM</b> — validated for a single BF3.</li>
+      <li><b>Multi-DPU works</b> — one operator VM manages many BF3s (S4 :6443 + S2 :6444 validated simultaneously; unique <code>apiserver_port</code> per worker in <code>config.yaml</code>).</li>
       <li><b>Flashing is via rshim, not Redfish.</b> The OS flash goes through the x86 host's PCIe <b>rshim</b> (<code>--rshim-install</code>), so the <b>x86 host must be reachable with a working rshim</b>. <span class="mut">Redfish works only for a genuine BFB version change; S4 was already on the target version, so rshim was required.</span></li>
-      <li><b>Fresh-flash first boot is hands-on</b> — console password, <code>dhclient oob_net0</code>, enable <code>sfc.service</code> (all in <code>QUICKSTART.md</code>).</li>
+      <li><b>Fresh-flash first boot = 2 console commands</b> — password + <code>systemctl start dpf-firstboot-kick</code>; every later boot is hands-off.</li><li><b>Data plane is CPU-routed today</b> — correct for all config/feature work; eswitch (hardware) offload arrives with the DPUService migration — don't benchmark throughput yet.</li>
     </ul>
   </section>
 
