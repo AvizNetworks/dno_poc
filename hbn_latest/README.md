@@ -4,6 +4,17 @@ Automated scripts to bring up NVIDIA HBN (Host-Based Networking) on a BlueField-
 
 **Validated on:** `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`
 
+> **Two independent toolsets in this repo:**
+> - **`dpf/`** — **DPF (DOCA Platform Framework): the current, recommended path.**
+>   Kubernetes-native BF3 provisioning + HBN from one operator VM — **multi-DPU
+>   validated** (S4 + S2 simultaneously), config-driven (`dpf/config.yaml`,
+>   `--worker`), 12-port router (2 uplinks + 2 host PFs + 8 VFs) with the
+>   host↔FRR data path verified. **Start at [`dpf/QUICKSTART.md`](dpf/QUICKSTART.md)**;
+>   day-2 ops in [`dpf/CHEATSHEET.md`](dpf/CHEATSHEET.md); architecture + all known
+>   issues in [`dpf/README.md`](dpf/README.md); fleet view: `dpf/scripts/fleet_status.sh`.
+> - **`scripts/`** (this page) — standalone bringup, run directly on the BF3.
+>   No Kubernetes. Still valid for single-box setups (S1 runs this today).
+
 ---
 
 ## What is HBN?
@@ -25,10 +36,10 @@ x86 Host   ←──── pf0hpf_if / pf1hpf_if  (configure routing here)
 
 | Server | BF3 ARM (OOB) | x86 Host | Notes |
 |---|---|---|---|
-| S1 | `10.20.13.247` | `10.20.13.13` | test_static_routing_rest1.sh — 6.6.6.x |
-| S2 | `10.20.13.228` | `10.20.13.12` | test_static_routing_rest.sh — 5.5.5.x |
+| S1 | `10.20.13.247` | `10.20.13.13` | **standalone** (this page) — ⚠ 8 VF ports unwired (see dpf/README Known Issue #15) |
+| S2 | `10.20.13.228` | `10.20.13.12` | **DPF-managed since 2026-07-06** (worker2, :6444) — old standalone config backed up in `dpf/docs/` |
 | S3 | `10.4.5.165` | — | different credentials |
-| S4 | `10.20.13.249` | — | |
+| S4 | `10.20.13.249` | `10.20.13.226` | **DPF-managed** (worker1, :6443) — host is a VM, no host VFs possible |
 
 **ToR Switch:** `10.20.13.214` — shared across S1 and S2.
 
