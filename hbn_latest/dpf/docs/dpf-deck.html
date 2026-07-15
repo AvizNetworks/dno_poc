@@ -143,10 +143,10 @@
 <span class="g">BF3 #1 (S4)</span>  worker1 · apiserver :6443     <span class="c"># one operator,</span>
 <span class="g">BF3 #2 (S2)</span>  worker2 · apiserver :6444     <span class="c"># many DPUs</span>
    each BF3 = a Kubernetes WORKER node → runs HBN (FRR) as a pod
-        │  PCIe
+        │  PCIe (each BF3 sits in its own x86 host)
         ▼
-<span class="g">x86 host</span>  (10.20.13.226)                       <span class="c"># NOT in k8s</span>
-   BF3 rshim (flash) · SR-IOV VFs (vf0..vf7)</pre>
+<span class="g">x86 hosts</span>  (S4 → 10.20.13.226 · S2 → 10.20.13.12)   <span class="c"># NOT in k8s</span>
+   per host: BF3 rshim (flash) · SR-IOV VFs vf0..vf7</pre>
     <p class="lead" style="font-size:15px;margin-top:14px">Subnet note: in this lab, TCP <code>10.20.13.x → 10.4.5.x</code> is blocked → a small SSH tunnel bridges the BF3's join. Same-subnet setups skip it.</p>
   </section>
 

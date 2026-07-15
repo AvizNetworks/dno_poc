@@ -199,10 +199,10 @@ topo = [
  [("BF3 #1 (S4)", NV),("  worker1 · apiserver :6443        ", CODEFG),("# one operator,", MUT)],
  [("BF3 #2 (S2)", NV),("  worker2 · apiserver :6444        ", CODEFG),("# many DPUs", MUT)],
  [("   each BF3 = a Kubernetes WORKER node → runs HBN (FRR) as a pod", CODEFG)],
- [("        │  PCIe", CODEFG)],
+ [("        │  PCIe (each BF3 sits in its own x86 host)", CODEFG)],
  [("        ▼", CODEFG)],
- [("x86 host", NV),("  (10.20.13.226)                       ", CODEFG),("# NOT in k8s", MUT)],
- [("   BF3 rshim (flash) · SR-IOV VFs (vf0..vf7)", CODEFG)],
+ [("x86 hosts", NV),("  (S4 → 10.20.13.226 · S2 → 10.20.13.12)  ", CODEFG),("# NOT in k8s", MUT)],
+ [("   per host: BF3 rshim (flash) · SR-IOV VFs vf0..vf7", CODEFG)],
 ]
 codebox(s, topo, Inches(1.95), Inches(3.7), size=13)
 note(s, "Subnet note: in this lab, TCP 10.20.13.x → 10.4.5.x is blocked → a small SSH tunnel bridges the BF3's join. Same-subnet setups skip it.", Inches(5.85))
