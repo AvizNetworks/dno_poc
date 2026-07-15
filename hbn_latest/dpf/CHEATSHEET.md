@@ -108,7 +108,7 @@ sudo ./dpf/scripts/setup_host_vfs.sh                         # (re)create + rena
 - **`error: pod … must be specified`** → `$POD` is empty; re-run the `POD=$(...)` line (new shell loses it).
 - **`error loading config … ~/...`** → never put `~` inside `$D`; use the absolute path `/home/dpu-vm/<server>-tc-kubeconfig`.
 - **Commands hit the WRONG DPU** → you used the shared `~/dpu-tc-kubeconfig`, which the last bringup overwrote. Always use the per-server files (Setup section).
-- **HBN pod re-stuck `Init:0/1` after deleting it** → SF netdevs lost their names; on the BF3: `sudo systemctl restart sfc.service`.
+- **HBN pod re-stuck `Init:0/1` after deleting it** → SF netdevs lost their names; on the BF3: `sudo systemctl restart sfc.service` — **then always** `systemctl is-active kubelet || sudo systemctl start kubelet` (kubelet is coupled to sfc and can stay down).
 - **A port passes no traffic** → check the pair flows: `sudo ovs-ofctl dump-flows br-hbn | grep -c priority=500` (24 on a full 12-port box) → `sudo systemctl restart sfc.service`. If host VFs were created after boot, one sfc restart wires them.
 - **Performance expectations** → the data plane is **CPU-routed** (software) in this deployment — fine for all config/feature work, don't run throughput benchmarks. Eswitch offload arrives with the DPUService migration (README design note).
 - **`kubectl: command not found` on the BF3** → the BF3 is a *worker* (kubelet + `crictl`, no `kubectl`). Run kubectl from the DPF VM; use `crictl` on the BF3.

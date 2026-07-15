@@ -441,6 +441,9 @@ Size the operator VM up before adding a 3rd DPU.
 Deleting the HBN pod re-triggers the init-sfs deadlock: the SF netdevs return to the host
 netns with default names (`enp3s0f0sN`) and sfc's rename watchdog has already exited.
 **Fix on the BF3:** `sudo systemctl restart sfc.service` (re-renames; watchdog re-arms).
+**⚠ ALWAYS follow any sfc restart with:** `systemctl is-active kubelet || sudo systemctl start kubelet` —
+kubelet is dependency-coupled to sfc.service and STAYS DOWN if the restart transaction fails
+(this stranded S4 NotReady for 8 days; fleet_status.sh caught it).
 
 ### 15. Host↔FRR traffic dead on some/all ports (ARP leaves `pfXvfN_if`, nothing at the host VF)
 **Cause:** br-hbn's sfc-controller pipeline drops everything with no service chain, and no
