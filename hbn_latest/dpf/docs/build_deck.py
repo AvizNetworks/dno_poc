@@ -333,7 +333,6 @@ tf = textbox(s, ML, Inches(2.1), CW, Inches(4.5))
 add_para(tf, [("Multi-DPU works", FG,True),(" — one operator manages many BF3s (S4 :6443 + S2 :6444 validated simultaneously; unique apiserver_port per worker in config.yaml).", FG,False)], bullet=NV, first=True, size=16, space_after=14)
 add_para(tf, [("Flashing is via rshim, not Redfish. ", FG,True),("The OS flash goes through the x86 host's PCIe rshim (--rshim-install), so the x86 host must be reachable with a working rshim. Redfish works only for a genuine BFB version change; S4 was already on the target version, so rshim was required.", FG,False)], bullet=NV, size=16, space_after=14)
 add_para(tf, [("Fresh-flash first boot = 2 console commands", FG,True),(" — password + systemctl start dpf-firstboot-kick; later boots hands-off.", FG,False)], bullet=NV, size=16, space_after=14)
-add_para(tf, [("Data plane is CPU-routed today", FG,True),(" — fine for config/feature work; eswitch offload arrives with the DPUService migration (roadmap).", FG,False)], bullet=NV, size=16)
 
 # 14 WORKFLOW
 s = new_slide("13 · Your workflow  / 15", "Day-to-day for the team")

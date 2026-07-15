@@ -279,7 +279,7 @@ $D exec -n doca-hbn $POD -- vtysh -c "show interface brief"</pre>
     <ul>
       <li><b>Multi-DPU works</b> — one operator VM manages many BF3s (S4 :6443 + S2 :6444 validated simultaneously; unique <code>apiserver_port</code> per worker in <code>config.yaml</code>).</li>
       <li><b>Flashing is via rshim, not Redfish.</b> The OS flash goes through the x86 host's PCIe <b>rshim</b> (<code>--rshim-install</code>), so the <b>x86 host must be reachable with a working rshim</b>. <span class="mut">Redfish works only for a genuine BFB version change; S4 was already on the target version, so rshim was required.</span></li>
-      <li><b>Fresh-flash first boot = 2 console commands</b> — password + <code>systemctl start dpf-firstboot-kick</code>; every later boot is hands-off.</li><li><b>Data plane is CPU-routed today</b> — correct for all config/feature work; eswitch (hardware) offload arrives with the DPUService migration — don't benchmark throughput yet.</li>
+      <li><b>Fresh-flash first boot = 2 console commands</b> — password + <code>systemctl start dpf-firstboot-kick</code>; every later boot is hands-off.</li>
     </ul>
   </section>
 
