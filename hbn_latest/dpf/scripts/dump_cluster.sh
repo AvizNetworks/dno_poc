@@ -9,17 +9,27 @@
 set -euo pipefail
 
 KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
-DPU_KUBECONFIG="/tmp/dpu-tc-kubeconfig"
+DPU_KUBECONFIG="$(mktemp "${HOME}/.dpu-tc-kubeconfig.XXXXXX")"   # per-run temp (never /tmp: stale files + fs.protected_regular break sudo runs)
+trap 'rm -f "${DPU_KUBECONFIG}"' EXIT
 DPF_NAMESPACE="dpf-operator-system"
 OUTPUT="${HOME}/dpf_summary/cluster-dump.html"
 mkdir -p "${HOME}/dpf_summary"
 DETAILED=false
-[[ "${1:-}" == "--detailed" ]] && DETAILED=true
+SERVER_NAME="s4"     # which DPU cluster to dump — override with --server s2
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --detailed) DETAILED=true ;;
+    --server)   SERVER_NAME="$2"; shift ;;
+    *) echo "Unknown option: $1 (usage: $0 [--server sX] [--detailed])" >&2; exit 1 ;;
+  esac
+  shift
+done
+OUTPUT="${HOME}/dpf_summary/cluster-dump-${SERVER_NAME}.html"
 
 echo "Collecting cluster data..." >&2
 
 # Fetch DPU kubeconfig
-kubectl --kubeconfig "${KUBECONFIG}" get secret s4-dpu-cluster-admin-kubeconfig \
+kubectl --kubeconfig "${KUBECONFIG}" get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" \
   -n "${DPF_NAMESPACE}" \
   -o jsonpath='{.data.admin\.conf}' 2>/dev/null | base64 -d > "${DPU_KUBECONFIG}" || true
 
@@ -28,11 +38,14 @@ DPU_KUBE_AVAILABLE=false
 
 kube()  { kubectl --kubeconfig "${KUBECONFIG}" "$@" 2>/dev/null || echo "(no resources or error)"; }
 dkube() { kubectl --kubeconfig "${DPU_KUBECONFIG}" "$@" 2>/dev/null || echo "(no resources or error)"; }
+# JSON variants: on any failure return an empty-but-valid document
+kube_json()  { kubectl --kubeconfig "${KUBECONFIG}" "$@" -o json 2>/dev/null || echo '{"items":[]}'; }
+dkube_json() { kubectl --kubeconfig "${DPU_KUBECONFIG}" "$@" -o json 2>/dev/null || echo '{"items":[]}'; }
 
 # Collect data before redirecting stdout
 echo "  k3s nodes..." >&2;       K3S_NODES=$(kube get nodes -o wide)
 echo "  k3s pods..." >&2;        K3S_PODS=$(kube get pods -A -o wide)
-echo "  k3s pods json..." >&2;   K3S_PODS_JSON=$(kube get pods -A -o json)
+echo "  k3s pods json..." >&2;   K3S_PODS_JSON=$(kube_json get pods -A)
 echo "  services..." >&2;        K3S_SVC=$(kube get svc -A)
 echo "  pvcs..." >&2;            K3S_PVC=$(kube get pvc -A -o wide)
 echo "  pvs..." >&2;             K3S_PV=$(kube get pv -o wide)
@@ -50,7 +63,7 @@ SVC_LOGS=$(kube logs -n "${DPF_NAMESPACE}" \
 if [[ "${DPU_KUBE_AVAILABLE}" == "true" ]]; then
   echo "  BF3 nodes..." >&2;    BF3_NODES=$(dkube get nodes -o wide)
   echo "  BF3 pods..." >&2;     BF3_PODS=$(dkube get pods -A -o wide)
-  echo "  BF3 pods json..." >&2; BF3_PODS_JSON=$(dkube get pods -A -o json)
+  echo "  BF3 pods json..." >&2; BF3_PODS_JSON=$(dkube_json get pods -A)
   echo "  BF3 services..." >&2;  BF3_SVC=$(dkube get svc -A)
 else
   BF3_NODES="TenantControlPlane kubeconfig not available"
