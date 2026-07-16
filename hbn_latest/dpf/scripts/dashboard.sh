@@ -29,6 +29,9 @@ while IFS=$'\t' read -r NAME SERVER; do
   echo "── cluster dump: ${SERVER} ──" >&2
   "${SCRIPT_DIR}/dump_cluster.sh" --server "${SERVER}" >/dev/null 2>&1 \
     || echo "(dump_cluster ${SERVER} failed)" >&2
+  echo "── port map: ${SERVER} ──" >&2
+  "${SCRIPT_DIR}/port_map.sh" --server "${SERVER}" >/dev/null 2>&1 \
+    || echo "(port_map ${SERVER} failed)" >&2
   if [[ "${FULL}" == "true" ]]; then
     echo "── explain stack: ${SERVER} ──" >&2
     "${SCRIPT_DIR}/explain_stack.sh" --server "${SERVER}" >/dev/null 2>&1 \
@@ -62,6 +65,8 @@ items = [link("fleet-dump.html", "Fleet Dump — everything, one page",
 for name, srv in workers:
     items.append(link(f"cluster-dump-{srv}.html", f"Cluster Deep-Dive — {name} ({srv})",
                       "full k8s state of this DPU cluster (detailed tabs)"))
+    items.append(link(f"port-map-{srv}.html", f"Port Map — {name} ({srv})",
+                      "interactive ToR→physical→eswitch→OVS→FRR→host diagram, click any port"))
 items.append(link("dpf-stack-explained.html", "Stack Explained (educational)",
                   "cluster→node→pod→container→interface map with live values"))
 
