@@ -23,6 +23,11 @@ REST_PASS="nvidia"
 SKIP_DNS_FIX=false
 P0_VFS=0
 P1_VFS=0
+# VF SubFunction numbering — AUTHORITATIVE scheme from /opt/mellanox/sfc-hbn/install.sh:
+# ECPF0 VFs (pf0vfN) use sfnum 1001+N; ECPF1 VFs (pf1vfN) use sfnum 1257+N.
+# The patched udev namers map these ranges → pf0vfN_if / pf1vfN_if (+ _if_r reps).
+ECPF0_VF_SF_BASE=1001
+ECPF1_VF_SF_BASE=1257
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -89,6 +94,225 @@ if ! systemctl cat sfc.service &>/dev/null; then
   fi
 fi
 
+# ─── Host-side HBN prep that install.sh would normally do (we skip install.sh) ──
+# A fresh bf-bundle flash has sfc-hbn but NOT the full hbn-runtime host prep.
+# install.sh does it, but also reconfigures mgmt-VRF/SSH (hangs, can drop OOB SSH).
+# So replicate only the two SF-move-critical side-effects, fully OFFLINE:
+#
+#   1. sfc-state-propagation daemon (propagates SF link state; PartOf=sfc.service).
+#   2. Patch /lib/udev/auxdev-sf-netdev-rename so SF netdevs are renamed by sfnum
+#      to p0_if/p1_if/pf0hpf_if/pf1hpf_if (via sfc.conf MAPPINGS). The STOCK script
+#      just re-emits enp<b>s<d>f<f>s<sfnum>, so init-sfs waits forever for p0_if.
+HBN_LOCAL_REPO="/var/hbn-repo-aarch64-ubuntu2404-local"
+if ! dpkg -s sfc-state-propagation &>/dev/null; then
+  _SSP_DEB=$(ls "${HBN_LOCAL_REPO}"/sfc-state-propagation_*_arm64.deb 2>/dev/null | head -1)
+  if [[ -n "$_SSP_DEB" ]]; then
+    info "installing sfc-state-propagation offline from ${_SSP_DEB##*/}"
+    dpkg -i "$_SSP_DEB" >/dev/null 2>&1 && ok "sfc-state-propagation installed" \
+      || warn "sfc-state-propagation dpkg -i had issues (check deps: libmnl0, doca-openvswitch-switch)"
+  else
+    warn "sfc-state-propagation .deb not found in ${HBN_LOCAL_REPO} — SF state may not propagate"
+  fi
+fi
+systemctl enable --now sfc-state-propagation &>/dev/null || true
+
+# Patch the SF-naming udev helper if it's the stock version (no sfc.conf mapping)
+AUXDEV=/lib/udev/auxdev-sf-netdev-rename
+if [[ -f "$AUXDEV" ]] && ! grep -q 'source /etc/mellanox/sfc.conf' "$AUXDEV"; then
+  info "patching ${AUXDEV} (stock → HBN sfnum→p0_if mapping)"
+  cp "$AUXDEV" "${AUXDEV}.stock.bak"
+  cat > "$AUXDEV" <<'EOF_AUX'
+#!/bin/bash
+#
+# Udev script to rename SF netdevice
+# SF netdevices that aren't used by HBN renamed to conventional name, eg. enp3s0f0s88
+
+SFNUM=$1
+IFINDEX=$2
+
+source /etc/mellanox/sfc.conf  # Get mappings
+
+# Names for special SFs on ECPF0 (function 0)
+declare -A SFMAP=(
+    [2]="p0_if"
+    [3]="p1_if"
+    [1514]="pf0hpf_if"
+    [1515]="pf1hpf_if"
+)
+
+i=500
+for SFS in "${DPU_SFS_SF[@]}"; do
+	SFMAP[$i]="$SFS"
+	((i+=1))
+done
+
+# SF numbers 1001 to 1001+126 on ECPF0 (function 0) are mapped to ECPF0 VFs and follow pattern pf0vfx_if
+start=1001
+end=$((start+126))
+for i in $(seq ${start} ${end});  do
+	vf_idx=$((i-${start}))
+	SFMAP[$i]="pf0vf${vf_idx}_if"
+done
+
+# SF numbers 1257 to 1257+126 on ECPF0 (function 0) are mapped to ECPF1 VFs and follow pattern pf1vfx_if
+start=1257
+end=$((start+126))
+for i in $(seq ${start} ${end});  do
+	vf_idx=$((i-${start}))
+	SFMAP[$i]="pf1vf${vf_idx}_if"
+done
+
+
+for sf_ndev in `ls /sys/class/net/`; do
+	_ifindex=`cat /sys/class/net/$sf_ndev/ifindex | head -1 2>/dev/null`
+	if [ "$_ifindex" != "$IFINDEX" ]; then continue; fi
+
+	_ifnum=`cat /sys/class/net/$sf_ndev/device/sfnum | head -1 2>/dev/null`
+	if [ "$_ifnum" != "$SFNUM" ];then continue; fi
+
+	devpath=`udevadm info /sys/class/net/$sf_ndev | grep "DEVPATH="`
+	pcipath=`echo $devpath | awk -F "/mlx5_core.sf" '{print $1}'`
+	array=($(echo "$pcipath" | sed 's/\// /g'))
+	len=${#array[@]}
+	# last element in array is pci parent device
+	parent_pdev=${array[$len-1]}
+	#pdev is : 0000:03:00.0, so extract them by their index
+	b=`echo ${parent_pdev:5:2} | sed 's/^0//'`
+	d=`echo ${parent_pdev:8:2} | sed 's/^0//'`
+	f=${parent_pdev: -1}
+
+	if (( $f == 0 )); then
+		sf_name="${SFMAP[${SFNUM}]}"
+	elif (( $f != 1 )) ; then
+		echo "Unexpected PCI function: got $f, expected 0 or 1" > /dev/kmsg
+	fi
+
+	# non-HBN SF netdevice, use conventional name
+	[ -z "$sf_name" ] && sf_name="enp${b}s${d}f${f}s${SFNUM}"
+
+	echo "${sf_name}" >> /tmp/sf_devices
+	echo "SF_NETDEV_NAME=${sf_name}"
+	exit
+done
+EOF_AUX
+  chmod +x "$AUXDEV"
+  udevadm control --reload 2>/dev/null || true
+  ok "auxdev-sf-netdev-rename patched (SFs will be named p0_if/p1_if/pf0hpf_if/pf1hpf_if on next SF add)"
+  # Rename any already-created core SFs now (udev only fires on 'add')
+  declare -A _CORE=( [2]=p0_if [3]=p1_if [1514]=pf0hpf_if [1515]=pf1hpf_if )
+  for _sf in /sys/class/net/*/device/sfnum; do
+    [[ -e "$_sf" ]] || continue
+    _n=$(cat "$_sf" 2>/dev/null); _dev=$(basename "$(dirname "$(dirname "$_sf")")")
+    _target="${_CORE[$_n]}"
+    if [[ -n "$_target" && "$_dev" != "$_target" ]] && ! ip link show "$_target" &>/dev/null; then
+      ip link set dev "$_dev" down 2>/dev/null
+      ip link set dev "$_dev" name "$_target" 2>/dev/null && ip link set dev "$_target" up 2>/dev/null \
+        && info "renamed $_dev → $_target (sfnum $_n)"
+    fi
+  done
+fi
+
+# Same story for the SF REPRESENTOR namer. Stock /lib/udev/sf-rep-netdev-rename
+# emits en<b>f<f>pf<x>sf<sfnum>; the HBN version maps sfnum→p0_if_r/p1_if_r/etc.
+# Without it the reps come up as en3f0pf0sf2… and br-hbn's p0_if_r ports never
+# bind ("could not set configuration: No such device") → no dataplane offload path.
+SFREP=/lib/udev/sf-rep-netdev-rename
+if [[ -f "$SFREP" ]] && ! grep -q 'source /etc/mellanox/sfc.conf' "$SFREP"; then
+  info "patching ${SFREP} (stock → HBN sfnum→p0_if_r mapping)"
+  cp "$SFREP" "${SFREP}.stock.bak"
+  cat > "$SFREP" <<'EOF_SFREP'
+#!/bin/bash
+#
+# Udev script to rename SF netdevice
+# SF netdevices that aren't used by HBN renamed to conventional name, eg. en3f0pf0sf88
+
+PORT_NAME=$1
+IFINDEX=$2
+
+source /etc/mellanox/sfc.conf  # Get mappings
+
+# Names for special SF representors on ECPF0 (function 0)
+declare -A SFRMAP=(
+    [2]="p0_if_r"
+    [3]="p1_if_r"
+    [1514]="pf0hpf_if_r"
+    [1515]="pf1hpf_if_r"
+)
+
+i=500
+for SFRS in "${DPU_SFS_SF_R[@]}"; do
+	SFRMAP[$i]="$SFRS"
+	((i+=1))
+done
+
+# SF representor numbers 1001 to 1001+126 on ECPF0 (function 0) are mapped to ECPF0 VFs and follow pattern pf0vfx_if_r
+start=1001
+end=$((start+126))
+for i in $(seq ${start} ${end});  do
+	vf_idx=$((i-${start}))
+	SFRMAP[$i]="pf0vf${vf_idx}_if_r"
+done
+
+# SF representor numbers 1257 to 1257+126 on ECPF0 (function 0) are mapped to ECPF1 VFs and follow pattern pf1vfx_if_r
+start=1257
+end=$((start+126))
+for i in $(seq ${start} ${end});  do
+	vf_idx=$((i-${start}))
+	SFRMAP[$i]="pf1vf${vf_idx}_if_r"
+done
+
+
+for rep_ndev in `ls /sys/class/net/`; do
+	_ifindex=`cat /sys/class/net/$rep_ndev/ifindex | head -1 2>/dev/null`
+	if [ "$_ifindex" != "$IFINDEX" ]; then continue; fi
+
+	_phys_port_name=$(cat /sys/class/net/$rep_ndev/phys_port_name | head -1 2>/dev/null)
+	if [[ "$_phys_port_name" != "$PORT_NAME" ]]; then continue; fi
+
+	devpath=`udevadm info /sys/class/net/$rep_ndev | grep "DEVPATH="`
+	pcipath=`echo $devpath | awk -F "/net/$rep_ndev" '{print $1}'`
+	array=($(echo "$pcipath" | sed 's/\// /g'))
+	len=${#array[@]}
+	# last element in array is pci parent device
+	parent_pdev=${array[$len-1]}
+	#pdev is : 0000:03:00.0, so extract them by their index
+	b=`echo ${parent_pdev:5:2} | sed 's/^0//'`
+	f=${parent_pdev: -1}
+	SFNUM=$(($(echo "${PORT_NAME}" | grep -o -E '[0-9]+' | tail -1)))
+
+	if (( $f == 0 )); then
+		sfr_name="${SFRMAP[${SFNUM}]}"
+	elif (( $f != 1 )) ; then
+		echo "Unexpected PCI function: got $f, expected 0 or 1 " > /dev/kmsg
+	fi
+
+	# non-HBN SF representor, use conventional name
+	[ x$sfr_name == x ] && sfr_name="en${b}f${f}${PORT_NAME}"
+
+	echo "${sfr_name}" >> /tmp/sfr_devices
+	echo "NAME=${sfr_name}"
+	exit
+done
+EOF_SFREP
+  chmod +x "$SFREP"
+  udevadm control --reload 2>/dev/null || true
+  ok "sf-rep-netdev-rename patched (reps named p0_if_r/p1_if_r/pf0hpf_if_r/pf1hpf_if_r on next add)"
+  # Rename any already-created core representors now (match by phys_port_name pf0sf<sfnum>)
+  declare -A _CORER=( [2]=p0_if_r [3]=p1_if_r [1514]=pf0hpf_if_r [1515]=pf1hpf_if_r )
+  for _n in "${!_CORER[@]}"; do
+    _target="${_CORER[$_n]}"
+    ip link show "$_target" &>/dev/null && continue
+    for _rdev in /sys/class/net/*; do
+      [[ "$(cat "$_rdev/phys_port_name" 2>/dev/null)" == "pf0sf${_n}" ]] || continue
+      _rd=$(basename "$_rdev")
+      ip link set dev "$_rd" down 2>/dev/null
+      ip link set dev "$_rd" name "$_target" 2>/dev/null && ip link set dev "$_target" up 2>/dev/null \
+        && info "renamed representor $_rd → $_target (pf0sf${_n})"
+      break
+    done
+  done
+fi
+
 # Detect the sfc service name — varies across DOCA package versions
 SFC_SERVICE=""
 for _S in sfc mlnx-sfc hbn-sfc; do
@@ -148,8 +372,8 @@ EOF
 }
 
 generate_sfc_conf() {
-  # VF SF function netdevs: ${_SF_PREFIX}s${sfnum} (e.g. enp3s0f0s4)
-  # _SF_PREFIX is derived from BF3_PCI0 at the top of Step 4
+  # br-hbn port mappings, consumed by sfc.sh (adds ports) and init-sfs (field4 =
+  # container netdev to move into the pod). Core + VF entries in authoritative format.
   {
     cat <<'EOF'
 BR_HBN_NAME=br-hbn
@@ -159,16 +383,17 @@ MAPPINGS=(
 "br-hbn~pf0hpf~pf0hpf_if_r~pf0hpf_if~pf0hpf_if_r"
 "br-hbn~pf1hpf~pf1hpf_if_r~pf1hpf_if~pf1hpf_if_r"
 EOF
-    # VF entries: field2=SF function netdev (→ container as pf0vfN_if)
-    #             field3=VF representor renamed to pf0vfN_if_r (→ stays in OVS)
-    local _SFNUM=4
+    # VF entries — AUTHORITATIVE format from /opt/mellanox/sfc-hbn/install.sh
+    # (generate_ovs_sf_mapping): field2 = the VF ESWITCH representor (pf0vfN,
+    # phys_port_name c1pf0vfN, present once host SR-IOV VFs exist), exactly like
+    # p0/pf0hpf for core. field3 = SF representor (pf0vfN_if_r). field4 = SF
+    # function netdev (pf0vfN_if) → moved into the container by init-sfs.
+    # sfc.sh adds BOTH field2 and field3 to br-hbn and patches them.
     for ((i=0; i<P0_VFS; i++)); do
-      echo "\"br-hbn~${_SF_PREFIX}s${_SFNUM}~pf0vf${i}_if_r~pf0vf${i}_if~pf0vf${i}_if_r\""
-      _SFNUM=$((_SFNUM+1))
+      echo "\"br-hbn~pf0vf${i}~pf0vf${i}_if_r~pf0vf${i}_if~pf0vf${i}_if_r\""
     done
     for ((i=0; i<P1_VFS; i++)); do
-      echo "\"br-hbn~${_SF_PREFIX}s${_SFNUM}~pf1vf${i}_if_r~pf1vf${i}_if~pf1vf${i}_if_r\""
-      _SFNUM=$((_SFNUM+1))
+      echo "\"br-hbn~pf1vf${i}~pf1vf${i}_if_r~pf1vf${i}_if~pf1vf${i}_if_r\""
     done
     echo ")"
   } > "${SFC_CONF}"
@@ -226,6 +451,35 @@ TOTAL_VFS=$((P0_VFS + P1_VFS))
 _BUS_DEC=$(printf '%d' "0x${BF3_PCI0:5:2}" 2>/dev/null || echo 3)
 _SF_PREFIX="enp${_BUS_DEC}s0f0"
 
+# PREFLIGHT (--vfs only): the sfc.conf VF mappings reference the VF eswitch
+# representors (pf0vfN / pf1vfN, phys_port_name c1pfXvfN). These exist ONLY once the
+# x86 HOST has created the SR-IOV VFs. If they're missing, sfc.service would fail to
+# bring up br-hbn ("Port pf0vfN ..."). Fail fast here with clear guidance instead.
+if [[ $TOTAL_VFS -gt 0 ]]; then
+  _vf_rep_present() {  # $1=pfX  $2=index  → 0 if the eswitch rep netdev exists
+    local want="$1vf$2" n ppn
+    for n in /sys/class/net/*; do
+      ppn=$(cat "$n/phys_port_name" 2>/dev/null) || continue
+      # kernel names VF reps c1pf0vf0 / pf0vf0 depending on version — match the tail
+      [[ "$ppn" == "$want" || "$ppn" == *"$want" ]] && return 0
+    done
+    return 1
+  }
+  _MISSING_VF_REPS=()
+  for ((i=0; i<P0_VFS; i++)); do _vf_rep_present pf0 "$i" || _MISSING_VF_REPS+=("pf0vf${i}"); done
+  for ((i=0; i<P1_VFS; i++)); do _vf_rep_present pf1 "$i" || _MISSING_VF_REPS+=("pf1vf${i}"); done
+  if [[ ${#_MISSING_VF_REPS[@]} -gt 0 ]]; then
+    echo -e "${RED}[FAIL]${NC}  Missing VF eswitch representors on the BF3: ${_MISSING_VF_REPS[*]}"
+    echo -e "${CYAN}[INFO]${NC}  --vfs requires the x86 HOST to create the SR-IOV VFs FIRST"
+    echo -e "${CYAN}[INFO]${NC}  (they create these pf*vfN reps on the BF3, which sfc.conf/br-hbn map)."
+    echo -e "${CYAN}[INFO]${NC}  On the x86 host run:  sudo ./scripts/setup_host_vfs_standalone.sh"
+    echo -e "${CYAN}[INFO]${NC}  Verify on the BF3:    ls /sys/class/net/*/phys_port_name | ... (expect c1pf0vf0..)"
+    echo -e "${CYAN}[INFO]${NC}  Then re-run:          sudo $0 --vfs ${TOTAL_VFS}"
+    exit 1
+  fi
+  ok "VF eswitch reps present for ${TOTAL_VFS} VFs — host SR-IOV VFs are up"
+fi
+
 # hbn.conf — generate dynamically when VFs requested; otherwise use repo reference
 if [[ $TOTAL_VFS -gt 0 ]]; then
   generate_hbn_conf
@@ -278,14 +532,11 @@ else
   [[ "$SF_CONF_OK" == "false" ]] && warn "mlnx-sf.conf missing required sfnums (2, 3, 1514, 1515) — will regenerate"
   # Verify VF sfnums present when --vfs was requested
   if [[ "$SF_CONF_OK" == "true" && $TOTAL_VFS -gt 0 ]]; then
-    _CHK_SFNUM=4
     for ((i=0; i<P0_VFS; i++)); do
-      grep -q "\-\-sfnum ${_CHK_SFNUM}" "${MLX_SF_CONF}" 2>/dev/null || { SF_CONF_OK=false; break; }
-      _CHK_SFNUM=$((_CHK_SFNUM+1))
+      grep -q "\-\-sfnum $((ECPF0_VF_SF_BASE+i))\b" "${MLX_SF_CONF}" 2>/dev/null || { SF_CONF_OK=false; break; }
     done
     for ((i=0; i<P1_VFS; i++)); do
-      grep -q "\-\-sfnum ${_CHK_SFNUM}" "${MLX_SF_CONF}" 2>/dev/null || { SF_CONF_OK=false; break; }
-      _CHK_SFNUM=$((_CHK_SFNUM+1))
+      grep -q "\-\-sfnum $((ECPF1_VF_SF_BASE+i))\b" "${MLX_SF_CONF}" 2>/dev/null || { SF_CONF_OK=false; break; }
     done
     [[ "$SF_CONF_OK" == "false" ]] && warn "mlnx-sf.conf missing VF sfnums — will regenerate"
   fi
@@ -321,17 +572,20 @@ if [[ "$SF_CONF_OK" == "false" ]]; then
 /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 3 --hwaddr ${_SF3_MAC} -t --cpu-list 0-2
 /sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum 1515 --hwaddr ${_SF1515_MAC} -t --cpu-list 0-2
 EOF
-    # VF SFs: sfnums 4..4+P0_VFS-1 for pf0vfN, then 4+P0_VFS..4+P0_VFS+P1_VFS-1 for pf1vfN
-    _SFNUM=4
+    # VF SFs — AUTHORITATIVE sfnum scheme from install.sh: ECPF0 VFs (pf0vfN) use
+    # sfnum 1001+N; ECPF1 VFs (pf1vfN) use sfnum 1257+N. The patched udev namers
+    # map these ranges → pf0vfN_if / pf1vfN_if (and _if_r for reps). Using 4..11
+    # (the old scheme) is WRONG — the namers don't map it, so the SFs never get
+    # their pf*vf*_if names and init-sfs/sfc can't wire them.
     for ((i=0; i<P0_VFS; i++)); do
-      _MAC="02:${_B3}:${_B4}:${_B5}:$(printf '%02x' 0):$(printf '%02x' $_SFNUM)"
+      _SFNUM=$((ECPF0_VF_SF_BASE + i))
+      _MAC="02:${_B3}:${_B4}:${_B5}:0a:$(printf '%02x' $i)"
       echo "/sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum ${_SFNUM} --hwaddr ${_MAC} -t --cpu-list 0-2"
-      _SFNUM=$((_SFNUM+1))
     done
     for ((i=0; i<P1_VFS; i++)); do
-      _MAC="02:${_B3}:${_B4}:${_B5}:$(printf '%02x' 1):$(printf '%02x' $_SFNUM)"
+      _SFNUM=$((ECPF1_VF_SF_BASE + i))
+      _MAC="02:${_B3}:${_B4}:${_B5}:0b:$(printf '%02x' $i)"
       echo "/sbin/mlnx-sf --action create --device 0000:03:00.0 --sfnum ${_SFNUM} --hwaddr ${_MAC} -t --cpu-list 0-2"
-      _SFNUM=$((_SFNUM+1))
     done
   } > "${MLX_SF_CONF}"
   ok "mlnx-sf.conf generated: sfnums 2,3,1514,1515 + ${TOTAL_VFS} VF SFs (base: ${P0_MAC:-unknown})"
@@ -412,7 +666,7 @@ SFS_PROVISIONED=true
 
 # Primary check: all 4 SF opstate=attached in devlink
 sfs_all_attached() {
-  local s _SFNUM=4
+  local s i
   for s in 2 3 1514 1515; do
     local op
     op=$(devlink port show 2>/dev/null | grep "sfnum ${s} " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
@@ -420,15 +674,13 @@ sfs_all_attached() {
   done
   for ((i=0; i<P0_VFS; i++)); do
     local op
-    op=$(devlink port show 2>/dev/null | grep "sfnum ${_SFNUM} " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
+    op=$(devlink port show 2>/dev/null | grep "sfnum $((ECPF0_VF_SF_BASE+i)) " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
     [[ "$op" == "attached" ]] || return 1
-    _SFNUM=$((_SFNUM+1))
   done
   for ((i=0; i<P1_VFS; i++)); do
     local op
-    op=$(devlink port show 2>/dev/null | grep "sfnum ${_SFNUM} " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
+    op=$(devlink port show 2>/dev/null | grep "sfnum $((ECPF1_VF_SF_BASE+i)) " | grep -o "opstate [a-z]*" | awk '{print $2}' || echo "")
     [[ "$op" == "attached" ]] || return 1
-    _SFNUM=$((_SFNUM+1))
   done
 }
 
@@ -479,8 +731,8 @@ else
   # Explicitly activate any SFs that are in devlink but not yet active.
   # mlnx-sf should do this internally, but some driver versions require it explicitly.
   _ALL_SFNUMS=(2 3 1514 1515)
-  _VS=4; for ((i=0; i<P0_VFS; i++)); do _ALL_SFNUMS+=($_VS); _VS=$((_VS+1)); done
-         for ((i=0; i<P1_VFS; i++)); do _ALL_SFNUMS+=($_VS); _VS=$((_VS+1)); done
+  for ((i=0; i<P0_VFS; i++)); do _ALL_SFNUMS+=($((ECPF0_VF_SF_BASE+i))); done
+  for ((i=0; i<P1_VFS; i++)); do _ALL_SFNUMS+=($((ECPF1_VF_SF_BASE+i))); done
   for _S in "${_ALL_SFNUMS[@]}"; do
     _PORT=$(devlink port show 2>/dev/null | grep "sfnum ${_S} " | awk '{print $1}' | sed 's/:$//')
     if [[ -n "$_PORT" ]]; then
@@ -522,36 +774,14 @@ if [[ "$OVS_REAL_ERRORS" -gt 0 ]]; then
   OVS_RESTARTED=true
 fi
 
-# Clean stale VF OVS entries and rename VF representors before sfc restart.
-# Stale entries from previous runs cause "already in use" conflicts when sfc re-adds them.
-if [[ $TOTAL_VFS -gt 0 ]]; then
-  info "Cleaning stale VF OVS entries..."
-  _VS=4
-  for ((i=0; i<P0_VFS; i++)); do
-    ovs-vsctl del-port br-hbn "pf0vf${i}"       2>/dev/null || true
-    ovs-vsctl del-port br-hbn "pf0vf${i}_if_r"  2>/dev/null || true
-    ovs-vsctl del-port br-hbn "${_SF_PREFIX}s${_VS}" 2>/dev/null || true
-    _VS=$((_VS+1))
-  done
-  for ((i=0; i<P1_VFS; i++)); do
-    ovs-vsctl del-port br-hbn "pf1vf${i}"           2>/dev/null || true
-    ovs-vsctl del-port br-hbn "pf1vf${i}_if_r"      2>/dev/null || true
-    ovs-vsctl del-port br-hbn "${_SF_PREFIX}s${_VS}" 2>/dev/null || true
-    _VS=$((_VS+1))
-  done
-
-  info "Renaming VF representors for OVS..."
-  for ((i=0; i<P0_VFS; i++)); do
-    ip link show "pf0vf${i}" &>/dev/null 2>&1 && \
-      ip link set "pf0vf${i}" name "pf0vf${i}_if_r" 2>/dev/null && \
-      info "  pf0vf${i} → pf0vf${i}_if_r" || true
-  done
-  for ((i=0; i<P1_VFS; i++)); do
-    ip link show "pf1vf${i}" &>/dev/null 2>&1 && \
-      ip link set "pf1vf${i}" name "pf1vf${i}_if_r" 2>/dev/null && \
-      info "  pf1vf${i} → pf1vf${i}_if_r" || true
-  done
-fi
+# NOTE: br-hbn ports (including VF reps pf0vfN/pf0vfN_if_r) are owned entirely by
+# sfc.sh, which reads sfc.conf MAPPINGS and adds them idempotently (--may-exist).
+# We do NOT manipulate br-hbn ports by hand — manual ovs-vsctl add/del leaves stale
+# ofport_request state that survives a reboot and makes sfc.service fail on next boot
+# ("Port: X does not have ofport:[] the same as ofport_request:N"). The VF SF netdevs
+# (sfnum 1001+/1257+) are named by the patched udev helpers and moved into the pod by
+# init-sfs (they appear in sfc.conf MAPPINGS field4). Prerequisite: host SR-IOV VFs
+# must already exist so the eswitch reps (pf0vfN) are present for sfc.sh to bridge.
 
 # Restart sfc.service when OVS was fixed or SFs were just provisioned
 if [[ "$OVS_RESTARTED" == "true" ]] || [[ "$SFS_PROVISIONED" == "false" ]]; then
@@ -638,34 +868,10 @@ info "Step 11/13 — Bringing up HBN interfaces inside container"
 HBN_IFACES=(p0_if p1_if pf0hpf_if pf1hpf_if)
 for ((i=0; i<P0_VFS; i++)); do HBN_IFACES+=("pf0vf${i}_if"); done
 for ((i=0; i<P1_VFS; i++)); do HBN_IFACES+=("pf1vf${i}_if"); done
-# Move VF SF function netdevs from host into container (init-sfs doesn't handle these).
-# The SF function netdev (enp3s0f0sN) is moved to the container and renamed pf0vfN_if.
-if [[ $TOTAL_VFS -gt 0 ]]; then
-  info "Moving VF SF function netdevs into container..."
-  _SFNUM=4
-  for ((i=0; i<P0_VFS; i++)); do
-    _NETDEV="${_SF_PREFIX}s${_SFNUM}"
-    if ip link show "$_NETDEV" &>/dev/null 2>&1; then
-      ip link set "$_NETDEV" netns "$CONT_PID" name "pf0vf${i}_if" 2>/dev/null && \
-        info "  ${_NETDEV} → pf0vf${i}_if (in container)" || \
-        warn "  ${_NETDEV}: could not move to container"
-    else
-      warn "  ${_NETDEV}: not found in host namespace"
-    fi
-    _SFNUM=$((_SFNUM+1))
-  done
-  for ((i=0; i<P1_VFS; i++)); do
-    _NETDEV="${_SF_PREFIX}s${_SFNUM}"
-    if ip link show "$_NETDEV" &>/dev/null 2>&1; then
-      ip link set "$_NETDEV" netns "$CONT_PID" name "pf1vf${i}_if" 2>/dev/null && \
-        info "  ${_NETDEV} → pf1vf${i}_if (in container)" || \
-        warn "  ${_NETDEV}: could not move to container"
-    else
-      warn "  ${_NETDEV}: not found in host namespace"
-    fi
-    _SFNUM=$((_SFNUM+1))
-  done
-fi
+# VF SF function netdevs are moved into the pod by init-sfs itself: they are named
+# pf0vfN_if/pf1vfN_if on the host by the patched udev helper (sfnum 1001+/1257+) and
+# appear in sfc.conf MAPPINGS field4, so init-sfs's SF-move loop relocates them into
+# the pod netns — exactly like the core p0_if/p1_if/pf0hpf_if/pf1hpf_if. No manual move.
 
 for iface in "${HBN_IFACES[@]}"; do
   STATE=$(crictl exec "$CONT" ip link show "$iface" 2>/dev/null | grep -o "state [A-Z]*" | awk '{print $2}' || true)
