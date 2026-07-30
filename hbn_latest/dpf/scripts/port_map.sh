@@ -66,7 +66,7 @@ fi
 # ── live: host PF NIC names + VF presence (best-effort) ─────────────────────────
 echo "" > "${TMP}/host.txt"
 if [[ -n "${XPASS}" && -n "${XIP}" ]]; then
-  sshpass -p "${XPASS}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 "${XUSER}@${XIP}" '
+  sshpass -p "${XPASS}" ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=8 "${XUSER}@${XIP}" '
     for pf in $(lspci -Dn -d 15b3:a2dc 2>/dev/null | awk "{print \$1}"); do
       case "$pf" in *.0) n=$(ls /sys/bus/pci/devices/$pf/net 2>/dev/null|head -1); nv=$(cat /sys/bus/pci/devices/$pf/sriov_numvfs 2>/dev/null); echo "PF0 $n ${nv:-NA}";; \
                      *.1) n=$(ls /sys/bus/pci/devices/$pf/net 2>/dev/null|head -1); echo "PF1 $n";; esac

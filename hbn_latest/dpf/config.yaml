@@ -36,5 +36,25 @@ workers:
     rshim: rshim0            # NOTE: S2 host has TWO DPUs — rshim0=BF3 (c1:00), rshim1=BF2
     x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 
+  - name: worker3
+    server: s8               # ASUS ESC4000A-E10; BF3 900-9D3B6 (400GbE/NDR, 32GB)
+    bmc_ip: 10.20.13.234     # BF3 BMC (OpenBMC "dpu-bmc"; ARM-MAC+1)
+    oob_ip: 10.20.13.156     # BF3 OOB (DHCP; can flip .156↔.242 across reboots)
+    serial: MT2416XZ03VT
+    apiserver_port: 6445     # unique — worker1=6443, worker2=6444
+    x86_host_ip: 10.20.13.11 # admin/Aviz@AIF123 (also runs a Kafka/Confluent workload)
+    rshim: rshim0
+    x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
+
+  - name: worker4
+    server: s7               # ASUS ESC4000A-E10 (SN LAS0MD000185); BF3 900-9D3B6, BF3 at PCI c3:00
+    bmc_ip: 10.20.13.235     # BF3 BMC (OpenBMC "dpu-bmc"; base MAC e0:9d:73:e6:23:b8, BMC=+0x25)
+    oob_ip: 10.20.13.157     # BF3 OOB (ARM MAC ...dc = base +0x24)
+    serial: MT2503XZ0D8X
+    apiserver_port: 6446     # unique — worker1=6443, worker2=6444, worker3=6445
+    x86_host_ip: 10.20.13.10 # admin/Aviz@AIF123
+    rshim: rshim0
+    x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
+
   # S1 (10.20.13.216) is DPF-INCOMPATIBLE: BMC has no /redfish/v1/Chassis/Card1
   # and the host-side rshim is broken — use scripts/bringup_hbn_bf3.sh standalone instead.

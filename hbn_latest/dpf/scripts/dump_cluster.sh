@@ -26,6 +26,27 @@ while [[ $# -gt 0 ]]; do
 done
 OUTPUT="${HOME}/dpf_summary/cluster-dump-${SERVER_NAME}.html"
 
+# Per-server facts (oob_ip, bmc_ip, serial) come from config.yaml so the page
+# is not hardcoded to any one worker. Falls back to placeholders if not found.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/../config.yaml"
+DPU_NAME="${SERVER_NAME}-dpu"
+CLUSTER_NAME="${SERVER_NAME}-dpu-cluster"
+read -r OOB_IP BMC_IP SERIAL < <(python3 - "${CONFIG_FILE}" "${SERVER_NAME}" 2>/dev/null <<'PY' || true
+import sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    c = {}
+srv = sys.argv[2]
+for w in c.get("workers") or []:
+    if w.get("server") == srv:
+        print(w.get("oob_ip","?"), w.get("bmc_ip","?"), w.get("serial","?"))
+        break
+PY
+)
+OOB_IP="${OOB_IP:-?}"; BMC_IP="${BMC_IP:-?}"; SERIAL="${SERIAL:-?}"
+
 echo "Collecting cluster data..." >&2
 
 # Fetch DPU kubeconfig
@@ -205,14 +226,14 @@ _BF3_KUBELET_HBN=$([[ "${BF3_HBN_RUNNING:-0}"   -gt 0 ]] && echo "&#x2713; doca-
 
 # Detailed data (only when --detailed)
 if [[ "${DETAILED}" == "true" ]]; then
-  echo "  [detailed] DPU describe..." >&2;       DPF_DPU_DETAIL=$(kube describe dpu s4-dpu -n "${DPF_NAMESPACE}")
+  echo "  [detailed] DPU describe..." >&2;       DPF_DPU_DETAIL=$(kube describe dpu "${DPU_NAME}" -n "${DPF_NAMESPACE}")
   echo "  [detailed] DPUService describe..." >&2; DPF_SVC_DETAIL=$(kube describe dpuservice -A -n "${DPF_NAMESPACE}")
-  echo "  [detailed] DPUCluster detail..." >&2;   DPF_CLUSTER_DETAIL=$(kube describe dpucluster s4-dpu-cluster -n "${DPF_NAMESPACE}")
+  echo "  [detailed] DPUCluster detail..." >&2;   DPF_CLUSTER_DETAIL=$(kube describe dpucluster "${CLUSTER_NAME}" -n "${DPF_NAMESPACE}")
   echo "  [detailed] ServiceChains..." >&2;       DPF_CHAINS=$(kube get servicechains -A 2>/dev/null || echo "(none)")
   echo "  [detailed] ServiceInterfaceSets..." >&2; DPF_IFSETS=$(kube get serviceinterfacesets -A 2>/dev/null || echo "(none)")
   echo "  [detailed] DPUServiceIPAMs..." >&2;     DPF_IPAM=$(kube get dpuserviceipam -A 2>/dev/null || echo "(none)")
   echo "  [detailed] BF3 node describe..." >&2
-  BF3_NODE_DETAIL=$(dkube describe node s4-dpu 2>/dev/null || echo "(unavailable)")
+  BF3_NODE_DETAIL=$(dkube describe node "${DPU_NAME}" 2>/dev/null || echo "(unavailable)")
   echo "  [detailed] BF3 events..." >&2
   BF3_EVENTS=$(dkube get events -A --sort-by='.lastTimestamp' 2>/dev/null | tail -20 || echo "(none)")
   echo "  [detailed] k3s events..." >&2
@@ -226,7 +247,7 @@ FAILING_PODS=$(echo "$K3S_PODS" | grep -cE "CrashLoop|Error|ContainerCreating" |
 PENDING_PODS=$(echo "$K3S_PODS" | grep -c "Pending" || true)
 BF3_TOTAL=$(echo "$BF3_PODS" | tail -n +2 | wc -l || echo 0)
 BF3_RUNNING=$(echo "$BF3_PODS" | grep -c "Running" || true)
-DPU_PHASE=$(kube get dpu s4-dpu -n "${DPF_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
+DPU_PHASE=$(kube get dpu "${DPU_NAME}" -n "${DPF_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
 
 echo "  Writing HTML..." >&2
 
@@ -476,7 +497,7 @@ cat <<ARCH
           ${_ARCH_SVC_CTRL}
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">bfb-registry (nginx)</span><span class="role">serves BFB HTTP</span></div>
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">kamaji etcd (x3)</span><span class="role">TenantCP state</span></div>
-          <div class="arch-item"><span class="dot dot-g"></span><span class="name">s4-dpu-cluster (x3)</span><span class="role">virtual CP for BF3</span></div>
+          <div class="arch-item"><span class="dot dot-g"></span><span class="name">${CLUSTER_NAME} (x3)</span><span class="role">virtual CP for BF3</span></div>
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">argocd</span><span class="role">GitOps deployments</span></div>
         </div>
       </div>
@@ -486,14 +507,14 @@ cat <<ARCH
   <div class="arch-cluster" style="border-color:var(--green)">
     <div class="arch-cluster-title" style="color:var(--green)">
       <span class="badge bg-bf3">TenantCP</span>
-      s4-dpu-cluster &mdash; Virtual k8s for BF3 (runs as pods on DPF VM)
+      ${CLUSTER_NAME} &mdash; Virtual k8s for BF3 (runs as pods on DPF VM)
     </div>
     <div class="arch-nodes">
       <div class="arch-node">
         <div class="arch-node-title">
           <span style="color:var(--green)">&#x25a6;</span>
-          <span class="ok">Worker Node: s4-dpu</span>
-          &nbsp;<span class="badge bg-bf3">BF3 ARM &mdash; 10.20.13.249</span>
+          <span class="ok">Worker Node: ${DPU_NAME}</span>
+          &nbsp;<span class="badge bg-bf3">BF3 ARM &mdash; ${OOB_IP}</span>
         </div>
         <div class="arch-items">
           <div class="arch-item"><span class="dot dot-g"></span><span class="name">kube-proxy</span><span class="role ok">Running</span></div>
@@ -529,7 +550,7 @@ cat <<HTML
 </div>
 <div class="card" style="border-top:3px solid var(--green)">
   <div class="card-title ok">BF3 TenantControlPlane</div>
-  <div class="card-sub">s4-dpu &mdash; 10.20.13.249</div>
+  <div class="card-sub">${DPU_NAME} &mdash; ${OOB_IP}</div>
   <div class="card-stat"><span class="stat-label">Node status</span><span class="ok">Ready</span></div>
   <div class="card-stat"><span class="stat-label">Total pods</span><span class="info">$BF3_TOTAL</span></div>
   <div class="card-stat"><span class="stat-label">Running</span><span class="ok">$BF3_RUNNING</span></div>
@@ -538,10 +559,10 @@ cat <<HTML
 </div>
 <div class="card" style="border-top:3px solid var(--purple)">
   <div class="card-title purple">DPU Provisioning</div>
-  <div class="card-sub">s4-dpu &mdash; MT2437600HGY</div>
+  <div class="card-sub">${DPU_NAME} &mdash; ${SERIAL}</div>
   <div class="card-stat"><span class="stat-label">Phase</span><span class="$DPU_COLOR">$DPU_PHASE</span></div>
-  <div class="card-stat"><span class="stat-label">BMC</span><span class="info">10.20.13.250</span></div>
-  <div class="card-stat"><span class="stat-label">OOB</span><span class="info">10.20.13.249</span></div>
+  <div class="card-stat"><span class="stat-label">BMC</span><span class="info">${BMC_IP}</span></div>
+  <div class="card-stat"><span class="stat-label">OOB</span><span class="info">${OOB_IP}</span></div>
   <div class="card-stat"><span class="stat-label">Flash method</span><span class="warn">rshim</span></div>
 </div>
 ${_ACTION_CARD}
@@ -549,7 +570,7 @@ HTML
 echo "</div>"
 
 # ── Two Clusters Explained ────────────────────────────────────────────────────
-cat <<'TWOCLUSTERS'
+cat <<TWOCLUSTERS
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:28px">
   <div class="card" style="border:2px solid var(--blue)">
     <div class="card-title" style="color:var(--blue);font-size:15px">&#x2460; k3s Cluster</div>
@@ -565,11 +586,11 @@ cat <<'TWOCLUSTERS'
   </div>
   <div class="card" style="border:2px solid var(--green)">
     <div class="card-title" style="color:var(--green);font-size:15px">&#x2461; DPU Cluster (TenantControlPlane)</div>
-    <div class="card-sub">Workload plane &mdash; BF3 ARM cores (10.20.13.249)</div>
+    <div class="card-sub">Workload plane &mdash; BF3 ARM cores (${OOB_IP})</div>
     <div style="font-size:12px;line-height:1.7;color:var(--muted);margin-top:8px">
       This is the <strong style="color:var(--text)">BF3 workload cluster</strong>. The BF3's kubelet
       joins this cluster. DPUServices (HBN, flannel, OVS-CNI) run here as pods on the BF3.<br><br>
-      <strong style="color:var(--text)">Nodes:</strong> 1 (s4-dpu = BF3)<br>
+      <strong style="color:var(--text)">Nodes:</strong> 1 (${DPU_NAME} = BF3)<br>
       <strong style="color:var(--text)">Kubeconfig:</strong> /tmp/dpu-tc-kubeconfig<br>
       <strong style="color:var(--text)">Access:</strong> kubectl --kubeconfig /tmp/dpu-tc-kubeconfig get pods -A<br><br>
       Its control plane (apiserver + etcd) runs as <em>pods inside</em> Cluster 1 (powered by Kamaji).
@@ -613,7 +634,6 @@ POD_DESC = {
   'dpf-provisioning-controller-manager': 'Handles OS install — calls BMC Redfish API or coordinates rshim flash',
   'dpuservice-controller-manager': 'Translates DPUService CRs into ArgoCD Applications that deploy onto the BF3',
   'kamaji-cm-controller-manager': 'Kamaji ConfigMap controller — syncs cluster config to TenantControlPlanes',
-  's4-dpu-cluster': 'Virtual k8s control plane for BF3 (3 pods = HA). Contains kube-apiserver + scheduler + controller-manager',
   'servicechainset-controller-manager': 'Manages OVS traffic steering chains on BF3 — watches DPUServiceChain CRs and programs OpenFlow rules',
   'istio-egressgateway': 'Istio: controls outbound traffic from the mesh',
   'istio-ingressgateway': 'Istio: entry point for inbound traffic into the mesh',
@@ -678,6 +698,10 @@ def get_desc(name, lookup):
     for k, v in lookup.items():
         if name.startswith(k) or name == k:
             return v
+    import re
+    # Any server's TenantControlPlane pod: sN-dpu-cluster-<hash>
+    if re.match(r'^s\d+-dpu-cluster-', name):
+        return 'Virtual k8s control plane for BF3 (3 pods = HA). Contains kube-apiserver + scheduler + controller-manager'
     return ''
 
 data = json.load(sys.stdin)
@@ -795,6 +819,10 @@ def get_desc(name, lookup):
     for k, v in lookup.items():
         if name.startswith(k) or name == k:
             return v
+    import re
+    # Any server's TenantControlPlane pod: sN-dpu-cluster-<hash>
+    if re.match(r'^s\d+-dpu-cluster-', name):
+        return 'Virtual k8s control plane for BF3 (3 pods = HA). Contains kube-apiserver + scheduler + controller-manager'
     return ''
 
 data = json.load(sys.stdin)
@@ -890,7 +918,7 @@ cat <<DPFTAB
     <div class='crd-name'>DPUDevice</div>
     <div class='crd-kind'>Physical BF3 Identity</div>
     <div class='crd-desc'>Represents the physical BF3 card. Links the serial number to the BMC IP. Immutable once set — serial number and BMC IP cannot be changed without deleting and recreating.</div>
-    <div class='crd-fields'>spec.serialNumber: MT2437600HGY<br>spec.bmcIp: 10.20.13.250 (immutable)</div>
+    <div class='crd-fields'>spec.serialNumber: ${SERIAL}<br>spec.bmcIp: ${BMC_IP} (immutable)</div>
   </div>
   <div class='crd-card' style='border-top:2px solid var(--red)'>
     <div class='crd-name'>DPU</div>
@@ -920,12 +948,12 @@ cat <<DPFTAB
   </div>
   <div class='flow-step done'>
     <div><div class='flow-title'>3. DPUCluster created — TenantControlPlane bootstrapped</div>
-    <div class='flow-desc'>Kamaji created 3 replica pods (s4-dpu-cluster-*) each running kube-apiserver + kube-scheduler + kube-controller-manager. This is the virtual k8s cluster the BF3 joins.</div>
+    <div class='flow-desc'>Kamaji created 3 replica pods (${CLUSTER_NAME}-*) each running kube-apiserver + kube-scheduler + kube-controller-manager. This is the virtual k8s cluster the BF3 joins.</div>
     <div class='flow-status ok'>&#x2713; Complete — 3/3 pods Running</div></div>
   </div>
   <div class='flow-step done'>
     <div><div class='flow-title'>4. DPF generated bfcfg (cloud-init user-data)</div>
-    <div class='flow-desc'>DPF generated a cloud-init config containing the kubeadm join command and systemd service definitions. Stored in the BFB PVC at bfcfg/dpf-operator-system_s4-dpu_&lt;uid&gt;. Injected into BF3 via bfb-install --config.</div>
+    <div class='flow-desc'>DPF generated a cloud-init config containing the kubeadm join command and systemd service definitions. Stored in the BFB PVC at bfcfg/dpf-operator-system_${DPU_NAME}_&lt;uid&gt;. Injected into BF3 via bfb-install --config.</div>
     <div class='flow-status ok'>&#x2713; Complete — status.bfCFGFile present</div></div>
   </div>
   <div class='flow-step warn'>
@@ -941,7 +969,7 @@ cat <<DPFTAB
   <div class='flow-step done'>
     <div><div class='flow-title'>6. BF3 joined TenantControlPlane</div>
     <div class='flow-desc'>kubeadm-join.service ran on first boot. kubeadm joined 10.4.5.136:6443 (via SSH tunnel workaround — TCP from 10.20.13.x to 10.4.5.x is blocked by lab firewall). BF3 kubelet now connected.</div>
-    <div class='flow-status ok'>&#x2713; Complete — s4-dpu node Ready, kubelet v1.34.4</div></div>
+    <div class='flow-status ok'>&#x2713; Complete — ${DPU_NAME} node Ready, kubelet v1.34.4</div></div>
   </div>
   <div class='flow-step ${_FLOW7_CLASS}'>
     <div><div class='flow-title'>7. DPUServices deploy to BF3</div>
@@ -995,8 +1023,8 @@ cat <<BF3TAB
       &#x25a6; kubelet — joins TenantControlPlane<br>
       &#x25a6; containerd — runs pods<br>
       &#x25a6; OVS-DPDK — packet forwarding<br>
-      &#x25a6; OOB IP: 10.20.13.249 (management)<br>
-      &#x25a6; BMC IP: 10.20.13.250 (Redfish API)
+      &#x25a6; OOB IP: ${OOB_IP} (management)<br>
+      &#x25a6; BMC IP: ${BMC_IP} (Redfish API)
     </div>
   </div>
   <div class='crd-card' style='border-top:2px solid var(--cyan)'>
@@ -1088,7 +1116,7 @@ FRR (zebra, staticd, bgpd) + NVUE REST :8765 &larr; routing daemons
     <div class='crd-name' style='color:var(--cyan)'>Current state</div>
     <div class='crd-desc' style='line-height:1.8'>
       &#x2713; kubelet active (systemd service)<br>
-      &#x2713; Node s4-dpu: Ready, v1.34.4<br>
+      &#x2713; Node ${DPU_NAME}: Ready, v1.34.4<br>
       &#x2713; kube-proxy: Running<br>
       ${_BF3_KUBELET_DNS}
       ${_BF3_KUBELET_FL}

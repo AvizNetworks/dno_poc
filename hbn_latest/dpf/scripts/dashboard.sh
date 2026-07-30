@@ -25,19 +25,26 @@ PY
 echo "── fleet dump ──" >&2
 "${SCRIPT_DIR}/fleet_dump.sh" >&2 || echo "(fleet_dump failed)" >&2
 
-while IFS=$'\t' read -r NAME SERVER; do
+# Read all workers into an array FIRST, then iterate. A plain
+# `while read … done <<< "$WORKERS"` breaks here because the sub-scripts run
+# `ssh` (port_map.sh) which consumes the loop's stdin — the here-string — so
+# the loop would exit after the first worker (only s4 ever got generated).
+mapfile -t _WORKER_LINES <<< "${WORKERS}"
+for _line in "${_WORKER_LINES[@]}"; do
+  [[ -z "${_line}" ]] && continue
+  IFS=$'\t' read -r NAME SERVER <<< "${_line}"
   echo "── cluster dump: ${SERVER} ──" >&2
-  "${SCRIPT_DIR}/dump_cluster.sh" --server "${SERVER}" >/dev/null 2>&1 \
+  "${SCRIPT_DIR}/dump_cluster.sh" --server "${SERVER}" >/dev/null 2>&1 </dev/null \
     || echo "(dump_cluster ${SERVER} failed)" >&2
   echo "── port map: ${SERVER} ──" >&2
-  "${SCRIPT_DIR}/port_map.sh" --server "${SERVER}" >/dev/null 2>&1 \
+  "${SCRIPT_DIR}/port_map.sh" --server "${SERVER}" >/dev/null 2>&1 </dev/null \
     || echo "(port_map ${SERVER} failed)" >&2
   if [[ "${FULL}" == "true" ]]; then
     echo "── explain stack: ${SERVER} ──" >&2
-    "${SCRIPT_DIR}/explain_stack.sh" --server "${SERVER}" >/dev/null 2>&1 \
+    "${SCRIPT_DIR}/explain_stack.sh" --server "${SERVER}" >/dev/null 2>&1 </dev/null \
       || echo "(explain_stack ${SERVER} failed — needs BF3 SSH creds in config.local.yaml)" >&2
   fi
-done <<< "${WORKERS}"
+done
 
 echo "── index ──" >&2
 python3 - "${SUMMARY}" "${CONFIG_FILE}" <<'PY'

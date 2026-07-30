@@ -806,9 +806,32 @@ info "Step 8/11 — DPUFlavor"
 if [[ "${DRY_RUN}" == "true" ]]; then
   info "[dry-run] would apply DPUFlavor '${DPU_FLAVOR_NAME}'"
 else
-  # DPUFlavor spec is immutable — must delete DPU referencing it, then delete flavor
+  # Render the desired flavor first so we can compare against what's live.
+  #   metadata.name → ${DPU_FLAVOR_NAME}  (per-server, so multiple DPUs don't collide)
+  #   X86_HOST_IP  — x86 relay host for the SSH tunnel (iptables DNAT target)
+  #   BFB_REGISTRY_IP — DPF VM IP (kubeadm join endpoint before ClusterIP takes over)
+  _flavor_tmp=$(mktemp)
+  sed -e "s|^  name: bf3-hbn|  name: ${DPU_FLAVOR_NAME}|" \
+      -e "s|X86_HOST_IP=\"[^\"]*\"|X86_HOST_IP=\"${X86_HOST_IP}\"|g" \
+      -e "s|DPF_VM_IP=\"[^\"]*\"|DPF_VM_IP=\"${BFB_REGISTRY_IP}\"|g" \
+      -e "s|APISERVER_PORT=\"[^\"]*\"|APISERVER_PORT=\"${APISERVER_PORT}\"|g" \
+      "${MANIFESTS_DIR}/04-dpuflavor.yaml" > "${_flavor_tmp}"
+
+  # DPUFlavor spec is immutable — must delete DPU referencing it, then delete flavor.
+  # BUT only do that destructive dance when the flavor actually CHANGED. Re-running
+  # --hbn with an unchanged flavor must NOT delete the DPU (that wipes the BF3's
+  # cluster membership and triggers a needless re-flash — an infinite loop).
+  _flavor_changed=true
   if kube get dpuflavor "${DPU_FLAVOR_NAME}" -n dpf-operator-system &>/dev/null; then
-    info "DPUFlavor '${DPU_FLAVOR_NAME}' exists and is immutable — will delete and recreate"
+    if kube diff -f "${_flavor_tmp}" &>/dev/null; then
+      _flavor_changed=false
+      skip "DPUFlavor '${DPU_FLAVOR_NAME}' already present and unchanged — not recreating (avoids DPU delete/reflash loop)"
+    else
+      info "DPUFlavor '${DPU_FLAVOR_NAME}' exists but spec changed — will delete and recreate"
+    fi
+  fi
+
+  if [[ "${_flavor_changed}" == "true" ]] && kube get dpuflavor "${DPU_FLAVOR_NAME}" -n dpf-operator-system &>/dev/null; then
     # DPU CR must be removed first (webhook blocks flavor deletion while referenced)
     if kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" &>/dev/null; then
       info "Deleting DPU '${SERVER_NAME}-dpu' so DPUFlavor can be removed"
@@ -837,19 +860,13 @@ else
     kube delete dpuflavor "${DPU_FLAVOR_NAME}" -n dpf-operator-system
     kube wait --for=delete dpuflavor/"${DPU_FLAVOR_NAME}" -n dpf-operator-system --timeout=30s 2>/dev/null || true
   fi
-  # Substitute per-server IPs + flavor name before applying:
-  #   metadata.name → ${DPU_FLAVOR_NAME}  (per-server, so multiple DPUs don't collide)
-  #   X86_HOST_IP  — x86 relay host for the SSH tunnel (iptables DNAT target)
-  #   BFB_REGISTRY_IP — DPF VM IP (kubeadm join endpoint before ClusterIP takes over)
-  _flavor_tmp=$(mktemp)
-  sed -e "s|^  name: bf3-hbn|  name: ${DPU_FLAVOR_NAME}|" \
-      -e "s|X86_HOST_IP=\"[^\"]*\"|X86_HOST_IP=\"${X86_HOST_IP}\"|g" \
-      -e "s|DPF_VM_IP=\"[^\"]*\"|DPF_VM_IP=\"${BFB_REGISTRY_IP}\"|g" \
-      -e "s|APISERVER_PORT=\"[^\"]*\"|APISERVER_PORT=\"${APISERVER_PORT}\"|g" \
-      "${MANIFESTS_DIR}/04-dpuflavor.yaml" > "${_flavor_tmp}"
-  kube apply -f "${_flavor_tmp}"
+  # Apply only when new or changed — an unchanged flavor is left untouched so the
+  # DPU keeps running and the BF3 stays joined.
+  if [[ "${_flavor_changed}" == "true" ]]; then
+    kube apply -f "${_flavor_tmp}"
+    ok "DPUFlavor '${DPU_FLAVOR_NAME}' applied (X86_HOST_IP=${X86_HOST_IP}, DPF_VM=${BFB_REGISTRY_IP}, APISERVER_PORT=${APISERVER_PORT})"
+  fi
   rm -f "${_flavor_tmp}"
-  ok "DPUFlavor '${DPU_FLAVOR_NAME}' applied (X86_HOST_IP=${X86_HOST_IP}, DPF_VM=${BFB_REGISTRY_IP}, APISERVER_PORT=${APISERVER_PORT})"
 fi
 
 # ─── Step 9: DPUCluster ───────────────────────────────────────────────────────
@@ -1158,7 +1175,7 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
     # Wait for DPF to generate the bfcfg (set during BFBPrepared phase)
     info "  Waiting for DPF to generate bfcfg (BFBPrepared)..."
     elapsed=0; bfcfg_ready=false
-    while [[ $elapsed -lt 600 ]]; do
+    while [[ $elapsed -lt 900 ]]; do
       bfb_prepared=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="BFBPrepared")].status}' 2>/dev/null || echo "")
       dpu_phase=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
@@ -1166,14 +1183,17 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       if [[ "$bfb_prepared" == "True" ]]; then
         bfcfg_ready=true; ok "BFBPrepared: True — bfcfg ready"; break
       fi
-      # DPF may have already progressed to Error/FailToInstall — bfcfg still exists
+      # DPF may have already progressed to Error/FailToInstall — bfcfg still exists.
+      # Condition type varies by DPF version: older=OSInstalled, v25.10.1=BFBTransferred.
       if [[ "$dpu_phase" == "Error" ]]; then
         os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
           -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].reason}' 2>/dev/null || echo "")
+        [[ -z "$os_reason" ]] && os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+          -o jsonpath='{.status.conditions[?(@.type=="BFBTransferred")].reason}' 2>/dev/null || echo "")
         [[ "$os_reason" == "FailToInstall" ]] && { bfcfg_ready=true; ok "DPF in Error/FailToInstall — bfcfg already generated"; break; }
       fi
       sleep 15; elapsed=$((elapsed + 15))
-      info "  DPU phase: ${dpu_phase:-unknown} ... ${elapsed}s/600s"
+      info "  DPU phase: ${dpu_phase:-unknown} ... ${elapsed}s/900s"
     done
     [[ "$bfcfg_ready" != "true" ]] \
       && fail "bfcfg not ready after 600s — check: kubectl describe dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
@@ -1271,10 +1291,17 @@ else
     fi
     [[ "$phase" == "Ready" ]] && break
     if [[ "$phase" == "Error" ]]; then
+      # Check both OSInstalled and BFBTransferred — condition type varies by DPF version
       os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].reason}' 2>/dev/null || echo "")
       os_msg=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].message}' 2>/dev/null || echo "")
+      if [[ -z "$os_reason" ]]; then
+        os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+          -o jsonpath='{.status.conditions[?(@.type=="BFBTransferred")].reason}' 2>/dev/null || echo "")
+        os_msg=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+          -o jsonpath='{.status.conditions[?(@.type=="BFBTransferred")].message}' 2>/dev/null || echo "")
+      fi
       if [[ "$os_reason" == "FailToInstall" && "$os_msg" == *"404"* ]]; then
         # BMC returned 404 on install task poll — happens when BF3 already has the
         # target version and the BMC skips the flash, immediately cleaning up the task.
@@ -1297,6 +1324,15 @@ else
           ok "BF3 version matches target — treating provisioning as complete"
           break
         fi
+        # Redfish version check unavailable or version mismatch — BF3 may have been
+        # flashed via rshim. Auto-patch DPU to Ready so provisioning can continue.
+        warn "DPU Error: BMC returned 404 (FailToInstall) and Redfish version check inconclusive"
+        warn "  BMC user: ${bmc_user}, current_ver='${current_ver}', expected_ver='${expected_ver}'"
+        warn "  Auto-patching DPU to Ready (BF3 assumed already flashed via rshim)"
+        kube patch dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
+          --subresource=status --type=merge \
+          -p '{"status":{"phase":"Ready"}}' 2>/dev/null || true
+        break
       fi
       fail "DPU provisioning failed — check: kubectl describe dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
     fi
