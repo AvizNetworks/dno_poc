@@ -1,0 +1,4 @@
+ID     Name                Type        LWP     Sched Policy (Priority)  lcore  Core   Socket State
+0      vpp_main                        260607  other (0)                1      1      0
+1      vpp_wk_0            workers     260608  other (0)                2      2      0
+2      vpp_wk_1            workers     260609  other (0)                3      3      0

@@ -1,0 +1,140 @@
+Limiting display to 8 packets. To display more specify max.
+------------------- Start of thread 0 vpp_main -------------------
+No packets in trace buffer
+------------------- Start of thread 1 vpp_wk_0 -------------------
+No packets in trace buffer
+------------------- Start of thread 2 vpp_wk_1 -------------------
+Packet 1
+
+00:37:22:678323: dpdk-input
+  tenant0 rx queue 1
+  buffer 0x319bbf: current data 0, length 85, buffer-pool 0, ref-count 1, trace handle 0x2000000
+                   ext-hdr-valid
+  PKT MBUF: port 1, nb_segs 1, pkt_len 85
+    buf_len 2176, data_len 85, ol_flags 0x400182, data_off 128, phys_addr 0x6dc6f040
+    packet_type 0x191 l2_len 0 l3_len 0 outer_l2_len 0 outer_l3_len 0
+    rss 0x87e01272 fdir.hi 0x0 fdir.lo 0x87e01272
+    Packet Offload Flags
+      PKT_RX_IP_CKSUM_GOOD (0x0080) IP cksum of RX pkt. is valid
+      PKT_RX_L4_CKSUM_GOOD (0x0100) L4 cksum of RX pkt. is valid
+      PKT_RX_OUTER_L4_CKSUM_GOOD (0x4000) External L4 header checksum OK
+      PKT_RX_RSS_HASH (0x0002) RX packet with RSS hash result
+    Packet Types
+      RTE_PTYPE_L2_ETHER (0x0001) Ethernet packet
+      RTE_PTYPE_L3_IPV4_EXT_UNKNOWN (0x0090) IPv4 packet with or without extension headers
+      RTE_PTYPE_L4_TCP (0x0100) TCP packet
+  IP4: 00:e0:ec:f4:17:3c -> 6c:fe:54:4b:74:69
+  TCP: 10.10.10.2 -> 10.10.10.1
+    tos 0xc0, ttl 1, length 71, checksum 0x468b dscp CS6 ecn NON_ECN
+    fragment id 0x0a50, flags DONT_FRAGMENT
+  TCP: 179 -> 54686
+    seq. 0x00ecb1a9 ack 0xced9b1f4
+    flags 0x18 PSH ACK, tcp header: 32 bytes
+    window 124, checksum 0xffd2
+
+00:37:22:678326: ethernet-input
+  frame: flags 0x3, hw-if-index 2, sw-if-index 2
+  IP4: 00:e0:ec:f4:17:3c -> 6c:fe:54:4b:74:69
+00:37:22:678327: ip4-input-no-checksum
+  TCP: 10.10.10.2 -> 10.10.10.1
+    tos 0xc0, ttl 1, length 71, checksum 0x468b dscp CS6 ecn NON_ECN
+    fragment id 0x0a50, flags DONT_FRAGMENT
+  TCP: 179 -> 54686
+    seq. 0x00ecb1a9 ack 0xced9b1f4
+    flags 0x18 PSH ACK, tcp header: 32 bytes
+    window 124, checksum 0xffd2
+
+00:37:22:678328: ip4-lookup
+  fib 0 dpo-idx 9 flow hash: 0x00000000
+  TCP: 10.10.10.2 -> 10.10.10.1
+    tos 0xc0, ttl 1, length 71, checksum 0x468b dscp CS6 ecn NON_ECN
+    fragment id 0x0a50, flags DONT_FRAGMENT
+  TCP: 179 -> 54686
+    seq. 0x00ecb1a9 ack 0xced9b1f4
+    flags 0x18 PSH ACK, tcp header: 32 bytes
+    window 124, checksum 0xffd2
+
+00:37:22:678329: ip4-receive
+    fib:0 adj:9 flow:0x00000000
+  TCP: 10.10.10.2 -> 10.10.10.1
+    tos 0xc0, ttl 1, length 71, checksum 0x468b dscp CS6 ecn NON_ECN
+    fragment id 0x0a50, flags DONT_FRAGMENT
+  TCP: 179 -> 54686
+    seq. 0x00ecb1a9 ack 0xced9b1f4
+    flags 0x18 PSH ACK, tcp header: 32 bytes
+    window 124, checksum 0xffd2
+
+00:37:22:678329: ip4-punt
+    fib:0 adj:26 flow:0x00000000
+  TCP: 10.10.10.2 -> 10.10.10.1
+    tos 0xc0, ttl 1, length 71, checksum 0x468b dscp CS6 ecn NON_ECN
+    fragment id 0x0a50, flags DONT_FRAGMENT
+  TCP: 179 -> 54686
+    seq. 0x00ecb1a9 ack 0xced9b1f4
+    flags 0x18 PSH ACK, tcp header: 32 bytes
+    window 124, checksum 0xffd2
+
+00:37:22:678329: ip4-punt-redirect
+  via redirect:4
+00:37:22:678330: ip4-dvr-dpo
+     sw_if_index:6
+00:37:22:678330: ip4-dvr-reinject
+     sw_if_index:6
+00:37:22:678331: tap4098-output
+  tap4098 flags 0xc319000d
+  IP4: 00:e0:ec:f4:17:3c -> 6c:fe:54:4b:74:69
+  TCP: 10.10.10.2 -> 10.10.10.1
+    tos 0xc0, ttl 1, length 71, checksum 0x468b dscp CS6 ecn NON_ECN
+    fragment id 0x0a50, flags DONT_FRAGMENT
+  TCP: 179 -> 54686
+    seq. 0x00ecb1a9 ack 0xced9b1f4
+    flags 0x18 PSH ACK, tcp header: 32 bytes
+    window 124, checksum 0xffd2
+
+00:37:22:678331: tap4098-tx
+    buffer 0x319bbf: current data 0, length 85, buffer-pool 0, ref-count 1, trace handle 0x2000000
+                     ext-hdr-valid
+                     l4-cksum-computed l4-cksum-correct local ip4 dvr l2-hdr-offset 0 l3-hdr-offset 14
+  ipv4 tcp hdr-sz 66 l2-hdr-offset 0 l3-hdr-offset 14 l4-hdr-offset 34 l4-hdr-sz 32
+  IP4: 00:e0:ec:f4:17:3c -> 6c:fe:54:4b:74:69
+  TCP: 10.10.10.2 -> 10.10.10.1
+    tos 0xc0, ttl 1, length 71, checksum 0x468b dscp CS6 ecn NON_ECN
+    fragment id 0x0a50, flags DONT_FRAGMENT
+  TCP: 179 -> 54686
+    seq. 0x00ecb1a9 ack 0xced9b1f4
+    flags 0x18 PSH ACK, tcp header: 32 bytes
+    window 124, checksum 0xffd2
+
+
+Packet 2
+
+00:37:24:441506: dpdk-input
+  tenant0 rx queue 2
+  buffer 0x31f1d2: current data 0, length 60, buffer-pool 0, ref-count 1, trace handle 0x2000002
+                   ext-hdr-valid
+  PKT MBUF: port 1, nb_segs 1, pkt_len 60
+    buf_len 2176, data_len 60, ol_flags 0x0, data_off 128, phys_addr 0x6ddc7500
+    packet_type 0x3 l2_len 0 l3_len 0 outer_l2_len 0 outer_l3_len 0
+    rss 0x0 fdir.hi 0x0 fdir.lo 0x0
+    Packet Types
+      RTE_PTYPE_L2_ETHER_ARP (0x0003) ARP packet
+  ARP: 00:e0:ec:f4:17:3c -> ff:ff:ff:ff:ff:ff
+  request, type ethernet/IP4, address size 6/4
+  00:e0:ec:f4:17:3c/10.0.0.102 -> 00:00:00:00:00:00/10.0.0.103
+00:37:24:441508: ethernet-input
+  frame: flags 0x3, hw-if-index 2, sw-if-index 2
+  ARP: 00:e0:ec:f4:17:3c -> ff:ff:ff:ff:ff:ff
+00:37:24:441509: arp-input
+  request, type ethernet/IP4, address size 6/4
+  00:e0:ec:f4:17:3c/10.0.0.102 -> 00:00:00:00:00:00/10.0.0.103
+00:37:24:441510: linux-cp-arp-phy
+  rx-sw-if-index: 2 opcode: 1
+00:37:24:441511: arp-reply
+  request, type ethernet/IP4, address size 6/4
+  00:e0:ec:f4:17:3c/10.0.0.102 -> 00:00:00:00:00:00/10.0.0.103
+00:37:24:441515: error-drop
+  rx:tenant0
+00:37:24:441516: drop
+  arp-reply: IP4 source address not local to subnet
+
+Limiting display to 8 packets. To display more specify max.

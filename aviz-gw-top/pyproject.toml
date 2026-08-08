@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aviz-gw-top"
+version = "0.1.0"
+description = "htop-style terminal dashboard for the Aviz Gateway data plane (aviz-gw-dp)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Aviz Networks" }]
+dependencies = [
+    "textual>=0.79,<2.0",
+]
+
+[project.optional-dependencies]
+vpp = [
+    # vpp_papi is normally installed from the VPP deb/rpm packages matching the
+    # running VPP (python3-vpp-api). The PyPI package also exists but must match
+    # the pinned VPP release (see aviz_gw_top.config.TARGET_VPP_VERSION).
+    "vpp_papi",
+]
+dev = [
+    "pytest>=8",
+    "mypy>=1.10",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+aviz-gw-top = "aviz_gw_top.__main__:main"
+gwtop = "aviz_gw_top.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aviz_gw_top"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+# vpp_papi ships no type stubs; it is imported lazily inside data/vpp_source.py only.
+[[tool.mypy.overrides]]
+module = "vpp_papi.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

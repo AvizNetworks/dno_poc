@@ -1,0 +1,10 @@
+max translations per thread: 63000
+max translations per user: 63000
+total timed out sessions: 12
+total sessions: 51244
+total tcp sessions: 41210
+total tcp established sessions: 38000
+total tcp transitory sessions: 3210
+total udp sessions: 9800
+total icmp sessions: 234
+num threads: 2

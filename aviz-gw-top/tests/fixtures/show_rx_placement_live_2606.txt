@@ -1,0 +1,21 @@
+Thread 1 (vpp_wk_0):
+ node dpdk-input:
+    uplink0 queue 0 (polling)
+    tenant0 queue 0 (polling)
+Thread 2 (vpp_wk_1):
+ node tap-input:
+    tap4096 queue 0 (polling)
+    tap4096 queue 1 (polling)
+    tap4097 queue 0 (polling)
+    tap4097 queue 1 (polling)
+    tap4098 queue 0 (polling)
+    tap4098 queue 1 (polling)
+    tap4099 queue 0 (polling)
+    tap4099 queue 1 (polling)
+    tap4100 queue 0 (polling)
+    tap4100 queue 1 (polling)
+ node dpdk-input:
+    uplink0 queue 1 (polling)
+    uplink0 queue 2 (polling)
+    tenant0 queue 1 (polling)
+    tenant0 queue 2 (polling)

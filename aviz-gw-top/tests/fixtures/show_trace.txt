@@ -1,0 +1,75 @@
+------------------- Start of thread 0 vpp_main -------------------
+No packets in trace buffer (trace disabled)
+------------------- Start of thread 1 vpp_wk_0 -------------------
+Packet 1
+
+00:02:12:357752: dpdk-input
+  TenGigabitEthernet0/0/1 rx queue 0
+  buffer 0x4c2f9e: current data 0, length 66, buffer-pool 0, ref-count 1, trace handle 0x1000000
+                   ext-hdr-valid
+  PKT MBUF: port 1, nb_segs 1, pkt_len 66
+    buf_len 2176, data_len 66, ol_flags 0x180, ol_data 0x0
+  IP4: 02:fe:c0:12:34:56 -> 02:fe:b0:33:44:99
+  UDP: 192.168.10.42 -> 8.8.8.8
+    tos 0x00, ttl 64, length 52, checksum 0x2f4e dscp CS0 ecn NON_ECN
+    fragment id 0x0000
+  UDP: 33000 -> 53
+    length 32, checksum 0x1234
+00:02:12:357760: ethernet-input
+  frame: flags 0x1, hw-if-index 2, sw-if-index 2
+  IP4: 02:fe:c0:12:34:56 -> 02:fe:b0:33:44:99
+00:02:12:357764: ip4-input
+  UDP: 192.168.10.42 -> 8.8.8.8
+    tos 0x00, ttl 64, length 52, checksum 0x2f4e dscp CS0 ecn NON_ECN
+    fragment id 0x0000
+00:02:12:357766: acl-plugin-in-ip4-fa
+  acl-plugin: lc_index: 0, sw_if_index 2, next index 1, action: 1, match: acl 0 rule 1 trace_bits 00000000
+  pkt info 0000000000000000 2a0aa8c00a000000 0000000000000000 0808080800000000 000201060035a8e8 0710000000000000
+00:02:12:357774: nat44-ed-in2out
+  NAT44_ED_IN2OUT_FAST_PATH: sw_if_index 2, next index 3, session -1, translation result 'none'
+00:02:12:357776: nat44-ed-in2out-slowpath
+  NAT44_ED_IN2OUT_SLOW_PATH: sw_if_index 2, next index 0, session 42, translation result 'success via i2of' i2of 192.168.10.42:33000 -> 203.0.113.10:17001
+00:02:12:357778: ip4-lookup
+  fib 0 dpo-idx 5 flow hash: 0x00000000
+  UDP: 203.0.113.10 -> 8.8.8.8
+    tos 0x00, ttl 64, length 52, checksum 0x8a11 dscp CS0 ecn NON_ECN
+00:02:12:357780: ip4-rewrite
+  tx_sw_if_index 1 dpo-idx 5 : ipv4 via 203.0.113.1 TenGigabitEthernet0/0/0: mtu:9000 next:3 flags:[] 02fea011220102feb03344990800 flow hash: 0x00000000
+00:02:12:357784: TenGigabitEthernet0/0/0-output
+  TenGigabitEthernet0/0/0 flags 0x0018
+  IP4: 02:fe:b0:33:44:99 -> 02:fe:a0:11:22:01
+00:02:12:357788: TenGigabitEthernet0/0/0-tx
+  TenGigabitEthernet0/0/0 tx queue 1
+  buffer 0x4c2f9e: current data 0, length 66, buffer-pool 0, ref-count 1
+
+Packet 2
+
+00:02:12:401001: dpdk-input
+  TenGigabitEthernet0/0/0 rx queue 0
+  buffer 0x51ee02: current data 0, length 74, buffer-pool 0, ref-count 1
+  IP4: 02:fe:a0:11:22:01 -> 02:fe:b0:33:44:99
+  TCP: 198.51.100.66 -> 192.168.10.42
+    tos 0x00, ttl 57, length 60, checksum 0x77aa dscp CS0 ecn NON_ECN
+  TCP: 40122 -> 22
+    seq. 0x1f2e3d4c ack 0x00000000
+    flags 0x02 SYN, tcp header: 40 bytes
+00:02:12:401005: ethernet-input
+  frame: flags 0x1, hw-if-index 1, sw-if-index 1
+00:02:12:401008: ip4-input
+  TCP: 198.51.100.66 -> 192.168.10.42
+    tos 0x00, ttl 57, length 60, checksum 0x77aa dscp CS0 ecn NON_ECN
+00:02:12:401011: acl-plugin-in-ip4-fa
+  acl-plugin: lc_index: 0, sw_if_index 1, next index 0, action: 0, match: acl 0 rule 3 trace_bits 00000000
+00:02:12:401015: error-drop
+  rx:TenGigabitEthernet0/0/0
+00:02:12:401017: drop
+  acl-plugin-in-ip4-fa: deny packets
+
+Packet 3
+
+00:02:12:511300: some-future-plugin-node
+  opaque plugin trace format that this tool has never seen
+  keep: these lines must survive verbatim
+00:02:12:511305: ip4-lookup
+  fib 0 dpo-idx 2 flow hash: 0x00000000
+  UDP: 10.20.1.5 -> 10.30.2.9
