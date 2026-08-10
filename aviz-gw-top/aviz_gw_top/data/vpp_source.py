@@ -86,6 +86,12 @@ STATS_NAT_PATTERN = "^/nat44-ed/"
 MSG_NAT_SESSION_DUMP = ("nat44_user_session_v3_dump", "nat44_user_session_v2_dump",
                         "nat44_user_session_dump")
 MSG_NAT_USER_DUMP = ("nat44_user_dump",)
+MSG_NAT_RUNNING_CONFIG = ("nat44_show_running_config",)
+
+# nat44-ed defaults (seconds) — used when the running config isn't readable.
+# tcp uses the established timeout; the dump doesn't expose TCP state, so
+# transitory sessions show a longer expiry than they really have.
+NAT_DEFAULT_TIMEOUTS = {"udp": 300.0, "tcp": 7440.0, "icmp": 60.0}
 MSG_NAT_STATIC_DUMP = ("nat44_static_mapping_dump",)
 MSG_NEIGHBOR_DUMP = ("ip_neighbor_dump",)
 MSG_ROUTE_DUMP = ("ip_route_dump",)
@@ -112,6 +118,24 @@ def _sum_simple(value: Any, index: int) -> int:
         if index < len(per_thread):
             total += per_thread[index]
     return total
+
+
+def _nat_session_expiry(
+    protocol: str, idle_seconds: float, timeouts: dict[str, float],
+    timed_out: bool | None,
+) -> tuple[float, bool]:
+    """Remaining lifetime + staleness for a NAT session.
+
+    VPP reports when a session was last active, not when it will die: expiry
+    is proto timeout minus idle time. is_timed_out (v3 dump) wins when
+    present; otherwise staleness is derived. nat44-ed deletes sessions
+    lazily, so stale entries are expected in the dump.
+    """
+    timeout = timeouts.get(protocol, timeouts.get("udp", 300.0))
+    remaining = max(timeout - idle_seconds, 0.0)
+    if timed_out:
+        remaining = 0.0
+    return remaining, bool(timed_out) or remaining <= 0.0
 
 
 def _sum_combined_packets(value: Any, index: int) -> int:
@@ -857,6 +881,7 @@ class VppDataSource(DataSource):
         if user_msg is None or sess_msg is None:
             return ()
         table_names = dict(self._dump_ip4_tables())
+        timeouts = self._nat_timeouts()
         sessions: list[NatSession] = []
         try:
             for user in getattr(self._api, user_msg)():
@@ -870,22 +895,52 @@ class VppDataSource(DataSource):
                 for s in details:
                     if len(sessions) >= limit:
                         break
+                    # VERIFIED live on 26.06 (2026-08-09, .40 screenshot bug):
+                    # last_heard is a TIMESTAMP in VPP monotonic time (seconds
+                    # since VPP start) — displaying it as "age" showed uptime-
+                    # correlated garbage. time_since_last_heard is the idle
+                    # time; remaining lifetime must be derived from timeouts.
+                    proto = _proto_name(int(s.protocol))
+                    idle = float(getattr(s, "time_since_last_heard", 0))
+                    timed_out = getattr(s, "is_timed_out", None)
+                    expire, stale = _nat_session_expiry(
+                        proto, idle, timeouts,
+                        None if timed_out is None else bool(timed_out),
+                    )
                     sessions.append(
                         NatSession(
                             inside_addr=str(s.inside_ip_address),
                             inside_port=int(s.inside_port),
                             outside_addr=str(s.outside_ip_address),
                             outside_port=int(s.outside_port),
-                            protocol=_proto_name(int(s.protocol)),
+                            protocol=proto,
                             direction="in2out",
-                            age_seconds=float(getattr(s, "last_heard", 0)),
-                            expire_seconds=float(getattr(s, "time_since_last_heard", 0)),
+                            idle_seconds=idle,
+                            expire_seconds=expire,
+                            stale=stale,
+                            static="NAT_IS_STATIC" in str(getattr(s, "flags", "")),
                             vrf=user_vrf,
                         )
                     )
         except Exception as exc:  # noqa: BLE001
             log.debug("nat session dump failed: %s", exc)
         return tuple(sessions)
+
+    def _nat_timeouts(self) -> dict[str, float]:
+        """Configured nat44-ed session timeouts, with defaults as fallback."""
+        msg = self._find_msg(MSG_NAT_RUNNING_CONFIG)
+        if msg is None:
+            return dict(NAT_DEFAULT_TIMEOUTS)
+        try:
+            reply = getattr(self._api, msg)()
+            t = reply.timeouts
+            return {
+                "udp": float(t.udp),
+                "tcp": float(t.tcp_established),
+                "icmp": float(t.icmp),
+            }
+        except Exception:  # noqa: BLE001 - timeouts are display sugar
+            return dict(NAT_DEFAULT_TIMEOUTS)
 
     # -- traces (Validation screen) ------------------------------------------------
 

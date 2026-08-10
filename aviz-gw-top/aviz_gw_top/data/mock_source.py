@@ -90,6 +90,15 @@ _ERRORS = (
     ("nat44-ed-in2out", "out of ports", 0.15),
     ("ethernet-input", "unknown ethernet type", 0.4),
     ("ip4-lookup", "ip4 no route", 1.2),
+    ("ip4-icmp-input", "echo replies sent", 0.3),
+)
+
+# Advanced at EXACTLY rate*dt (no load/jitter): demos the steady-rate (▲)
+# detection — modeled on the field incident where 1/s ICMP port-unreachables
+# (peers answering unanswered BFD probes) ticked the NAT drop counter for a
+# day before anyone looked.
+_STEADY_ERRORS = (
+    ("nat44-ed-out2in-slowpath", "unsupported ICMP type", 1.0),
 )
 
 
@@ -105,7 +114,7 @@ class MockDataSource(DataSource):
             for name, _, _ in _IFACES
         }
         self._node_counters = {name: _NodeCtr() for name, _, _ in _NODES}
-        self._err_counters = {(n, r): 0.0 for n, r, _ in _ERRORS}
+        self._err_counters = {(n, r): 0.0 for n, r, _ in _ERRORS + _STEADY_ERRORS}
         self._nat_created = 0.0
         self._nat_expired = 0.0
         self._nat_sessions: list[NatSession] = []
@@ -185,6 +194,8 @@ class MockDataSource(DataSource):
         for node, reason, rate in _ERRORS:
             burst = self._rng.uniform(0.5, 1.5)
             self._err_counters[(node, reason)] += rate * load * burst * dt
+        for node, reason, rate in _STEADY_ERRORS:
+            self._err_counters[(node, reason)] += rate * dt
 
         self._advance_nat(dt, load)
 
@@ -211,7 +222,7 @@ class MockDataSource(DataSource):
             outside_port=self._rng.randint(1024, 65000),
             protocol=proto,
             direction="in2out",
-            age_seconds=self._rng.uniform(1, 600),
+            idle_seconds=self._rng.uniform(1, 600),
             expire_seconds=self._rng.uniform(5, 7200),
         )
 
@@ -275,7 +286,7 @@ class MockDataSource(DataSource):
 
         errors = tuple(
             ErrorCounter(node=node, reason=reason, count=int(self._err_counters[(node, reason)]))
-            for node, reason, _ in _ERRORS
+            for node, reason, _ in _ERRORS + _STEADY_ERRORS
         )
         return FastSample(
             timestamp=now,
@@ -397,17 +408,21 @@ class MockDataSource(DataSource):
             inside_addr="192.168.10.50", inside_port=443,
             outside_addr="203.0.113.10", outside_port=443,
             protocol="tcp", direction="out2in",
-            age_seconds=920.0, expire_seconds=6400.0,
+            idle_seconds=920.0, expire_seconds=6400.0, static=True,
         )
         tenant_sessions = (
             NatSession("10.99.0.12", 51330, "203.0.113.10", 41002, "tcp",
                        "in2out", 75.0, 5200.0, vrf="tenant-a"),
             NatSession("10.99.0.80", 443, "203.0.113.10", 8443, "tcp",
                        "out2in", 480.0, 7000.0, vrf="tenant-a"),
+            # Timed-out entry awaiting lazy deletion — exercises the "stale"
+            # rendering on screen 4.
+            NatSession("10.99.0.33", 40100, "203.0.113.10", 40100, "icmp",
+                       "in2out", 4400.0, 0.0, stale=True, vrf="tenant-a"),
         )
         nat = NatState(
             sessions=(dnat_session, *tenant_sessions,
-                      *sorted(self._nat_sessions, key=lambda s: s.age_seconds)),
+                      *sorted(self._nat_sessions, key=lambda s: s.idle_seconds)),
             static_mappings=static_mappings,
             session_count=session_count,
             max_sessions=63_000,

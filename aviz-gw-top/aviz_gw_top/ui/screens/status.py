@@ -71,6 +71,7 @@ class StatusScreen(BaseScreen):
     StatusScreen .row-top { height: 9; }
     StatusScreen #workers-panel { width: 3fr; }
     StatusScreen #drops-panel { width: 2fr; }
+    StatusScreen #punt-panel { width: 2fr; }
     StatusScreen #ifaces-panel { height: 1fr; min-height: 7; }
     StatusScreen #nodes-panel { height: 1fr; min-height: 7; }
     StatusScreen #spark-row { height: 2; margin: 0 1; }
@@ -91,9 +92,14 @@ class StatusScreen(BaseScreen):
                              classes="panel-title sem-fg-accent")
                 yield DataTable(id="workers-table", cursor_type="row", zebra_stripes=True)
             with Vertical(id="drops-panel", classes="panel"):
-                yield Static("DROPS", classes="panel-title sem-fg-accent")
+                yield Static("DROPS — ▲ = steady rate (periodic → check config)",
+                             classes="panel-title sem-fg-accent")
                 yield Static(id="drops-total")
                 yield DataTable(id="drops-table", cursor_type="none")
+            with Vertical(id="punt-panel", classes="panel"):
+                yield Static("LOCAL / PUNT — to the gateway itself",
+                             classes="panel-title sem-fg-accent")
+                yield DataTable(id="punt-table", cursor_type="none")
         with Vertical(id="ifaces-panel", classes="panel"):
             yield Static("INTERFACES", id="ifaces-title",
                          classes="panel-title sem-fg-accent")
@@ -110,6 +116,9 @@ class StatusScreen(BaseScreen):
             "worker", "core", "vec/call", "clk/pkt", "calls/s", "utilization"
         )
         self.query_one("#drops-table", DataTable).add_columns("reason", "node", "/s", "total")
+        self.query_one("#punt-table", DataTable).add_columns(
+            "path", "→ kern pps", "← kern pps"
+        )
         self.query_one("#ifaces-table", DataTable).add_columns(
             "interface", "vrf", "address", "link", "peer", "rx pps", "rx bps",
             "tx pps", "tx bps", "drop/s", "drops"
@@ -122,9 +131,50 @@ class StatusScreen(BaseScreen):
     def update_state(self, state: GatewayState) -> None:
         self._update_workers(state)
         self._update_drops(state)
+        self._update_punt(state)
         self._update_interfaces(state)
         self._update_nodes(state)
         self._update_spark(state)
+
+    def _update_punt(self, state: GatewayState) -> None:
+        """Traffic addressed to the gateway itself and the exit it takes.
+
+        Control-plane packets (BGP, BFD, ARP replies, ...) are dataplane
+        traffic here: punts ride the linux-cp taps (VPP tx on a tap = toward
+        kernel, rx = kernel-originated), echoes are answered by VPP's ping
+        plugin, and local-path failures land in DROPS with a named reason.
+        All read from counters VPP maintains anyway — zero datapath cost.
+        """
+        rows = []
+        for i in state.interfaces:
+            if not i.name.startswith("tap"):
+                continue
+            rows.append((
+                Text(f"{i.name} ⇄ kernel", style_for(Sem.INFO)),
+                Text(human_count(i.tx_pps)),
+                Text(human_count(i.rx_pps)),
+            ))
+        echo_rate = sum(e.rate for e in state.errors if "echo repl" in e.reason)
+        rows.append((
+            Text("icmp echo (VPP answers)", style_for(Sem.IDLE)),
+            Text(human_count(echo_rate)),
+            Text("—", style_for(Sem.IDLE)),
+        ))
+        # Two families the operator should chase via the DROPS panel: drops
+        # on the local/punt path itself, and steady-rate (periodic) drops
+        # anywhere — counter granularity can't prove the latter were
+        # gateway-destined, but periodicity alone earns attention.
+        local_drop = sum(
+            e.rate for e in state.errors
+            if e.steady or e.node.startswith(("ip4-local", "ip4-punt", "punt"))
+        )
+        sem = Sem.WARN if local_drop > 0 else Sem.IDLE
+        rows.append((
+            Text("local-path/periodic drops → DROPS", style_for(sem)),
+            Text(human_count(local_drop), style_for(sem)),
+            Text("—", style_for(Sem.IDLE)),
+        ))
+        refill(self.query_one("#punt-table", DataTable), rows)
 
     def _update_workers(self, state: GatewayState) -> None:
         rows = []
@@ -162,12 +212,17 @@ class StatusScreen(BaseScreen):
         summary.append(f"(total {human_count(state.total_drops)})", style_for(Sem.IDLE))
         self.query_one("#drops-total", Static).update(summary)
 
-        errors = sorted(state.errors, key=lambda e: (e.rate, e.count), reverse=True)[:6]
+        # Steady rows outrank raw rate: a constant-rate drop (▲) is a config
+        # mismatch fingerprint and must not be pushed out by transient bursts
+        # exactly when someone should see it (the dead-BFD lesson).
+        errors = sorted(
+            state.errors, key=lambda e: (e.steady, e.rate, e.count), reverse=True
+        )[:6]
         rows = []
         for e in errors:
-            sem = sem_for_drops(e.rate)
+            sem = Sem.WARN if e.steady else sem_for_drops(e.rate)
             rows.append((
-                Text(e.reason, style_for(sem)),
+                Text(("▲ " if e.steady else "") + e.reason, style_for(sem)),
                 Text(e.node, style_for(Sem.INFO)),
                 Text(f"{e.rate:8.1f}", style_for(sem)),
                 Text(human_count(e.count), style_for(Sem.IDLE)),

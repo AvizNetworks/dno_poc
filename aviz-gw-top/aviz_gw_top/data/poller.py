@@ -18,6 +18,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
@@ -102,6 +103,47 @@ class RateTracker:
         self._prev.clear()
 
 
+class SteadyRateDetector:
+    """Flags counters ticking at a near-constant nonzero rate.
+
+    A drop rate that holds steady across many measurement windows is a
+    periodicity fingerprint — probes, retries, keepalives — which almost
+    always means a config mismatch rather than load (this is how the
+    dead-BFD-vs-NAT incident was found in the field, 2026-08-10).
+
+    Judged over DISTINCT rate values, not poll ticks: /err counters refresh
+    only every ~10 s and RateTracker holds the rate between refreshes, so
+    consecutive identical readings are one measurement, not evidence of
+    steadiness. With ~10 s windows, flagging takes about a minute — fine,
+    since the anomalies this catches persist for hours.
+    """
+
+    WINDOW = 6          # distinct measurements required before judging
+    TOLERANCE = 0.25    # allowed (max-min)/mean spread within the window
+    MIN_RATE = 0.01     # ignore near-zero drift
+
+    def __init__(self) -> None:
+        self._history: dict[str, deque[float]] = {}
+
+    def update(self, key: str, rate: float) -> bool:
+        h = self._history.setdefault(key, deque(maxlen=self.WINDOW))
+        if rate <= 0.0:
+            # Counter went quiet: whatever was periodic has stopped.
+            h.clear()
+            return False
+        if not h or rate != h[-1]:
+            h.append(rate)
+        if len(h) < self.WINDOW:
+            return False
+        mean = sum(h) / len(h)
+        if mean < self.MIN_RATE:
+            return False
+        return (max(h) - min(h)) <= self.TOLERANCE * mean
+
+    def reset(self) -> None:
+        self._history.clear()
+
+
 class Poller:
     def __init__(
         self,
@@ -117,6 +159,7 @@ class Poller:
         self._paused = threading.Event()
         self._jobs: queue.Queue[tuple[Callable[[], Any], Future[Any]]] = queue.Queue()
         self._rates = RateTracker()
+        self._steady = SteadyRateDetector()
         self._last_slow: SlowSample | None = None
         self._last_slow_time = 0.0
         self._state = GatewayState(system=SystemInfo(last_error="starting up"))
@@ -196,6 +239,7 @@ class Poller:
             return False
         # Fresh connection: previous baselines are meaningless.
         self._rates.reset()
+        self._steady.reset()
         self._last_slow = None
         self._last_slow_time = 0.0
         return True
@@ -277,10 +321,12 @@ class Poller:
                 )
             )
 
-        errors = tuple(
-            replace(e, rate=rate(f"err.{e.node}.{e.reason}", e.count, ts))
-            for e in fast.errors
-        )
+        err_list = []
+        for e in fast.errors:
+            key = f"err.{e.node}.{e.reason}"
+            r = rate(key, e.count, ts)
+            err_list.append(replace(e, rate=r, steady=self._steady.update(key, r)))
+        errors = tuple(err_list)
         total_drops = sum(e.count for e in errors) + sum(
             i.rx_drops + i.tx_drops for i in fast.interfaces
         )

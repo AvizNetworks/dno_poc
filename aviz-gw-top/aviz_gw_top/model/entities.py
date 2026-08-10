@@ -105,6 +105,10 @@ class ErrorCounter:
     count: int = 0             # cumulative
     rate: float = 0.0          # per-second delta
     severity: str = "error"    # "error" | "info" as classified by VPP
+    # Rate has held near-constant across several measurement windows — the
+    # fingerprint of something periodic (probe/retry/keepalive) being
+    # dropped, which is almost always a config mismatch, not load.
+    steady: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -218,8 +222,16 @@ class NatSession:
     outside_port: int
     protocol: str              # "tcp" | "udp" | "icmp"
     direction: str = "in2out"
-    age_seconds: float = 0.0
+    # Seconds since the session last saw a packet (nat44-ed
+    # time_since_last_heard) — NOT lifetime; creation time is not exposed.
+    idle_seconds: float = 0.0
+    # Seconds until the session times out (proto timeout - idle, floor 0).
     expire_seconds: float = 0.0
+    # nat44-ed deletes sessions lazily: timed-out entries linger in the table
+    # until their slot is scavenged. True = shown but already dead.
+    stale: bool = False
+    # Session was created from a static mapping (NAT_IS_STATIC flag).
+    static: bool = False
     # Inside/tenant table the session belongs to (nat44 user vrf_id):
     # overlapping tenant prefixes produce distinct per-VRF sessions.
     vrf: str = "default"

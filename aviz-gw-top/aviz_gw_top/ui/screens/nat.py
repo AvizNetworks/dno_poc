@@ -56,7 +56,7 @@ class NatScreen(BaseScreen):
         )
         self.query_one("#sessions-table", DataTable).add_columns(
             "proto", "vrf", "inside", "outside", "direction", "type",
-            "age", "expires in"
+            "idle", "expires in"
         )
         super().on_mount()
 
@@ -140,10 +140,13 @@ class NatScreen(BaseScreen):
         def session_type(s: object) -> str:
             from ...model import NatSession
             assert isinstance(s, NatSession)
-            if (s.direction == "out2in"
+            # s.static (NAT_IS_STATIC session flag) is authoritative; the
+            # endpoint matching below covers older dump messages without it.
+            if (s.static
+                    or s.direction == "out2in"
                     or (s.protocol, s.outside_addr, s.outside_port) in dnat_exact
                     or s.outside_addr in dnat_addrs):
-                return "DNAT"
+                return "static"
             return "SNAT"
 
         sessions = [
@@ -170,8 +173,9 @@ class NatScreen(BaseScreen):
                 Text(f"{s.outside_addr}:{s.outside_port}", style_for(Sem.WARN)),
                 Text(s.direction, style_for(Sem.IDLE)),
                 Text(kind,
-                     style_for(Sem.ACCENT if kind == "DNAT" else Sem.IDLE)),
-                Text(human_duration(s.age_seconds)),
-                Text(human_duration(s.expire_seconds), style_for(Sem.IDLE)),
+                     style_for(Sem.ACCENT if kind == "static" else Sem.IDLE)),
+                Text(human_duration(s.idle_seconds)),
+                Text("stale", style_for(Sem.WARN)) if s.stale
+                else Text(human_duration(s.expire_seconds), style_for(Sem.IDLE)),
             ))
         refill(self.query_one("#sessions-table", DataTable), s_rows)
