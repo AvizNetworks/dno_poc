@@ -30,7 +30,9 @@ S7 = sister ASUS `10.20.13.10` admin/Aviz@AIF123 — BF3 still in InfiniBand mod
 
 **ToR Switch:** `10.20.13.214` (admin / Aviz@123) — shared across S1 and S2.
 
-**DPF Operator VM:** `10.4.5.136` dpu-vm/admin — k3s cluster, DPF Operator v25.10.1 installed; manages S4's and S8's BF3s via DPF provisioning (workers in `dpf/config.yaml`).
+**DPF Operator VMs (two during migration):**
+- **S6 = `10.20.13.227`** aviz/aviz@123 — **the new primary operator** (same subnet as the BF3s → no tunnel/iptables relay needed). Fresh k3s + DPF v25.10.1; repo at `~/hbn/dpf`; manages **S4**. RULE: DPUCluster `apiserver_port` must be unique AND never 6443 (an endpointless NodePort on the mgmt apiserver port blackholes the operator's own apiserver — this is what "broke" S6 in June).
+- **S5 = `10.4.5.136`** dpu-vm/**Dno@123** (not "admin") — legacy cross-subnet operator; still manages **S2 + S8** until migrated. Its DPF/kamaji controllers crash-loop on leader-election loss (data plane unaffected); its provisioning/kamaji webhooks were set to `failurePolicy: Ignore` during the S4 detach. `kubectl` there needs sudo.
 
 VSCode tasks (`.vscode/tasks.json`) auto-open SSH sessions to all servers on folder open.
 
@@ -129,8 +131,14 @@ sudo crictl exec -it $CONT nv      # NVUE CLI
 
 ## DPF Commands
 
-All DPF scripts run from the **DPF Operator VM** (`10.4.5.136`). No sudo required.
+All DPF scripts run from the **DPF Operator VM** (S6 `10.20.13.227` for S4; legacy S5 `10.4.5.136` for S2/S8). No sudo required on S6.
 The DPF stack is completely separate from the HBN scripts above.
+
+**Customer-facing preflight:** `bringup_dpf.sh --check` validates EVERY prerequisite
+read-only (tools, config completeness, mgmt cluster, port-collision rules, offline
+artifacts in `/opt/dpf/`, BFB, BMC credentials via Redfish, x86 rshim, subnet topology)
+and prints an exact fix for each failure. Exit 0 = ready. A normal run refuses to
+mutate anything until preflight passes.
 
 **Prerequisites:**
 - `KUBECONFIG=~/.kube/config` (k3s kubeconfig on DPF Operator VM)
@@ -359,7 +367,7 @@ x86 Host ←── enp193s0f0np0 / enp193s0f0np1
 
 ### Script Internals
 
-`scripts/bringup_hbn_bf3.sh` runs 14 idempotent steps. Each step checks current state before acting — safe to re-run mid-bringup. It uses `crictl` (not `docker`) because the BF3 uses CRI-O under kubelet. Reference configs are deployed from `mellanox/` and `doca_hbn_v3.3.0/` at the repo root — the full repo must be present on the BF3.
+`scripts/bringup_hbn_bf3.sh` runs 15 idempotent steps (0–14). Each step checks current state before acting — safe to re-run mid-bringup. Preflight hard-gates eswitch multiport readiness (`LAG_RESOURCE_ALLOCATION` **Current**=1 via `mlxconfig -e q` — plain `q` shows only Next-Boot and must not be trusted; commit requires a TRUE cold power cycle from the x86 host) and step 14 does a passive datapath validation (wire vs container RX deltas, bcast/ucast only — LLDP-class multicast is consumed by the bridge by design). It uses `crictl` (not `docker`) because the BF3 uses CRI-O under kubelet. Reference configs are deployed from `mellanox/` and `doca_hbn_v3.3.0/` at the repo root — the full repo must be present on the BF3.
 
 `scripts/status_hbn.sh` accesses the container's network namespace via `nsenter -t <PID> -n` to check interface states and FRR daemons without `crictl exec`, which avoids TTY issues.
 
