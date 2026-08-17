@@ -32,14 +32,14 @@ else
 fi
 DPF_NAMESPACE="dpf-operator-system"
 
-SERVER_NAME="s4"                   # Server identifier — used to name all k8s resources.
-                                   # Change per server: "s1", "s2", etc.
-                                   # Creates: ${SERVER_NAME}-dpu, ${SERVER_NAME}-node,
-                                   #          ${SERVER_NAME}-bf3, ${SERVER_NAME}-dpu-cluster
+SERVER_NAME=""                     # Server identifier — used to name all k8s resources.
+                                   # Set per worker in dpf/config.yaml (or --server).
+                                   # Creates: <name>-dpu, <name>-node, <name>-bf3,
+                                   #          <name>-dpu-cluster
 
-BF3_BMC_IP="10.20.13.250"          # S4 BMC (Redfish endpoint)
-BF3_OOB_IP="10.20.13.249"          # S4 BF3 OOB management IP
-BF3_SERIAL="MT2437600HGY"          # BF3 serial number (from: dmidecode -t system)
+BF3_BMC_IP=""                      # BF3 BMC (Redfish endpoint)     — config.yaml / --bmc-ip
+BF3_OOB_IP=""                      # BF3 OOB management IP          — config.yaml / --oob-ip
+BF3_SERIAL=""                      # BF3 serial (dmidecode -t system) — config.yaml / --serial
 
 BFB_REGISTRY_IP="${BFB_REGISTRY_IP:-$(hostname -I | awk '{print $1}')}"  # auto-detect local IP; override with --registry-ip
 BFB_REGISTRY_PORT="8080"           # DPF's bfb-registry hostPort — do NOT run anything else here
@@ -57,10 +57,11 @@ DEPLOY_HBN=false        # deploy HBN as a DaemonSet on BF3 (use --hbn flag)
 # ─── rshim install (alternative to DPF Redfish OS install) ────────────────────
 # Used via --rshim-install when DPF's Redfish path fails (e.g. same-version BMC skip).
 # The x86 host SSHes over rshim to flash the BF3 directly with the DPF bfcfg applied.
-X86_HOST_IP="10.20.13.226"    # x86 host with rshim access to BF3 (set in config.yaml)
+X86_HOST_IP=""                # x86 host with rshim access to BF3 (set in config.yaml)
 X86_HOST_USER=""               # SSH user on x86 host      — set in config.local.yaml
 X86_HOST_PASS=""               # SSH password on x86 host  — set in config.local.yaml
                                # (empty = key-based auth)
+# shellcheck disable=SC2088  # tilde expands on the REMOTE x86 host (via ssh), not here
 X86_BFB_PATH="~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 RSHIM_DEVICE="rshim0"
 USE_RSHIM=false
@@ -68,10 +69,22 @@ USE_RSHIM=false
 # Populated from config.local.yaml (per-worker blocks) — reserved for steps that need them.
 ARM_PASSWORD=""
 BMC_PASSWORD=""
+BMC_USERNAME="root"
+OPERATOR_IP=""                 # operator.ip from config.yaml (sanity: run on the right VM)
+OPERATOR_NAME=""               # operator.name from config.yaml
+WORKER_OPERATOR=""             # per-worker operator field (workers owned elsewhere)
 WORKER_NAME=""                 # --worker <name> selects a worker from config.yaml
-APISERVER_PORT="6443"          # Kamaji TCP NodePort on the DPF VM — UNIQUE per worker
-                               # (multi-DPU: every TCP defaults to 6443 and collides;
-                               #  set per-worker apiserver_port in config.yaml)
+APISERVER_PORT=""              # Kamaji TCP NodePort on the DPF VM — UNIQUE per worker,
+                               # and NEVER the management apiserver port (6443 on k3s):
+                               # a NodePort on the mgmt apiserver port makes kube-proxy
+                               # blackhole the operator's own apiserver when the TCP has
+                               # no endpoints (REJECT --dst-type LOCAL --dport 6443).
+CHECK_ONLY=false               # --check: run preflight only, no mutations
+ALLOW_REFLASH=false            # --allow-reflash: authorize the DESTRUCTIVE DPUFlavor
+                               # recreate (deletes the DPU CR → BF3 leaves the cluster
+                               # → full reflash, ~30 min outage). Without it, a changed
+                               # flavor FAILS FAST before anything is mutated.
+POSTCHECK_FW_BAD=false         # set by step 11b when nvconfig read-back fails
 # ──────────────────────────────────────────────────────────────────────────────
 # NOTE: the values above are BUILT-IN DEFAULTS. Precedence (lowest → highest):
 #   built-in defaults  <  dpf/config.yaml  <  dpf/config.local.yaml  <  CLI flags
@@ -98,15 +111,15 @@ Config files (recommended — see dpf/config.yaml):
 Options:
   --worker <name>      Select a worker from config.yaml by name or server id
                        (e.g. --worker worker1 or --worker s4; default: first worker)
-  --server <name>      Server identifier for k8s resource names (default: ${SERVER_NAME})
+  --server <name>      Server identifier for k8s resource names
                        e.g. --server s1 creates s1-dpu, s1-node, s1-bf3, s1-dpu-cluster
   --registry-ip <ip>   Override DPF VM IP for BFB registry/upload (default: auto-detect via hostname -I)
   --bfb-url <url>      Override BFB download URL (default: http://BFB_REGISTRY_IP:PORT/filename)
-  --bmc-ip <ip>        Override BF3 BMC IP (default: ${BF3_BMC_IP})
-  --oob-ip <ip>        Override BF3 OOB IP (default: ${BF3_OOB_IP})
-  --serial <serial>    Override BF3 serial number (default: ${BF3_SERIAL})
+  --bmc-ip <ip>        Override BF3 BMC IP
+  --oob-ip <ip>        Override BF3 OOB IP
+  --serial <serial>    Override BF3 serial number
   --rshim-install      Flash BF3 via rshim from x86 host instead of DPF Redfish
-  --x86-host <ip>      x86 host IP for rshim flash (default: ${X86_HOST_IP})
+  --x86-host <ip>      x86 host IP for rshim flash
   --x86-user <user>    x86 host SSH user (default: ${X86_HOST_USER})
   --x86-pass <pass>    x86 host SSH password (default: from config)
   --x86-bfb <path>     BFB path on x86 host (default: ${X86_BFB_PATH})
@@ -116,7 +129,14 @@ Options:
                        Equivalent to: sudo ./scripts/bringup_hbn_bf3.sh --vfs 8
   --upgrade            Upgrade DPF Operator Helm release to --version (skips bringup steps)
   --version <ver>      DPF Operator version to upgrade to (default: ${DPF_VERSION})
-  --dry-run            Print steps without applying
+  --check              PREFLIGHT ONLY: validate every prerequisite (tools, config,
+                       cluster, network, BMC, ports, artifacts) and exit. Nothing is
+                       modified. Exit 0 = ready to run, 1 = blockers found.
+  --dry-run            Run preflight, then print every step without applying
+  --allow-reflash      Authorize the DESTRUCTIVE path when the DPUFlavor changed:
+                       delete the DPU CR and REFLASH the BF3 (~30 min outage).
+                       Without this flag a changed flavor fails fast, before any
+                       mutation. Use only in a maintenance window.
   -h, --help           Show this help
 
 Examples:
@@ -190,6 +210,8 @@ def emit(var, val):
 bfb = c.get("bfb") or {}
 emit("BFB_FILE", bfb.get("file"))
 emit("BFB_REGISTRY_IP", bfb.get("registry_ip"))
+emit("OPERATOR_IP", (c.get("operator") or {}).get("ip"))
+emit("OPERATOR_NAME", (c.get("operator") or {}).get("name"))
 
 # Credentials from config.local.yaml: one top-level block per worker,
 # keyed by the worker's name (worker1) or server id (s4).
@@ -203,8 +225,10 @@ emit("X86_HOST_USER", cred.get("x86_host_user"))
 emit("X86_HOST_PASS", cred.get("x86_host_password"))
 emit("ARM_PASSWORD", cred.get("arm_password"))
 emit("BMC_PASSWORD", cred.get("bmc_password"))
+emit("BMC_USERNAME", cred.get("bmc_username"))
 
 if w:
+    emit("WORKER_OPERATOR", w.get("operator"))
     emit("SERVER_NAME", w.get("server") or w.get("name"))
     emit("BF3_BMC_IP", w.get("bmc_ip"))
     emit("BF3_OOB_IP", w.get("oob_ip"))
@@ -238,6 +262,8 @@ while [[ $# -gt 0 ]]; do
     --hbn)            DEPLOY_HBN=true ;;
     --upgrade)        DO_UPGRADE=true ;;
     --version)        DPF_VERSION="$2";     shift ;;
+    --check|--preflight) CHECK_ONLY=true ;;
+    --allow-reflash)  ALLOW_REFLASH=true ;;
     --dry-run)        DRY_RUN=true ;;
     -h|--help)        usage ;;
     *) echo "Unknown option: $1"; usage ;;
@@ -247,6 +273,33 @@ done
 
 # Compute BFB_URL after arg parsing so --registry-ip and --bfb-url both take effect
 [[ -z "${BFB_URL:-}" ]] && BFB_URL="http://${BFB_REGISTRY_IP}:${BFB_UPLOAD_PORT}/$(basename "${BFB_FILE}")"
+
+# ─── Same-subnet vs cross-subnet deployment ───────────────────────────────────
+# Decides where the DPUFlavor's apiserver DNAT rules point (RELAY_IP):
+#   same  — the BF3 OOB and the DPF VM share a /24: the BF3 reaches the Kamaji
+#           apiserver directly → relay IS the DPF VM. No tunnel, nothing to lose
+#           on BF3 reboot.
+#   cross — different subnets (some labs firewall BF3→DPF VM TCP): relay via the
+#           x86 host reverse-SSH tunnel (tunnel_dpf.sh) exactly as before.
+TUNNEL_MODE="cross"; RELAY_IP="${X86_HOST_IP}"
+if [[ -n "${BF3_OOB_IP}" && "${BFB_REGISTRY_IP%.*}" == "${BF3_OOB_IP%.*}" ]]; then
+  TUNNEL_MODE="same"; RELAY_IP="${BFB_REGISTRY_IP}"
+fi
+
+# Management apiserver port (from kubeconfig) — used by preflight collision checks
+# and by the TCP-creation race guard below.
+MGMT_PORT=$(grep -oE 'server: https?://[^ ]+' "${DPF_KUBECONFIG}" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+
+# RACE GUARD: Kamaji creates each TenantControlPlane's Service as NodePort 6443 (its
+# default) BEFORE our per-worker port patch can land. While that Service has no
+# endpoints, kube-proxy installs a REJECT for node-local :6443 — which blackholes a
+# single-VM operator's OWN apiserver over IPv4, killing the very kubectl that must
+# apply the patch. The ip6tables path carries no such rule, so these calls fall back
+# to the IPv6 loopback endpoint (client-cert auth still applies).
+kube_tcp() {
+  kube "$@" 2>/dev/null || kubectl --kubeconfig="${DPF_KUBECONFIG}" \
+    --server "https://[::1]:${MGMT_PORT:-6443}" --insecure-skip-tls-verify "$@"
+}
 
 # Per-server DPUFlavor name. DPUFlavor is a cluster-shared object referenced by the
 # DPU CR; if multiple DPUs (e.g. s4-dpu + s1-dpu) shared one flavor, the immutable
@@ -334,9 +387,9 @@ if [[ "${DO_UPGRADE}" == "true" ]]; then
 
   info "Step 4/5 — Bootstrap svc.dpu.nvidia.com CRDs onto DPU cluster"
   kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
-    -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > "${HOME}/dpu-tc-kubeconfig" 2>/dev/null || true
   if [[ -s ${HOME}/dpu-tc-kubeconfig ]]; then
-    dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
+    dkube() { kubectl --kubeconfig "${HOME}/dpu-tc-kubeconfig" "$@"; }
     MISSING_CRDS=()
     for crd in servicechains.svc.dpu.nvidia.com servicechainsets.svc.dpu.nvidia.com \
                serviceinterfaces.svc.dpu.nvidia.com serviceinterfacesets.svc.dpu.nvidia.com; do
@@ -357,7 +410,7 @@ for k in ['resourceVersion','uid','creationTimestamp','generation','managedField
 d['metadata'].pop('annotations', None)
 d.pop('status', None)
 print(json.dumps(d))
-" | kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig apply -f - 2>/dev/null \
+" | kubectl --kubeconfig "${HOME}/dpu-tc-kubeconfig" apply -f - 2>/dev/null \
             && ok "  installed: ${crd}" \
             || warn "  failed: ${crd}"
         done
@@ -450,6 +503,428 @@ wait_for_pods() {
   return 1
 }
 
+# ─── Shared helpers: flavor rendering + read-only BF3 probes ──────────────────
+
+# Render the DPUFlavor with this worker's substitutions — used by preflight
+# (drift detection) and step 8 (apply). MUST stay identical in both places.
+render_flavor() {  # $1 = output file
+  sed -e "s|^  name: bf3-hbn|  name: ${DPU_FLAVOR_NAME}|" \
+      -e "s|X86_HOST_IP=\"[^\"]*\"|X86_HOST_IP=\"${RELAY_IP}\"|g" \
+      -e "s|DPF_VM_IP=\"[^\"]*\"|DPF_VM_IP=\"${BFB_REGISTRY_IP}\"|g" \
+      -e "s|APISERVER_PORT=\"[^\"]*\"|APISERVER_PORT=\"${APISERVER_PORT}\"|g" \
+      "${MANIFESTS_DIR}/04-dpuflavor.yaml" > "$1"
+}
+
+# SSH to the BF3 ARM (ubuntu@OOB). Needs arm_password from config.local.yaml.
+bf3_ssh() {
+  sshpass -p "${ARM_PASSWORD}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=6 \
+    -o LogLevel=ERROR "ubuntu@${BF3_OOB_IP}" "$@" 2>/dev/null
+}
+bf3_reachable() {  # BF3 SSH possible right now?
+  [[ -n "${ARM_PASSWORD}" && -n "${BF3_OOB_IP}" ]] && command -v sshpass &>/dev/null \
+    && timeout 4 bash -c "echo > /dev/tcp/${BF3_OOB_IP}/22" 2>/dev/null
+}
+# Firmware LAG_RESOURCE_ALLOCATION *Current* value (e.g. "PRE_ALLOCATION(1)").
+# MUST parse `-e q` — plain `q` prints only Next-Boot, which is exactly the
+# cosmetic staged value that must never be trusted (S8 lesson).
+bf3_lag_current() {  # $1 = pci addr
+  bf3_ssh "sudo mlxconfig -d $1 -e q LAG_RESOURCE_ALLOCATION 2>/dev/null" \
+    | awk '/LAG_RESOURCE_ALLOCATION/{print $(NF-1)}' || true
+}
+bf3_multiport() {  # runtime eswitch multiport param -> "true"/"false"/""
+  bf3_ssh "sudo devlink dev param show pci/0000:03:00.0 name esw_multiport 2>/dev/null" \
+    | awk '/cmode/{print $NF}' || true
+}
+bf3_pairflows() {  # count of sfc priority-500 port-pair flows on br-hbn
+  bf3_ssh "sudo ovs-ofctl dump-flows br-hbn 2>/dev/null | grep -c priority=500" || true
+}
+
+# ═══ PREFLIGHT — read-only validation of EVERY prerequisite ═══════════════════
+# Runs before ANY mutation. Each failure states WHAT is wrong and the EXACT fix.
+# --check runs preflight only and exits (0 = ready, 1 = blockers).
+# Nothing in this section modifies the system.
+PF_FAIL=0; PF_WARN=0
+pf_ok()   { echo -e "  ${GREEN}[ OK ]${NC} $*"; }
+pf_warn() { echo -e "  ${YELLOW}[WARN]${NC} $*"; PF_WARN=$((PF_WARN+1)); }
+pf_fail() { echo -e "  ${RED}[FAIL]${NC} $*"; PF_FAIL=$((PF_FAIL+1)); }
+pf_fix()  { echo -e "         ${CYAN}fix:${NC} $*"; }
+
+diagnose_kube_unreachable() {
+  # Common k3s failure modes — tell the user exactly what to do.
+  if [[ -r /etc/rancher/k3s/k3s.yaml ]] && grep -q '127.0.0.1:6443' /etc/rancher/k3s/k3s.yaml 2>/dev/null \
+     && ! ss -4 -tln 2>/dev/null | grep -q ':6443 ' && ss -6 -tln 2>/dev/null | grep -q ':6443 '; then
+    pf_fix "k3s listens on IPv6 only but kubeconfig targets 127.0.0.1 (IPv4):"
+    pf_fix "  sudo sed -i 's/127.0.0.1:6443/[::1]:6443/' /etc/rancher/k3s/k3s.yaml && sudo chmod 644 /etc/rancher/k3s/k3s.yaml"
+  elif [[ -e /etc/rancher/k3s/k3s.yaml && ! -r /etc/rancher/k3s/k3s.yaml ]]; then
+    pf_fix "k3s.yaml not readable: sudo chmod 644 /etc/rancher/k3s/k3s.yaml"
+  elif ! systemctl is-active k3s &>/dev/null && [[ -e /etc/rancher/k3s/k3s.yaml ]]; then
+    pf_fix "k3s service not active: sudo systemctl start k3s && journalctl -u k3s -n 50"
+  else
+    pf_fix "install k3s: curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644"
+  fi
+}
+
+# Component installability: installed | local artifact | online — else FAIL.
+pf_component() {  # $1=name  $2=installed(0/1)  $3=local-artifact glob  $4=url  $5=download hint
+  local name="$1" installed="$2" glob="$3" url="$4" hint="$5" art=""
+  if [[ "${installed}" == "0" ]]; then
+    pf_ok "${name}: already installed"
+    return
+  fi
+  # shellcheck disable=SC2086,SC2012  # glob expansion is intentional here
+  art=$(ls ${glob} 2>/dev/null | head -1 || true)
+  if [[ -n "${art}" ]]; then
+    pf_ok "${name}: not installed — will install OFFLINE from ${art}"
+  elif curl -skm 5 -o /dev/null "${url}" 2>/dev/null; then
+    pf_warn "${name}: not installed, no local artifact — will install ONLINE from ${url%%/}"
+  else
+    pf_fail "${name}: not installed, no local artifact, and ${url} unreachable"
+    pf_fix "${hint}"
+  fi
+}
+
+preflight() {
+  local kube_up=false mgmt_port="" v missing=""
+
+  echo ""
+  echo "══ PREFLIGHT ══════════════════════════════════════════════"
+
+  echo ""
+  echo "── 1. Required tools on this machine ──"
+  for v in kubectl helm curl python3 openssl sed awk; do
+    if command -v "$v" &>/dev/null; then pf_ok "$v"; else
+      pf_fail "$v not found"
+      case "$v" in
+        helm)    pf_fix "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash" ;;
+        kubectl) pf_fix "usually shipped with k3s; or: snap install kubectl --classic" ;;
+        *)       pf_fix "apt-get install -y $v" ;;
+      esac
+    fi
+  done
+  if command -v nc &>/dev/null; then pf_ok "nc"; else
+    pf_fail "nc not found"; pf_fix "apt-get install -y netcat-openbsd"
+  fi
+  if python3 -c 'import yaml' 2>/dev/null; then pf_ok "python3-yaml"; else
+    pf_fail "python3-yaml missing (needed to parse config.yaml)"; pf_fix "apt-get install -y python3-yaml"
+  fi
+  if [[ "${USE_RSHIM}" == "true" || "${DEPLOY_HBN}" == "true" ]]; then
+    if command -v sshpass &>/dev/null; then pf_ok "sshpass"; else
+      pf_fail "sshpass required for --rshim-install / --hbn"; pf_fix "apt-get install -y sshpass"
+    fi
+  fi
+
+  echo ""
+  echo "── 2. Configuration completeness ──"
+  [[ -f "${CONFIG_FILE}" ]] && pf_ok "config.yaml: ${CONFIG_FILE}" \
+    || pf_warn "config.yaml not found — relying on CLI flags only"
+  [[ -f "${CONFIG_LOCAL_FILE}" ]] && pf_ok "config.local.yaml (secrets) present" \
+    || pf_warn "config.local.yaml not found — copy config.local.sample.yaml and fill in passwords"
+  missing=""
+  for v in SERVER_NAME BF3_BMC_IP BF3_OOB_IP BF3_SERIAL APISERVER_PORT BFB_REGISTRY_IP; do
+    [[ -z "${!v}" ]] && missing+=" $v"
+  done
+  if [[ -z "${missing}" ]]; then
+    pf_ok "worker identity complete: server=${SERVER_NAME} bmc=${BF3_BMC_IP} oob=${BF3_OOB_IP} serial=${BF3_SERIAL}"
+  else
+    pf_fail "missing required values:${missing}"
+    pf_fix "define the worker in dpf/config.yaml and select it with --worker <name> (or pass --server/--bmc-ip/--oob-ip/--serial flags)"
+  fi
+  if [[ -z "${BMC_PASSWORD}" ]]; then
+    pf_fail "bmc_password not set — DPF needs BMC credentials (bmc-shared-password secret) for Redfish"
+    pf_fix "add 'bmc_password' under the '${WORKER_NAME:-worker1}' (or '${SERVER_NAME:-<server>}') block in dpf/config.local.yaml"
+  else
+    pf_ok "BMC credentials configured (user: ${BMC_USERNAME})"
+  fi
+  if [[ "${DEPLOY_HBN}" == "true" && -z "${ARM_PASSWORD}" ]]; then
+    pf_fail "--hbn needs arm_password (SSH to ubuntu@${BF3_OOB_IP:-<oob>}) in config.local.yaml"
+    pf_fix "add 'arm_password' to the worker's block in dpf/config.local.yaml"
+  fi
+  if [[ "${USE_RSHIM}" == "true" ]]; then
+    if [[ -z "${X86_HOST_IP}" || -z "${X86_HOST_USER}" || -z "${X86_HOST_PASS}" ]]; then
+      pf_fail "--rshim-install needs x86_host_ip (config.yaml) + x86_host_user/x86_host_password (config.local.yaml)"
+      pf_fix "fill in the worker's x86 host details, or drop --rshim-install to use Redfish"
+    else
+      pf_ok "x86 host configured for rshim: ${X86_HOST_USER}@${X86_HOST_IP} (${RSHIM_DEVICE})"
+    fi
+  fi
+  if [[ -n "${OPERATOR_IP}" ]]; then
+    if hostname -I 2>/dev/null | tr ' ' '\n' | grep -qx "${OPERATOR_IP}"; then
+      pf_ok "running on the operator VM (${OPERATOR_IP})"
+    else
+      pf_warn "config.yaml says operator.ip=${OPERATOR_IP} but this machine has: $(hostname -I 2>/dev/null | xargs) — is this the right VM?"
+    fi
+  fi
+  if [[ -n "${WORKER_OPERATOR}" && -n "${OPERATOR_NAME}" && "${WORKER_OPERATOR}" != "${OPERATOR_NAME}" ]]; then
+    pf_fail "worker '${SERVER_NAME}' is marked operator: ${WORKER_OPERATOR} in config.yaml — this VM is '${OPERATOR_NAME}'"
+    pf_fix "if you are migrating it to this operator: detach it from '${WORKER_OPERATOR}' first, then remove/update the worker's 'operator:' line and re-run"
+  fi
+  [[ -d "${MANIFESTS_DIR}" ]] || { pf_fail "manifests dir missing: ${MANIFESTS_DIR}"; pf_fix "clone the full repo (dpf/manifests/ is required)"; }
+  for v in 01-bfb-pvc 02-dpfoperatorconfig 03-bfb 04-dpuflavor 05-dpunode 06-dpudevice 07-dpu 08-dpucluster 09-hbn-daemonset; do
+    [[ -f "${MANIFESTS_DIR}/${v}.yaml" ]] || { pf_fail "manifest missing: ${MANIFESTS_DIR}/${v}.yaml"; pf_fix "restore it from the repo"; }
+  done
+  pf_ok "manifests present in ${MANIFESTS_DIR}"
+
+  echo ""
+  echo "── 3. Management cluster (k3s) ──"
+  if kube get nodes &>/dev/null; then
+    kube_up=true
+    pf_ok "kubectl reachable (KUBECONFIG=${DPF_KUBECONFIG})"
+    local not_ready
+    not_ready=$(kube get nodes --no-headers 2>/dev/null | grep -cv " Ready" || true)
+    [[ "${not_ready:-0}" -eq 0 ]] && pf_ok "all nodes Ready" \
+      || { pf_fail "$(kube get nodes --no-headers | grep -v ' Ready' | awk '{print $1" is "$2}' | xargs)"; pf_fix "kubectl describe node; journalctl -u k3s -n 100"; }
+  else
+    pf_fail "kubectl cannot reach the management cluster"
+    diagnose_kube_unreachable
+  fi
+
+  # THE 6443 RULE — a DPUCluster NodePort on the mgmt apiserver port makes
+  # kube-proxy REJECT node-local traffic to the apiserver whenever the TCP has
+  # no endpoints (endpointless-service blackhole). Hard fail, always.
+  mgmt_port=$(grep -oE 'server: https?://[^ ]+' "${DPF_KUBECONFIG}" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+  if [[ -n "${APISERVER_PORT}" && -n "${mgmt_port:-}" ]]; then
+    if [[ "${APISERVER_PORT}" == "${mgmt_port}" ]]; then
+      pf_fail "apiserver_port ${APISERVER_PORT} COLLIDES with the management apiserver port (${mgmt_port})"
+      pf_fix "set a unique apiserver_port (e.g. 6444+) for this worker in dpf/config.yaml — NEVER the mgmt apiserver port"
+    else
+      pf_ok "apiserver_port ${APISERVER_PORT} ≠ mgmt apiserver port ${mgmt_port}"
+    fi
+  fi
+  if [[ "${kube_up}" == "true" && -n "${APISERVER_PORT}" ]]; then
+    local port_owner
+    port_owner=$(kube get tenantcontrolplane -A -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.networkProfile.port}{"\n"}{end}' 2>/dev/null \
+      | awk -v p="${APISERVER_PORT}" -v me="${SERVER_NAME}-dpu-cluster" '$2==p && $1!=me {print $1}' || true)
+    if [[ -n "${port_owner}" ]]; then
+      pf_fail "apiserver_port ${APISERVER_PORT} already used by TenantControlPlane '${port_owner}'"
+      pf_fix "pick an unused port in dpf/config.yaml (each worker needs its own)"
+    else
+      pf_ok "apiserver_port ${APISERVER_PORT} free among TenantControlPlanes"
+    fi
+  fi
+
+  echo ""
+  echo "── 4. Installable components (offline-first) ──"
+  if [[ "${kube_up}" == "true" ]]; then
+    local inst
+    inst=1; kube get deployment dpf-operator-controller-manager -n "${DPF_NAMESPACE}" &>/dev/null && inst=0
+    pf_component "DPF Operator ${DPF_VERSION}" "${inst}" "/opt/dpf/dpf-operator-*.tgz /tmp/dpf-operator-*.tgz" \
+      "https://helm.ngc.nvidia.com/nvidia/doca" \
+      "copy the chart to /opt/dpf/: helm fetch https://helm.ngc.nvidia.com/nvidia/doca/charts/dpf-operator-${DPF_VERSION}.tgz (needs NGC login) then place in /opt/dpf/"
+    inst=1; kube get crd nodefeatures.nfd.k8s-sigs.io &>/dev/null && inst=0
+    pf_component "NFD" "${inst}" "/opt/dpf/node-feature-discovery-*.tgz" \
+      "https://kubernetes-sigs.github.io/node-feature-discovery/charts/index.yaml" \
+      "helm pull nfd/node-feature-discovery (on an online machine) → /opt/dpf/"
+    inst=1; kube get deployment cert-manager -n cert-manager &>/dev/null && inst=0
+    pf_component "cert-manager" "${inst}" "/opt/dpf/cert-manager*.yaml" \
+      "https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.yaml" \
+      "download cert-manager.yaml (v1.14.5) → /opt/dpf/cert-manager.yaml"
+    inst=1; kube get crd tenantcontrolplanes.kamaji.clastix.io &>/dev/null && inst=0
+    pf_component "Kamaji" "${inst}" "/opt/dpf/kamaji-*.tgz" \
+      "https://clastix.github.io/charts/index.yaml" \
+      "helm pull clastix/kamaji (on an online machine) → /opt/dpf/"
+    inst=1; kube get crd applicationsets.argoproj.io &>/dev/null && inst=0
+    pf_component "ArgoCD" "${inst}" "/opt/dpf/argocd-install*.yaml" \
+      "https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml" \
+      "download ArgoCD install.yaml → /opt/dpf/argocd-install.yaml"
+  else
+    pf_warn "cluster unreachable — skipping component checks (re-run --check once k3s is up)"
+  fi
+
+  echo ""
+  echo "── 5. BFB image + local ports ──"
+  if [[ -f "${BFB_FILE}" ]]; then
+    local sz; sz=$(stat -c%s "${BFB_FILE}" 2>/dev/null || echo 0)
+    if [[ "${sz}" -gt 1000000000 ]]; then pf_ok "BFB present: ${BFB_FILE} ($((sz/1024/1024)) MB)"
+    else pf_fail "BFB file suspiciously small ($((sz/1024/1024)) MB): ${BFB_FILE}"; pf_fix "re-copy the full .bfb bundle"; fi
+  else
+    pf_fail "BFB file not found: ${BFB_FILE}"
+    pf_fix "copy the BFB bundle there, e.g.: scp bf-bundle-*.bfb <vm>:/opt/bfb/"
+  fi
+  local df_free
+  df_free=$(df --output=avail -BG /var/lib 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
+  [[ "${df_free:-0}" -ge 20 ]] && pf_ok "disk: ${df_free}G free under /var/lib" \
+    || pf_warn "only ${df_free}G free under /var/lib — BFB PVC + images need ~20G"
+  # Port 8080 belongs to DPF's bfb-registry; 9090 is our temp upload server.
+  if ss -tln 2>/dev/null | grep -q ":${BFB_REGISTRY_PORT} "; then
+    # NOTE: capture-then-grep, NOT `kube ... | grep -q` — grep -q exits at first
+    # match, kubectl dies with SIGPIPE(141), and pipefail turns that into a
+    # false negative whenever the namespace has enough pods (bit us on S5).
+    local _pods=""
+    [[ "${kube_up}" == "true" ]] && _pods=$(kube get pods -n "${DPF_NAMESPACE}" 2>/dev/null || true)
+    if grep -q bfb-registry <<< "${_pods}"; then
+      pf_ok "port ${BFB_REGISTRY_PORT}: held by DPF bfb-registry (expected)"
+    else
+      pf_fail "port ${BFB_REGISTRY_PORT} is in use by something other than DPF bfb-registry"
+      pf_fix "free it: sudo ss -tlnp | grep :${BFB_REGISTRY_PORT} — DPF's registry needs this hostPort"
+    fi
+  else
+    pf_ok "port ${BFB_REGISTRY_PORT} free (bfb-registry will claim it)"
+  fi
+  if ss -tln 2>/dev/null | grep -q ":${BFB_UPLOAD_PORT} "; then
+    if curl -sf --max-time 3 --head "http://127.0.0.1:${BFB_UPLOAD_PORT}/$(basename "${BFB_FILE}")" &>/dev/null; then
+      pf_ok "port ${BFB_UPLOAD_PORT}: existing BFB upload server already serving the bundle"
+    else
+      pf_fail "port ${BFB_UPLOAD_PORT} occupied but NOT serving ${BFB_FILE##*/}"
+      pf_fix "free it: sudo ss -tlnp | grep :${BFB_UPLOAD_PORT}"
+    fi
+  else
+    pf_ok "port ${BFB_UPLOAD_PORT} free (temp BFB upload server will claim it)"
+  fi
+
+  echo ""
+  echo "── 6. Target reachability ──"
+  if [[ -n "${BF3_BMC_IP}" ]]; then
+    local rf_code
+    # `|| true`, not `|| echo 000` — curl -w already prints 000 on failure, and
+    # the old fallback appended a second 000 ("HTTP 000000").
+    # One retry: BMCs answer slowly under load and a single 5s probe flakes.
+    rf_code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "https://${BF3_BMC_IP}/redfish/v1/" 2>/dev/null || true)
+    if [[ "${rf_code:-000}" == "000" ]]; then
+      rf_code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "https://${BF3_BMC_IP}/redfish/v1/" 2>/dev/null || true)
+    fi
+    rf_code=${rf_code:-000}
+    if [[ "${rf_code}" == "200" ]]; then
+      pf_ok "BMC Redfish reachable: https://${BF3_BMC_IP}/redfish/v1/"
+      if [[ -n "${BMC_PASSWORD}" ]]; then
+        local auth_code
+        auth_code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 -u "${BMC_USERNAME}:${BMC_PASSWORD}" \
+          "https://${BF3_BMC_IP}/redfish/v1/Systems" 2>/dev/null || true)
+        auth_code=${auth_code:-000}
+        if [[ "${auth_code}" == "200" ]]; then pf_ok "BMC credentials valid (${BMC_USERNAME})"
+        elif [[ "${auth_code}" == "401" ]]; then pf_fail "BMC rejected credentials for '${BMC_USERNAME}' (HTTP 401)"; pf_fix "correct bmc_password/bmc_username in dpf/config.local.yaml"
+        else pf_warn "BMC auth check inconclusive (HTTP ${auth_code})"; fi
+      fi
+    elif [[ "${USE_RSHIM}" == "true" ]]; then
+      pf_warn "BMC Redfish unreachable (HTTP ${rf_code}) — tolerated with --rshim-install (flash bypasses BMC)"
+    else
+      pf_fail "BMC Redfish unreachable at ${BF3_BMC_IP} (HTTP ${rf_code})"
+      pf_fix "check BMC power/network: ping ${BF3_BMC_IP}; or use --rshim-install to flash via the x86 host"
+    fi
+  fi
+  if [[ -n "${BF3_OOB_IP}" ]]; then
+    if timeout 4 bash -c "echo > /dev/tcp/${BF3_OOB_IP}/22" 2>/dev/null; then
+      pf_ok "BF3 OOB ssh reachable: ${BF3_OOB_IP}"
+    else
+      pf_warn "BF3 OOB not reachable at ${BF3_OOB_IP} — OK for a first flash (appears after provisioning); NOT OK for --hbn"
+    fi
+  fi
+  if [[ "${USE_RSHIM}" == "true" && -n "${X86_HOST_IP}" && -n "${X86_HOST_USER}" && -n "${X86_HOST_PASS}" ]] \
+     && command -v sshpass &>/dev/null; then
+    if sshpass -p "${X86_HOST_PASS}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=6 \
+         "${X86_HOST_USER}@${X86_HOST_IP}" true 2>/dev/null; then
+      pf_ok "x86 host SSH ok: ${X86_HOST_USER}@${X86_HOST_IP}"
+      if sshpass -p "${X86_HOST_PASS}" ssh -o StrictHostKeyChecking=no "${X86_HOST_USER}@${X86_HOST_IP}" \
+           "test -e /dev/${RSHIM_DEVICE}/boot" 2>/dev/null; then
+        pf_ok "rshim device present on x86 host: /dev/${RSHIM_DEVICE}"
+      else
+        pf_fail "no /dev/${RSHIM_DEVICE}/boot on ${X86_HOST_IP}"
+        pf_fix "on the x86 host: sudo systemctl restart rshim (install rshim if missing). If flash later stalls at BOOT_TIMEOUT, also stop the BMC-side rshim: ssh root@${BF3_BMC_IP} systemctl stop rshim"
+      fi
+      if sshpass -p "${X86_HOST_PASS}" ssh -o StrictHostKeyChecking=no "${X86_HOST_USER}@${X86_HOST_IP}" \
+           "test -f ${X86_BFB_PATH}" 2>/dev/null; then
+        pf_ok "BFB present on x86 host: ${X86_BFB_PATH}"
+      else
+        pf_fail "BFB missing on x86 host: ${X86_HOST_IP}:${X86_BFB_PATH}"
+        pf_fix "scp ${BFB_FILE} ${X86_HOST_USER}@${X86_HOST_IP}:${X86_BFB_PATH}"
+      fi
+    else
+      pf_fail "cannot SSH to x86 host ${X86_HOST_USER}@${X86_HOST_IP}"
+      pf_fix "verify x86_host_user/x86_host_password in dpf/config.local.yaml and host reachability"
+    fi
+  fi
+
+  echo ""
+  echo "── 7. Topology ──"
+  if [[ "${TUNNEL_MODE}" == "same" ]]; then
+    pf_ok "SAME-SUBNET deployment (${BFB_REGISTRY_IP%.*}.x): BF3 joins the DPF VM directly — no tunnel needed"
+  else
+    pf_warn "CROSS-SUBNET deployment (DPF VM ${BFB_REGISTRY_IP} vs BF3 OOB ${BF3_OOB_IP:-?}): BF3→DPF-VM TCP may be firewalled"
+    pf_fix "after the DPUCluster exists, start the relay: ./dpf/scripts/tunnel_dpf.sh --server ${SERVER_NAME:-<server>} start (relay: ${RELAY_IP:-<x86 host>})"
+  fi
+
+  echo ""
+  echo "── 8. Datapath firmware readiness (eswitch multiport gates) ──"
+  # ALL HBN SFs are hosted on PF0; traffic on the p1 uplink must cross eswitches.
+  # That needs esw_multiport=true, gated on firmware LAG_RESOURCE_ALLOCATION=1 —
+  # which ONLY truly applies at a TRUE COLD power cycle. Shipped-undetected once
+  # (Aug 2026): everything config-plane looked healthy while p1 blackholed unicast.
+  if grep -q "LAG_RESOURCE_ALLOCATION=1" "${MANIFESTS_DIR}/04-dpuflavor.yaml" 2>/dev/null; then
+    pf_ok "DPUFlavor manifest carries nvconfig LAG_RESOURCE_ALLOCATION=1"
+  else
+    pf_fail "04-dpuflavor.yaml lost 'LAG_RESOURCE_ALLOCATION=1' — p1 uplink CANNOT reach the PF0-hosted HBN SFs"
+    pf_fix "restore '- LAG_RESOURCE_ALLOCATION=1' under nvconfig in ${MANIFESTS_DIR}/04-dpuflavor.yaml"
+  fi
+
+  # Flavor drift is DESTRUCTIVE to apply (DPU delete → BF3 reflash). Catch it here,
+  # read-only, so a normal run can never wander into a surprise reflash.
+  if [[ "${kube_up}" == "true" && -n "${SERVER_NAME}" ]] \
+     && kube get dpuflavor "${DPU_FLAVOR_NAME}" -n dpf-operator-system &>/dev/null; then
+    local _pf_flavor _diff_rc=0
+    _pf_flavor=$(mktemp)
+    render_flavor "${_pf_flavor}"
+    kube diff -f "${_pf_flavor}" &>/dev/null || _diff_rc=$?
+    rm -f "${_pf_flavor}"
+    # rc 0 = identical. ANY nonzero rc = drift: the DPUFlavor spec is immutable,
+    # so a changed spec makes the server-side dry-run REJECT (rc=2), not just
+    # print a diff (rc=1). Both mean the same thing here: applying requires the
+    # destructive DPU-delete + reflash path.
+    if [[ ${_diff_rc} -eq 0 ]]; then
+      pf_ok "DPUFlavor '${DPU_FLAVOR_NAME}' unchanged — this run will NOT touch the DPU or reflash"
+    elif [[ "${ALLOW_REFLASH}" == "true" ]]; then
+      pf_warn "DPUFlavor CHANGED (diff rc=${_diff_rc}) and --allow-reflash given: this run WILL delete DPU '${SERVER_NAME}-dpu' and REFLASH the BF3 (~30 min outage)"
+    else
+      pf_fail "DPUFlavor '${DPU_FLAVOR_NAME}' spec changed (diff rc=${_diff_rc}) — applying it requires DELETING the DPU and REFLASHING the BF3"
+      pf_fix "intended? re-run with --allow-reflash in a maintenance window; otherwise revert the flavor input change (manifest or --x86-host/--registry-ip/port overrides)"
+    fi
+  fi
+
+  # Live firmware state on the BF3 (read-only SSH; skipped gracefully pre-flash).
+  if bf3_reachable; then
+    local lag0 lag1 mp pfl dpu_phase
+    dpu_phase=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    lag0=$(bf3_lag_current 0000:03:00.0)
+    lag1=$(bf3_lag_current 0000:03:00.1)
+    if [[ "${lag0}" == *"(1)"* && "${lag1}" == *"(1)"* ]]; then
+      pf_ok "BF3 firmware: LAG_RESOURCE_ALLOCATION current=PRE_ALLOCATION(1) (both PFs)"
+    elif [[ -z "${lag0}${lag1}" ]]; then
+      pf_warn "could not read LAG_RESOURCE_ALLOCATION over SSH — step 11b verifies post-provision"
+    elif [[ "${dpu_phase}" == "Ready" ]]; then
+      pf_fail "ALREADY-PROVISIONED DPU but LAG_RESOURCE_ALLOCATION current is PF0='${lag0:-?}' PF1='${lag1:-?}' — p1 unicast will blackhole"
+      pf_fix "stage on the BF3: sudo mlxconfig -d 0000:03:00.0 set LAG_RESOURCE_ALLOCATION=1 && sudo mlxconfig -d 0000:03:00.1 set LAG_RESOURCE_ALLOCATION=1"
+      pf_fix "then TRUE cold power cycle from the X86 HOST: sudo ipmitool chassis power cycle"
+      pf_fix "(ARM reboot does NOT commit it; a live 'Current=1' after a runtime set is cosmetic)"
+    else
+      pf_warn "BF3 firmware LAG_RESOURCE_ALLOCATION not yet 1 — the flavor stages it during flash; it APPLIES only on a true cold power cycle (step 11b re-verifies)"
+    fi
+    mp=$(bf3_multiport)
+    if [[ "${mp}" == "true" ]]; then
+      pf_ok "eswitch multiport active (esw_multiport=true)"
+    elif [[ "${lag0}" == *"(1)"* && "${lag1}" == *"(1)"* ]]; then
+      pf_ok "esw_multiport currently '${mp:-unsupported}' — --hbn enables it (runtime param + mlnx-bf.conf)"
+    fi
+    if [[ "${dpu_phase}" == "Ready" ]]; then
+      pfl=$(bf3_pairflows)
+      if [[ "${pfl:-0}" -gt 0 ]]; then
+        pf_ok "br-hbn has ${pfl} priority-500 port-pair flows"
+      else
+        pf_warn "br-hbn has 0 priority-500 pair flows (reboot loses them) — --hbn re-derives; manual: (BF3) sudo systemctl restart sfc.service"
+      fi
+    fi
+  else
+    pf_warn "BF3 SSH not possible yet (OOB down or arm_password unset) — live firmware checks deferred to step 11b post-provision"
+  fi
+
+  echo ""
+  echo "══ PREFLIGHT RESULT: ${PF_FAIL} blocker(s), ${PF_WARN} warning(s) ══"
+  if [[ ${PF_FAIL} -gt 0 ]]; then
+    echo -e "  ${RED}NOT ready${NC} — fix the [FAIL] items above and re-run: $0 --check"
+  else
+    echo -e "  ${GREEN}Ready to run.${NC}"
+  fi
+  echo ""
+}
+
 echo ""
 echo "============================================================"
 echo "  DPF BF3 Bringup — OOB/Redfish provisioning"
@@ -459,30 +934,23 @@ echo "  BF3 OOB         : ${BF3_OOB_IP}"
 echo "  BF3 Serial      : ${BF3_SERIAL}"
 echo "  API server port : ${APISERVER_PORT} (Kamaji NodePort — unique per worker)"
 echo "  BFB URL         : ${BFB_URL}"
+echo "  Topology        : ${TUNNEL_MODE}-subnet (apiserver relay: ${RELAY_IP:-n/a})"
 echo "  $(date)"
 echo "============================================================"
-echo ""
 
-# ─── Step 1: Preflight checks ─────────────────────────────────────────────────
-info "Step 1/10 — Preflight checks"
+# ─── PREFLIGHT (read-only) — validates everything before any mutation ─────────
+preflight
+if [[ "${CHECK_ONLY}" == "true" ]]; then
+  [[ ${PF_FAIL} -gt 0 ]] && exit 1 || exit 0
+fi
+if [[ ${PF_FAIL} -gt 0 ]]; then
+  fail "Preflight found ${PF_FAIL} blocker(s) — nothing was changed. Fix them and re-run (iterate with: $0 --check)"
+fi
+
+# ─── Step 1: Install/verify prerequisite components ──────────────────────────
+info "Step 1/11 — Prerequisite components (preflight verified installability)"
 
 if ! kube get nodes &>/dev/null; then
-  # Common k3s-on-Ubuntu-22.04 failure modes — diagnose so the user isn't stuck.
-  if [[ -r /etc/rancher/k3s/k3s.yaml ]] && grep -q '127.0.0.1:6443' /etc/rancher/k3s/k3s.yaml 2>/dev/null \
-     && ! ss -4 -tln 2>/dev/null | grep -q ':6443 ' && ss -6 -tln 2>/dev/null | grep -q ':6443 '; then
-    warn "k3s is listening on IPv6 only, but kubeconfig points at 127.0.0.1 (IPv4)."
-    warn "Fix (permanent — survives k3s restarts):"
-    warn "  sudo sed -i 's/127.0.0.1:6443/[::1]:6443/' /etc/rancher/k3s/k3s.yaml"
-    warn "  sudo chmod 644 /etc/rancher/k3s/k3s.yaml"
-    warn "  sudo mkdir -p /etc/systemd/system/k3s.service.d"
-    warn "  sudo tee /etc/systemd/system/k3s.service.d/fix-kubeconfig.conf <<'EOF'"
-    warn "  [Service]"
-    warn "  ExecStartPost=/bin/bash -c 'sleep 10 && sed -i \"s/127.0.0.1:6443/[::1]:6443/\" /etc/rancher/k3s/k3s.yaml && chmod 644 /etc/rancher/k3s/k3s.yaml'"
-    warn "  EOF"
-    warn "  sudo systemctl daemon-reload"
-  elif [[ -e /etc/rancher/k3s/k3s.yaml && ! -r /etc/rancher/k3s/k3s.yaml ]]; then
-    warn "k3s.yaml exists but is not readable. Fix: sudo chmod 644 /etc/rancher/k3s/k3s.yaml"
-  fi
   fail "kubectl cannot reach cluster — check KUBECONFIG (${DPF_KUBECONFIG})"
 fi
 ok "kubectl: cluster reachable"
@@ -499,11 +967,19 @@ else
   else
     info "  Installing NFD..."
     if [[ "${DRY_RUN}" != "true" ]]; then
-      helm repo add nfd https://kubernetes-sigs.github.io/node-feature-discovery/charts 2>/dev/null || true
-      helm repo update nfd 2>/dev/null
-      helm install nfd nfd/node-feature-discovery \
-        --namespace nfd --create-namespace --wait --timeout 5m \
-        || fail "NFD install failed — check: kubectl get pods -n nfd"
+      NFD_CHART=$(ls /opt/dpf/node-feature-discovery-*.tgz 2>/dev/null | head -1 || true)
+      if [[ -n "${NFD_CHART}" ]]; then
+        info "  Using local chart: ${NFD_CHART}"
+        helm install nfd "${NFD_CHART}" \
+          --namespace nfd --create-namespace --wait --timeout 5m \
+          || fail "NFD install failed — check: kubectl get pods -n nfd"
+      else
+        helm repo add nfd https://kubernetes-sigs.github.io/node-feature-discovery/charts 2>/dev/null || true
+        helm repo update nfd 2>/dev/null
+        helm install nfd nfd/node-feature-discovery \
+          --namespace nfd --create-namespace --wait --timeout 5m \
+          || fail "NFD install failed — check: kubectl get pods -n nfd (offline? put node-feature-discovery-*.tgz in /opt/dpf/)"
+      fi
     fi
     ok "NFD installed"
   fi
@@ -555,7 +1031,13 @@ if kube get deployment cert-manager -n cert-manager &>/dev/null; then
 else
   info "  Installing cert-manager v1.14.5..."
   if [[ "${DRY_RUN}" != "true" ]]; then
-    kube apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.yaml
+    CM_MANIFEST=$(ls /opt/dpf/cert-manager*.yaml 2>/dev/null | head -1 || true)
+    if [[ -n "${CM_MANIFEST}" ]]; then
+      info "  Using local manifest: ${CM_MANIFEST}"
+      kube apply -f "${CM_MANIFEST}"
+    else
+      kube apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.yaml
+    fi
     kube rollout status deployment/cert-manager -n cert-manager --timeout=180s
     kube rollout status deployment/cert-manager-webhook -n cert-manager --timeout=180s
   fi
@@ -568,12 +1050,21 @@ if kube get crd tenantcontrolplanes.kamaji.clastix.io &>/dev/null; then
 else
   info "  Installing Kamaji via Helm..."
   if [[ "${DRY_RUN}" != "true" ]]; then
-    helm repo add clastix https://clastix.github.io/charts 2>/dev/null || true
-    helm repo update clastix 2>/dev/null
-    helm install kamaji clastix/kamaji \
-      --namespace kamaji-system --create-namespace \
-      --set etcd.deploy=true \
-      --wait --timeout 5m
+    KAMAJI_CHART=$(ls /opt/dpf/kamaji-*.tgz 2>/dev/null | head -1 || true)
+    if [[ -n "${KAMAJI_CHART}" ]]; then
+      info "  Using local chart: ${KAMAJI_CHART}"
+      helm install kamaji "${KAMAJI_CHART}" \
+        --namespace kamaji-system --create-namespace \
+        --set etcd.deploy=true \
+        --wait --timeout 5m
+    else
+      helm repo add clastix https://clastix.github.io/charts 2>/dev/null || true
+      helm repo update clastix 2>/dev/null
+      helm install kamaji clastix/kamaji \
+        --namespace kamaji-system --create-namespace \
+        --set etcd.deploy=true \
+        --wait --timeout 5m
+    fi
   fi
   ok "Kamaji installed"
 fi
@@ -596,8 +1087,14 @@ else
   if [[ "${DRY_RUN}" != "true" ]]; then
     kube create namespace argocd 2>/dev/null || true
     # Server-side apply required — install.yaml's applicationsets CRD exceeds 262KB annotation limit
-    kube apply --server-side -n argocd \
-      -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    ARGOCD_MANIFEST=$(ls /opt/dpf/argocd-install*.yaml 2>/dev/null | head -1 || true)
+    if [[ -n "${ARGOCD_MANIFEST}" ]]; then
+      info "  Using local manifest: ${ARGOCD_MANIFEST}"
+      kube apply --server-side -n argocd -f "${ARGOCD_MANIFEST}"
+    else
+      kube apply --server-side -n argocd \
+        -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    fi
     elapsed=0
     while [[ $elapsed -lt 60 ]]; do
       kube get crd applicationsets.argoproj.io &>/dev/null && break
@@ -667,7 +1164,7 @@ ok "ArgoCD multi-namespace configured"
 # But to populate the PVC, the BFB controller downloads from BFB_URL.
 # BFB_URL must NOT use port 8080 (that's bfb-registry's port) — use BFB_UPLOAD_PORT.
 # The python3 server runs temporarily until the BFB CR reaches Ready state.
-info "Step 2/10 — BFB upload server (port ${BFB_UPLOAD_PORT}, for initial PVC population)"
+info "Step 2/11 — BFB upload server (port ${BFB_UPLOAD_PORT}, for initial PVC population)"
 [[ -f "${BFB_FILE}" ]] \
   || fail "BFB file not found: ${BFB_FILE} — copy the .bfb bundle there first"
 ok "BFB file present: ${BFB_FILE}"
@@ -694,7 +1191,7 @@ fi
 # DPF CronJob dpf-operator-kamaji-etcd-defrag-job spawns Jobs that accumulate
 # if the kamaji-etcd-certs secret is missing. Jobs use job-name labels (not app labels).
 # Selecting by CronJob name prefix is the only reliable method.
-info "Step 3/10 — Cleaning up stale Kamaji etcd-defrag jobs"
+info "Step 3/11 — Cleaning up stale Kamaji etcd-defrag jobs"
 DEFRAG_JOB_NAMES=$(kube get jobs -n "${DPF_NAMESPACE}" --no-headers 2>/dev/null \
   | grep "dpf-operator-kamaji-etcd-defrag" | awk '{print $1}') || true
 if [[ -n "${DEFRAG_JOB_NAMES}" ]]; then
@@ -711,7 +1208,7 @@ else
 fi
 
 # ─── Step 4: BFB PVC ──────────────────────────────────────────────────────────
-info "Step 4/10 — BFB PersistentVolumeClaim"
+info "Step 4/11 — BFB PersistentVolumeClaim"
 if kube get pvc bfb-pvc -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "bfb-pvc already exists"
 else
@@ -720,7 +1217,7 @@ else
 fi
 
 # ─── Step 5: DPFOperatorConfig ────────────────────────────────────────────────
-info "Step 5/10 — DPFOperatorConfig (bootstraps Kamaji + provisioning controller)"
+info "Step 5/11 — DPFOperatorConfig (bootstraps Kamaji + provisioning controller)"
 if kube get dpfoperatorconfig dpfoperatorconfig -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPFOperatorConfig already exists"
 else
@@ -742,7 +1239,7 @@ fi
 # Kamaji is installed in its own kamaji-system namespace (not dpf-operator-system).
 # SystemComponentsReady=False is expected at this stage when no DPU cluster exists yet;
 # the servicechainset-controller DPUService has a circular dep with DPU cluster existence.
-info "Step 6/10 — Waiting for Kamaji, DPF provisioning controller, and bfb-registry (timeout: ${WAIT_TIMEOUT}s)"
+info "Step 6/11 — Waiting for Kamaji, DPF provisioning controller, and bfb-registry (timeout: ${WAIT_TIMEOUT}s)"
 if [[ "${DRY_RUN}" == "true" ]]; then
   info "[dry-run] skipping wait"
 else
@@ -810,12 +1307,10 @@ else
   #   metadata.name → ${DPU_FLAVOR_NAME}  (per-server, so multiple DPUs don't collide)
   #   X86_HOST_IP  — x86 relay host for the SSH tunnel (iptables DNAT target)
   #   BFB_REGISTRY_IP — DPF VM IP (kubeadm join endpoint before ClusterIP takes over)
+  # X86_HOST_IP in the flavor is the APISERVER RELAY the BF3's DNAT rules point at:
+  # cross-subnet → the x86 tunnel host; same-subnet → the DPF VM itself (direct).
   _flavor_tmp=$(mktemp)
-  sed -e "s|^  name: bf3-hbn|  name: ${DPU_FLAVOR_NAME}|" \
-      -e "s|X86_HOST_IP=\"[^\"]*\"|X86_HOST_IP=\"${X86_HOST_IP}\"|g" \
-      -e "s|DPF_VM_IP=\"[^\"]*\"|DPF_VM_IP=\"${BFB_REGISTRY_IP}\"|g" \
-      -e "s|APISERVER_PORT=\"[^\"]*\"|APISERVER_PORT=\"${APISERVER_PORT}\"|g" \
-      "${MANIFESTS_DIR}/04-dpuflavor.yaml" > "${_flavor_tmp}"
+  render_flavor "${_flavor_tmp}"
 
   # DPUFlavor spec is immutable — must delete DPU referencing it, then delete flavor.
   # BUT only do that destructive dance when the flavor actually CHANGED. Re-running
@@ -826,8 +1321,11 @@ else
     if kube diff -f "${_flavor_tmp}" &>/dev/null; then
       _flavor_changed=false
       skip "DPUFlavor '${DPU_FLAVOR_NAME}' already present and unchanged — not recreating (avoids DPU delete/reflash loop)"
+    elif [[ "${ALLOW_REFLASH}" == "true" ]]; then
+      warn "DPUFlavor '${DPU_FLAVOR_NAME}' spec changed — deleting DPU + flavor and REFLASHING (authorized by --allow-reflash)"
     else
-      info "DPUFlavor '${DPU_FLAVOR_NAME}' exists but spec changed — will delete and recreate"
+      # Preflight normally catches this; belt-and-suspenders for direct step entry.
+      fail "DPUFlavor '${DPU_FLAVOR_NAME}' spec changed — applying it would DELETE DPU '${SERVER_NAME}-dpu' and REFLASH the BF3. Re-run with --allow-reflash (maintenance window) or revert the manifest change. NOTHING was changed."
     fi
   fi
 
@@ -850,8 +1348,8 @@ else
       _tc_cfg=$(kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" \
         -n "${DPF_NAMESPACE}" -o jsonpath='{.data.admin\.conf}' 2>/dev/null | base64 -d || true)
       if [[ -n "$_tc_cfg" ]]; then
-        echo "$_tc_cfg" > ${HOME}/dpu-tc-kubeconfig-step8
-        kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig-step8 delete node "${SERVER_NAME}-dpu" \
+        echo "$_tc_cfg" > "${HOME}/dpu-tc-kubeconfig-step8"
+        kubectl --kubeconfig "${HOME}/dpu-tc-kubeconfig-step8" delete node "${SERVER_NAME}-dpu" \
           --ignore-not-found 2>/dev/null \
           && info "TC node '${SERVER_NAME}-dpu' removed (rshim-install will proceed)" \
           || true
@@ -864,7 +1362,7 @@ else
   # DPU keeps running and the BF3 stays joined.
   if [[ "${_flavor_changed}" == "true" ]]; then
     kube apply -f "${_flavor_tmp}"
-    ok "DPUFlavor '${DPU_FLAVOR_NAME}' applied (X86_HOST_IP=${X86_HOST_IP}, DPF_VM=${BFB_REGISTRY_IP}, APISERVER_PORT=${APISERVER_PORT})"
+    ok "DPUFlavor '${DPU_FLAVOR_NAME}' applied (apiserver relay=${RELAY_IP} [${TUNNEL_MODE}-subnet], DPF_VM=${BFB_REGISTRY_IP}, APISERVER_PORT=${APISERVER_PORT})"
   fi
   rm -f "${_flavor_tmp}"
 fi
@@ -875,7 +1373,7 @@ fi
 # Note: Kamaji v1.0.0 only supports k8s ≤1.30.x. DPF v25.10.1 requests v1.33.0.
 # The validating webhook check is deleted in Step 1b; the underlying kamaji etcd supports it.
 info "Step 9/11 — DPUCluster (virtual k8s control plane for DPU)"
-if kube get dpucluster ${SERVER_NAME}-dpu-cluster -n "${DPF_NAMESPACE}" &>/dev/null; then
+if kube get dpucluster "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPUCluster '${SERVER_NAME}-dpu-cluster' already exists"
 else
   sed "s|SERVER_NAME|${SERVER_NAME}|g" "${MANIFESTS_DIR}/08-dpucluster.yaml" | kube apply -f -
@@ -891,11 +1389,11 @@ fi
 if [[ "${DRY_RUN}" != "true" ]]; then
   _tcp_patched=""
   for _i in $(seq 1 30); do
-    if kube get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" &>/dev/null; then
-      _cur_addr=$(kube get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+    if kube_tcp get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" &>/dev/null; then
+      _cur_addr=$(kube_tcp get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.spec.networkProfile.address}' 2>/dev/null || echo "")
       if [[ -z "${_cur_addr}" ]]; then
-        kube patch tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+        kube_tcp patch tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
           --type=merge -p "{\"spec\":{\"networkProfile\":{\"address\":\"${BFB_REGISTRY_IP}\"}}}" \
           && ok "Patched TenantControlPlane networkProfile.address=${BFB_REGISTRY_IP}"
       else
@@ -906,10 +1404,10 @@ if [[ "${DRY_RUN}" != "true" ]]; then
       # cluster's unique port (config.yaml apiserver_port) so they coexist.
       # Must land BEFORE the DPU/bfcfg is generated so the kubeadm join endpoint
       # picks up the right port. (port is an integer — no quotes in the JSON)
-      _cur_port=$(kube get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+      _cur_port=$(kube_tcp get tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.spec.networkProfile.port}' 2>/dev/null || echo "")
       if [[ "${_cur_port}" != "${APISERVER_PORT}" ]]; then
-        kube patch tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
+        kube_tcp patch tenantcontrolplane "${SERVER_NAME}-dpu-cluster" -n "${DPF_NAMESPACE}" \
           --type=merge -p "{\"spec\":{\"networkProfile\":{\"port\":${APISERVER_PORT}}}}" \
           && ok "Patched TenantControlPlane networkProfile.port=${APISERVER_PORT} (was: ${_cur_port:-unset})"
       else
@@ -948,10 +1446,10 @@ if [[ "${DRY_RUN}" != "true" ]]; then
 
   # Fetch DPU cluster kubeconfig
   kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
-    -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > "${HOME}/dpu-tc-kubeconfig" 2>/dev/null || true
 
   if [[ -s ${HOME}/dpu-tc-kubeconfig ]]; then
-    dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
+    dkube() { kubectl --kubeconfig "${HOME}/dpu-tc-kubeconfig" "$@"; }
 
     # 1. Register/refresh DPU cluster with ArgoCD (required for DPUService deployment).
     # ALWAYS refresh: after a DPUCluster delete+recreate, Kamaji issues a new CA/cert/key.
@@ -993,7 +1491,7 @@ metadata:
 type: Opaque
 stringData:
   name: ${SERVER_NAME}-dpu-cluster
-  server: https://${SERVER_NAME}-dpu-cluster.${DPF_NAMESPACE}.svc:6443
+  server: https://${SERVER_NAME}-dpu-cluster.${DPF_NAMESPACE}.svc:${APISERVER_PORT}
   config: '${CONFIG}'
 EOF
       ok "ArgoCD cluster secret created for '${SERVER_NAME}-dpu-cluster'"
@@ -1014,6 +1512,20 @@ EOF
         -p="[{\"op\": \"replace\", \"path\": \"/data/KUBERNETES_SERVICE_HOST\", \"value\": \"${NEW_HOST_B64}\"}]" \
         2>/dev/null && ok "servicechainset credentials patched → ${DPU_SVC_HOST}" \
         || warn "servicechainset credentials patch failed — may not exist yet"
+    fi
+    # The PORT must match this cluster's unique apiserver_port too (svc port ≠ 6443
+    # for any worker whose apiserver_port differs — s8's 'Sync: Unknown' lesson).
+    CURRENT_PORT=$(kube get secret servicechainset-controller-manager-credentials \
+      -n "${DPF_NAMESPACE}" \
+      -o jsonpath='{.data.KUBERNETES_SERVICE_PORT}' 2>/dev/null | base64 -d || echo "")
+    if [[ -n "${CURRENT_PORT}" && "${CURRENT_PORT}" != "${APISERVER_PORT}" ]]; then
+      NEW_PORT_B64=$(echo -n "${APISERVER_PORT}" | base64)
+      kube patch secret servicechainset-controller-manager-credentials \
+        -n "${DPF_NAMESPACE}" \
+        --type=json \
+        -p="[{\"op\": \"replace\", \"path\": \"/data/KUBERNETES_SERVICE_PORT\", \"value\": \"${NEW_PORT_B64}\"}]" \
+        2>/dev/null && ok "servicechainset credentials port patched → ${APISERVER_PORT}" \
+        || warn "servicechainset credentials port patch failed"
     fi
 
     # 3. Bootstrap svc.dpu.nvidia.com CRDs onto DPU cluster
@@ -1104,14 +1616,31 @@ fi
 # ─── Step 10: DPUNode + DPUDevice + DPU ───────────────────────────────────────
 info "Step 10/11 — DPUNode, DPUDevice, DPU (triggers Redfish provisioning)"
 
-if kube get dpunode ${SERVER_NAME}-node -n "${DPF_NAMESPACE}" &>/dev/null; then
+# BMC credentials secret — the provisioning controller reads 'bmc-shared-password'
+# (username/password) for every Redfish call. A fresh operator does NOT have it;
+# without it DPU provisioning fails Redfish auth with no obvious error.
+if kube get secret bmc-shared-password -n "${DPF_NAMESPACE}" &>/dev/null; then
+  skip "bmc-shared-password secret already exists"
+elif [[ "${DRY_RUN}" == "true" ]]; then
+  info "[dry-run] would create bmc-shared-password secret (user: ${BMC_USERNAME})"
+elif [[ -n "${BMC_PASSWORD}" ]]; then
+  kube create secret generic bmc-shared-password -n "${DPF_NAMESPACE}" \
+    --from-literal=username="${BMC_USERNAME}" \
+    --from-literal=password="${BMC_PASSWORD}" \
+    && ok "bmc-shared-password secret created (user: ${BMC_USERNAME})" \
+    || fail "could not create bmc-shared-password secret"
+else
+  fail "bmc-shared-password secret missing and bmc_password not set in config.local.yaml"
+fi
+
+if kube get dpunode "${SERVER_NAME}-node" -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPUNode '${SERVER_NAME}-node' already exists"
 else
   sed "s|SERVER_NAME|${SERVER_NAME}|g" "${MANIFESTS_DIR}/05-dpunode.yaml" | kube apply -f -
   ok "DPUNode '${SERVER_NAME}-node' created"
 fi
 
-if kube get dpudevice ${SERVER_NAME}-bf3 -n "${DPF_NAMESPACE}" &>/dev/null; then
+if kube get dpudevice "${SERVER_NAME}-bf3" -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPUDevice '${SERVER_NAME}-bf3' already exists"
 else
   TMPFILE=$(mktemp "${HOME}/dpudevice-XXXXXX.yaml")
@@ -1129,7 +1658,7 @@ else
   rm -f "${TMPFILE}"
 fi
 
-if kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" &>/dev/null; then
+if kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" &>/dev/null; then
   skip "DPU '${SERVER_NAME}-dpu' already exists"
 else
   TMPFILE=$(mktemp "${HOME}/dpu-XXXXXX.yaml")
@@ -1157,8 +1686,8 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
   info "Step 10b/11 — rshim BFB flash via x86 host (${X86_HOST_IP})"
   # Define dkube early so it's available for the already-joined check below
   kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
-    -o jsonpath='{.data.admin\.conf}' 2>/dev/null | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
-  dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
+    -o jsonpath='{.data.admin\.conf}' 2>/dev/null | base64 -d > "${HOME}/dpu-tc-kubeconfig" 2>/dev/null || true
+  dkube() { kubectl --kubeconfig "${HOME}/dpu-tc-kubeconfig" "$@"; }
   # NOTE: with `set -o pipefail`, a failing kubectl makes the pipeline fail; using
   # `|| echo 0` would append a second "0" to wc's output ("0\n0") and break the [[ ]].
   _existing_nodes=$(dkube get nodes --no-headers 2>/dev/null | wc -l || true)
@@ -1176,9 +1705,9 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
     info "  Waiting for DPF to generate bfcfg (BFBPrepared)..."
     elapsed=0; bfcfg_ready=false
     while [[ $elapsed -lt 900 ]]; do
-      bfb_prepared=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+      bfb_prepared=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="BFBPrepared")].status}' 2>/dev/null || echo "")
-      dpu_phase=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+      dpu_phase=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
       if [[ "$bfb_prepared" == "True" ]]; then
         bfcfg_ready=true; ok "BFBPrepared: True — bfcfg ready"; break
@@ -1186,9 +1715,9 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       # DPF may have already progressed to Error/FailToInstall — bfcfg still exists.
       # Condition type varies by DPF version: older=OSInstalled, v25.10.1=BFBTransferred.
       if [[ "$dpu_phase" == "Error" ]]; then
-        os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+        os_reason=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
           -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].reason}' 2>/dev/null || echo "")
-        [[ -z "$os_reason" ]] && os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+        [[ -z "$os_reason" ]] && os_reason=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
           -o jsonpath='{.status.conditions[?(@.type=="BFBTransferred")].reason}' 2>/dev/null || echo "")
         [[ "$os_reason" == "FailToInstall" ]] && { bfcfg_ready=true; ok "DPF in Error/FailToInstall — bfcfg already generated"; break; }
       fi
@@ -1200,7 +1729,7 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
 
     # Refresh TenantControlPlane kubeconfig (fail if not available yet)
     kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
-      -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig \
+      -o jsonpath='{.data.admin\.conf}' | base64 -d > "${HOME}/dpu-tc-kubeconfig" \
       || fail "Cannot get TenantControlPlane kubeconfig — is DPUCluster Ready?"
 
     # Create a fresh bootstrap token (DPF's original bfcfg token expires after 24h)
@@ -1218,7 +1747,7 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
     ok "Bootstrap token created: ${RSHIM_TOKEN}"
 
     # Locate bfcfg path from DPU status (relative path within the bfb PVC)
-    BFCFG_REL=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+    BFCFG_REL=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
       -o jsonpath='{.status.bfCFGFile}' 2>/dev/null || echo "")
     [[ -z "${BFCFG_REL}" ]] \
       && fail "DPU status.bfCFGFile empty — DPF has not generated bfcfg yet"
@@ -1247,10 +1776,17 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       || warn "bfb-install exited non-zero (usually benign I/O errors after BF3 reboots) — watching for node join to confirm"
     ok "BFB flash initiated — BF3 is rebooting with DPF configuration"
 
-    # Wait for BF3 to join TenantControlPlane (kubeadm-join.service runs on first boot)
-    info "  Waiting for BF3 node to join TenantControlPlane (timeout: ${DPU_TIMEOUT}s)..."
+    # Wait for BF3 to join TenantControlPlane (kubeadm-join.service runs on first boot).
+    # First boot after a FRESH flash can take 30-45 min: the BF3 parks at the console
+    # first-login password gate until someone completes it (BMC console: login ubuntu/
+    # ubuntu, set password, then `sudo dhclient oob_net0` and
+    # `sudo systemctl start dpf-firstboot-kick`). Budget for that.
+    JOIN_TIMEOUT=$((DPU_TIMEOUT + 1200))
+    info "  Waiting for BF3 node to join TenantControlPlane (timeout: ${JOIN_TIMEOUT}s)..."
+    info "  NOTE: fresh flash boot #1 needs the console first-login completed (BMC ARM console:"
+    info "        set ubuntu password, then: sudo systemctl start dpf-firstboot-kick)"
     elapsed=0
-    while [[ $elapsed -lt $DPU_TIMEOUT ]]; do
+    while [[ $elapsed -lt $JOIN_TIMEOUT ]]; do
       node_count=$(dkube get nodes --no-headers 2>/dev/null | wc -l || echo 0)
       if [[ "$node_count" -gt 0 ]]; then
         ok "BF3 joined TenantControlPlane:"
@@ -1260,13 +1796,21 @@ if [[ "${USE_RSHIM}" == "true" ]]; then
       sleep 20; elapsed=$((elapsed + 20))
       info "  waiting for BF3 node... ${elapsed}s/${DPU_TIMEOUT}s"
     done
-    [[ $elapsed -ge $DPU_TIMEOUT ]] \
-      && fail "BF3 did not join TenantControlPlane after ${DPU_TIMEOUT}s — check: kubectl get nodes --kubeconfig ${HOME}/dpu-tc-kubeconfig"
+    if [[ $elapsed -ge $JOIN_TIMEOUT ]]; then
+      echo -e "${RED}[FAIL]${NC}  BF3 did not join TenantControlPlane after ${JOIN_TIMEOUT}s"
+      echo -e "${CYAN}[INFO]${NC}  Most common cause on a FRESH flash: boot #1 is parked at the console"
+      echo -e "${CYAN}[INFO]${NC}  first-login gate. On the BF3 BMC (${BF3_BMC_IP}) ARM console:"
+      echo -e "${CYAN}[INFO]${NC}    1. login ubuntu / ubuntu → set a new password"
+      echo -e "${CYAN}[INFO]${NC}    2. sudo dhclient oob_net0"
+      echo -e "${CYAN}[INFO]${NC}    3. sudo systemctl start dpf-firstboot-kick"
+      echo -e "${CYAN}[INFO]${NC}  Then RE-RUN this script — it is idempotent and resumes where it left off."
+      exit 1
+    fi
 
     # BF3 joined — patch DPU status to Ready so DPF can proceed with DPUService deployment.
     # Redfish 404 (same-version skip) left DPU in Error/FailToInstall; rshim flash remedied it.
     info "  Patching DPU status → Ready (rshim flash confirmed successful)..."
-    kube patch dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" --subresource=status --type=merge \
+    kube patch dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" --subresource=status --type=merge \
       -p '{"status":{"phase":"Ready"}}' 2>/dev/null \
       && ok "DPU status patched to Ready" \
       || warn "Could not patch DPU status — check manually: kubectl get dpu ${SERVER_NAME}-dpu -n ${DPF_NAMESPACE}"
@@ -1283,7 +1827,7 @@ else
   elapsed=0
   last_phase=""
   while [[ $elapsed -lt $DPU_TIMEOUT ]]; do
-    phase=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+    phase=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
       -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     if [[ "$phase" != "$last_phase" ]]; then
       info "  DPU phase: ${phase:-unknown}"
@@ -1292,14 +1836,14 @@ else
     [[ "$phase" == "Ready" ]] && break
     if [[ "$phase" == "Error" ]]; then
       # Check both OSInstalled and BFBTransferred — condition type varies by DPF version
-      os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+      os_reason=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].reason}' 2>/dev/null || echo "")
-      os_msg=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+      os_msg=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="OSInstalled")].message}' 2>/dev/null || echo "")
       if [[ -z "$os_reason" ]]; then
-        os_reason=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+        os_reason=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
           -o jsonpath='{.status.conditions[?(@.type=="BFBTransferred")].reason}' 2>/dev/null || echo "")
-        os_msg=$(kube get dpu ${SERVER_NAME}-dpu -n "${DPF_NAMESPACE}" \
+        os_msg=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
           -o jsonpath='{.status.conditions[?(@.type=="BFBTransferred")].message}' 2>/dev/null || echo "")
       fi
       if [[ "$os_reason" == "FailToInstall" && "$os_msg" == *"404"* ]]; then
@@ -1343,6 +1887,33 @@ else
   ok "DPU '${SERVER_NAME}-dpu' phase: Ready"
 fi
 
+# ─── Step 11b: Post-provision firmware verification (nvconfig read-back) ─────
+# NEVER trust the flash alone: the Redfish-404 / rshim OS-only path SKIPS the
+# flavor's nvconfig entirely, and LAG_RESOURCE_ALLOCATION only truly applies at
+# a TRUE cold power cycle. This is how a "successfully provisioned" DPU once
+# shipped with a dead p1 datapath. Read the firmware back and compare.
+if [[ "${DRY_RUN}" == "true" ]]; then
+  info "[dry-run] skipping step 11b firmware read-back"
+elif bf3_reachable; then
+  info "Step 11b — Verifying firmware nvconfig on the BF3 (flavor read-back)"
+  _lag0=$(bf3_lag_current 0000:03:00.0)
+  _lag1=$(bf3_lag_current 0000:03:00.1)
+  if [[ "${_lag0}" == *"(1)"* && "${_lag1}" == *"(1)"* ]]; then
+    ok "LAG_RESOURCE_ALLOCATION current=PRE_ALLOCATION(1) on both PFs"
+  else
+    POSTCHECK_FW_BAD=true
+    warn "LAG_RESOURCE_ALLOCATION NOT applied (current: PF0='${_lag0:-?}' PF1='${_lag1:-?}')"
+    warn "  Either the flash path skipped nvconfig (Redfish-404/rshim) or the box never"
+    warn "  got a TRUE cold power cycle. p1 uplink unicast WILL blackhole until fixed:"
+    warn "    (BF3)      sudo mlxconfig -d 0000:03:00.0 set LAG_RESOURCE_ALLOCATION=1"
+    warn "               sudo mlxconfig -d 0000:03:00.1 set LAG_RESOURCE_ALLOCATION=1"
+    warn "    (x86 HOST) sudo ipmitool chassis power cycle     # ARM reboot is NOT enough"
+  fi
+else
+  warn "Step 11b skipped — BF3 SSH not available (OOB/arm_password); verify manually:"
+  warn "  ssh ubuntu@${BF3_OOB_IP} sudo mlxconfig -d 0000:03:00.0 -e q LAG_RESOURCE_ALLOCATION  # Current must be (1)"
+fi
+
 # ─── HBN DaemonSet deployment (--hbn) ────────────────────────────────────────
 # Deploys doca-hbn as a Kubernetes DaemonSet on the BF3 TenantControlPlane.
 # NO NGC API key needed — uses image already on the BF3 from standalone bringup.
@@ -1365,11 +1936,11 @@ if [[ "${DEPLOY_HBN}" == "true" ]]; then
 
   # Refresh DPU cluster kubeconfig
   kube get secret "${SERVER_NAME}-dpu-cluster-admin-kubeconfig" -n "${DPF_NAMESPACE}" \
-    -o jsonpath='{.data.admin\.conf}' | base64 -d > ${HOME}/dpu-tc-kubeconfig 2>/dev/null || true
+    -o jsonpath='{.data.admin\.conf}' | base64 -d > "${HOME}/dpu-tc-kubeconfig" 2>/dev/null || true
   if [[ ! -s ${HOME}/dpu-tc-kubeconfig ]]; then
     fail "DPU cluster kubeconfig not available — is BF3 joined and TenantControlPlane Ready?"
   fi
-  dkube() { kubectl --kubeconfig ${HOME}/dpu-tc-kubeconfig "$@"; }
+  dkube() { kubectl --kubeconfig "${HOME}/dpu-tc-kubeconfig" "$@"; }
 
   info "Step HBN-1 — Creating hostPath directories on BF3"
   # These are created by bringup_hbn_bf3.sh Step 3 / DPUFlavor cloud-init.
@@ -1377,21 +1948,25 @@ if [[ "${DEPLOY_HBN}" == "true" ]]; then
   BF3_OOB_PASS_HBN="${ARM_PASSWORD}"
   [[ -z "${BF3_OOB_PASS_HBN}" ]] && \
     warn "arm_password not set in config.local.yaml — hostPath dir creation may fail"
-  for dir in \
-    /var/lib/hbn/etc/nvue.d \
-    /var/lib/hbn/etc/frr \
-    /var/lib/hbn/etc/network \
-    /var/lib/hbn/etc/cumulus \
-    /var/lib/hbn/etc/hbn-users \
-    /var/lib/hbn/etc/supervisor/conf.d \
-    /var/lib/hbn/var/lib/nvue \
-    /var/lib/hbn/var/support \
-    /var/log/doca/hbn; do
-    sshpass -p "${BF3_OOB_PASS_HBN}" \
-      ssh -o StrictHostKeyChecking=no "ubuntu@${BF3_OOB_IP}" \
-      "sudo mkdir -p ${dir}" 2>/dev/null || true
-  done
-  ok "hostPath directories ready on BF3"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    info "[dry-run] would ensure /var/lib/hbn hostPath directories on BF3 (${BF3_OOB_IP})"
+  else
+    for dir in \
+      /var/lib/hbn/etc/nvue.d \
+      /var/lib/hbn/etc/frr \
+      /var/lib/hbn/etc/network \
+      /var/lib/hbn/etc/cumulus \
+      /var/lib/hbn/etc/hbn-users \
+      /var/lib/hbn/etc/supervisor/conf.d \
+      /var/lib/hbn/var/lib/nvue \
+      /var/lib/hbn/var/support \
+      /var/log/doca/hbn; do
+      sshpass -p "${BF3_OOB_PASS_HBN}" \
+        ssh -o StrictHostKeyChecking=no "ubuntu@${BF3_OOB_IP}" \
+        "sudo mkdir -p ${dir}" 2>/dev/null || true
+    done
+    ok "hostPath directories ready on BF3"
+  fi
 
   info "Step HBN-2 — Deploying doca-hbn DaemonSet to TenantControlPlane"
   if dkube get daemonset doca-hbn -n doca-hbn &>/dev/null; then
@@ -1436,6 +2011,178 @@ if [[ "${DEPLOY_HBN}" == "true" ]]; then
     else
       warn "doca-hbn pod not Running — skipping interface bring-up"
     fi
+
+    # ── Step HBN-3: BF3-side datapath/REST hardening + passive validation ────
+    # Config-plane "pod Running, interfaces UP" is NOT proof the datapath works —
+    # that is exactly how the cross-PF multiport defect shipped. This step runs
+    # an idempotent script ON the BF3 that:
+    #   1. enables eswitch multiport (mlnx-bf.conf + devlink runtime param)
+    #   2. re-derives the br-hbn priority-500 port-pair flows if missing
+    #   3. installs a boot-time guard (reboots silently lose the pair flows)
+    #   4. writes the NVUE startup.yaml baseline (REST stays on 0.0.0.0 even
+    #      after an orchestrator cleanup / 'nv config apply 1 -y')
+    #   5. passively validates wire→container delivery per uplink (35s)
+    info "Step HBN-3 — BF3 datapath/REST hardening + passive validation"
+    if bf3_reachable; then
+      _postsh=$(mktemp)
+      cat > "${_postsh}" <<'EOF_POST'
+#!/bin/bash
+# hbn_postcheck.sh — idempotent BF3-side hardening + validation (run as root)
+set -u
+RC=0
+
+# 1. eswitch multiport: persist for every boot + enable at runtime
+MBF=/etc/mellanox/mlnx-bf.conf
+if ! grep -q '^ENABLE_ESWITCH_MULTIPORT="yes"' "$MBF" 2>/dev/null; then
+  if grep -q '^ENABLE_ESWITCH_MULTIPORT=' "$MBF" 2>/dev/null; then
+    sed -i 's/^ENABLE_ESWITCH_MULTIPORT=.*/ENABLE_ESWITCH_MULTIPORT="yes"/' "$MBF"
+  else
+    printf '\nENABLE_ESWITCH_MULTIPORT="yes"\n' >> "$MBF"
+  fi
+  echo "FIXED: mlnx-bf.conf ENABLE_ESWITCH_MULTIPORT=\"yes\" (boot-time enable)"
+else
+  echo "OK: mlnx-bf.conf ENABLE_ESWITCH_MULTIPORT already yes"
+fi
+MP=$(devlink dev param show pci/0000:03:00.0 name esw_multiport 2>/dev/null | awk '/cmode/{print $NF}')
+if [ "$MP" = "true" ]; then
+  echo "OK: esw_multiport=true"
+elif devlink dev param set pci/0000:03:00.0 name esw_multiport value true cmode runtime 2>/dev/null; then
+  echo "FIXED: esw_multiport=true (runtime)"
+else
+  echo "ERROR: cannot enable esw_multiport — firmware LAG_RESOURCE_ALLOCATION=1 not committed (needs TRUE cold power cycle from the x86 host)"
+  RC=1
+fi
+
+# 2. br-hbn port-pair flows (br-hbn drops unchained traffic without them)
+N=$(ovs-ofctl dump-flows br-hbn 2>/dev/null | grep -c priority=500)
+if [ "${N:-0}" -eq 0 ]; then
+  echo "WARN: 0 priority-500 pair flows — restarting sfc.service to re-derive"
+  systemctl restart sfc.service
+  sleep 20
+  systemctl is-active --quiet kubelet || systemctl start kubelet
+  N=$(ovs-ofctl dump-flows br-hbn 2>/dev/null | grep -c priority=500)
+fi
+if [ "${N:-0}" -gt 0 ]; then
+  echo "OK: ${N} priority-500 pair flows on br-hbn"
+else
+  echo "ERROR: still 0 pair flows after sfc restart — check: journalctl -u sfc -n 50"
+  RC=1
+fi
+
+# 3. boot-time pair-flow guard (a reboot silently loses the flows otherwise)
+if [ ! -f /etc/systemd/system/hbn-pairflow-guard.service ]; then
+  cat > /usr/local/sbin/hbn-pairflow-guard.sh <<'EOS'
+#!/bin/bash
+# Wait for sfc/OVS to settle after boot; re-derive br-hbn pair flows if missing.
+for i in $(seq 1 30); do
+  n=$(ovs-ofctl dump-flows br-hbn 2>/dev/null | grep -c priority=500)
+  [ "${n:-0}" -gt 0 ] && exit 0
+  sleep 10
+done
+systemctl restart sfc.service
+sleep 15
+systemctl is-active --quiet kubelet || systemctl start kubelet
+EOS
+  chmod +x /usr/local/sbin/hbn-pairflow-guard.sh
+  cat > /etc/systemd/system/hbn-pairflow-guard.service <<'EOS'
+[Unit]
+Description=Re-derive br-hbn port-pair flows if missing after boot
+After=sfc.service openvswitch-switch.service
+Wants=sfc.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hbn-pairflow-guard.sh
+TimeoutStartSec=420
+
+[Install]
+WantedBy=multi-user.target
+EOS
+  systemctl daemon-reload
+  systemctl enable hbn-pairflow-guard.service >/dev/null 2>&1
+  echo "OK: installed hbn-pairflow-guard.service (boot-time pair-flow check)"
+else
+  echo "OK: hbn-pairflow-guard.service already installed"
+fi
+
+# 4. NVUE REST baseline — without it, an orchestrator cleanup (nv config apply 1)
+#    reverts the REST API to localhost-only and Day-0 orchestration locks itself out.
+NV=/var/lib/hbn/etc/nvue.d/startup.yaml
+if [ ! -s "$NV" ]; then
+  mkdir -p /var/lib/hbn/etc/nvue.d
+  cat > "$NV" <<'EOS'
+- header:
+    model: bluefield
+    nvue-api-version: nvue_v1
+    rev-id: 1.0
+    version: HBN 3.3.0
+- set:
+    system:
+      api:
+        listening-address:
+          0.0.0.0: {}
+EOS
+  echo "FIXED: NVUE startup.yaml baseline (REST stays on 0.0.0.0 after cleanup)"
+else
+  echo "OK: NVUE startup.yaml present"
+fi
+
+# 5. Passive datapath validation: if the WIRE receives bcast/ucast but the
+#    container-side uplink counter never moves, eswitch delivery is dead.
+#    LLDP-class multicast is consumed by the bridge BY DESIGN — excluded.
+CONT=$(crictl ps 2>/dev/null | awk '/doca-hbn/ && !/init/ {print $1; exit}')
+if [ -z "$CONT" ]; then
+  echo "WARN: no doca-hbn container via crictl — datapath validation skipped"
+else
+  bu() { ethtool -S "$1" 2>/dev/null | awk '/rx_packets_phy:/{t=$2} /rx_multicast_phy:/{m=$2} END{print (t-m)+0, t+0}'; }
+  cif() { crictl exec "$CONT" cat "/sys/class/net/${1}_if/statistics/rx_packets" 2>/dev/null || echo 0; }
+  SNAP=""
+  for P in p0 p1; do
+    [ -e "/sys/class/net/$P/carrier" ] || { echo "WARN: uplink $P netdev missing — skipped"; continue; }
+    [ "$(cat /sys/class/net/$P/carrier 2>/dev/null || echo 0)" = "1" ] || { echo "WARN: uplink $P no carrier — skipped"; continue; }
+    set -- $(bu "$P")
+    SNAP="$SNAP $P:${1:-0}:${2:-0}:$(cif "$P")"
+  done
+  if [ -n "$SNAP" ]; then
+    echo "INFO: sampling$(echo "$SNAP" | sed 's/:[0-9:]*//g') for 35s (covers one ToR LLDP interval)..."
+    sleep 35
+    for S in $SNAP; do
+      P=${S%%:*}; R=${S#*:}
+      B0=${R%%:*}; R=${R#*:}; T0=${R%%:*}; C0=${R##*:}
+      set -- $(bu "$P")
+      BUD=$(( ${1:-0} - B0 )); TOTD=$(( ${2:-0} - T0 )); CIFD=$(( $(cif "$P") - C0 ))
+      if [ "${CIFD}" -gt 0 ]; then
+        echo "OK: uplink $P wire->container delivery OK (${P}_if +${CIFD} pkts)"
+      elif [ "${BUD}" -ge 3 ]; then
+        echo "ERROR: uplink $P wire got +${BUD} bcast/ucast pkts but ${P}_if got NONE — eswitch dropping delivery (multiport/cold-cycle or sfc flows)"
+        RC=1
+      elif [ "${TOTD}" -gt 0 ]; then
+        echo "INCONCLUSIVE: uplink $P saw only multicast (LLDP-class) in the window — Day-0 BGP will prove the path"
+      else
+        echo "INCONCLUSIVE: uplink $P wire silent for 35s"
+      fi
+    done
+  fi
+fi
+exit $RC
+EOF_POST
+      if sshpass -p "${ARM_PASSWORD}" scp -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+           "${_postsh}" "ubuntu@${BF3_OOB_IP}:/tmp/hbn_postcheck.sh" 2>/dev/null \
+         && bf3_ssh "sudo bash /tmp/hbn_postcheck.sh"; then
+        ok "BF3 datapath/REST hardening + validation passed"
+      else
+        warn "BF3 post-check reported issues (ERROR lines above) — the DPU is provisioned"
+        warn "but the DATA PLANE needs attention before handing to the orchestrator."
+      fi
+      rm -f "${_postsh}"
+    else
+      warn "arm_password not set / BF3 unreachable — skipping datapath/REST hardening"
+      warn "  (multiport, pair-flow guard, REST baseline, datapath validation NOT done)"
+    fi
+  else
+    info "[dry-run] would wait for the doca-hbn pod, bring up its interfaces, then run"
+    info "[dry-run] Step HBN-3 on the BF3: multiport enable, pair-flow re-derive + boot"
+    info "[dry-run] guard, NVUE REST 0.0.0.0 baseline, 35s passive datapath validation"
   fi
 fi
 
@@ -1445,6 +2192,15 @@ echo "  DPF Bringup Complete"
 echo "============================================================"
 echo ""
 info "BF3 is now a managed DPU node."
+if [[ "${POSTCHECK_FW_BAD}" == "true" ]]; then
+  echo ""
+  warn "════════════════════════════════════════════════════════════"
+  warn "ACTION REQUIRED: firmware nvconfig was NOT applied (step 11b)."
+  warn "The p1 uplink will blackhole unicast until LAG_RESOURCE_ALLOCATION=1"
+  warn "is staged on BOTH PFs and the x86 host gets a TRUE cold power cycle"
+  warn "(sudo ipmitool chassis power cycle). See the step 11b output above."
+  warn "════════════════════════════════════════════════════════════"
+fi
 echo ""
 echo "  Check status:    ./dpf/scripts/status_dpf.sh"
 echo ""

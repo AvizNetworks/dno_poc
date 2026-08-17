@@ -139,19 +139,34 @@ sudo ./dpf/scripts/setup_host_vfs.sh           # vf0..vf7
 
 ## bringup_dpf.sh — Step by Step
 
+**PREFLIGHT runs first, always** — 8 sections of read-only validation (tools, config
+completeness, mgmt cluster + port-collision rules, offline artifacts, BFB + local
+ports, BMC/OOB/x86 reachability incl. Redfish credential check, subnet topology,
+**datapath firmware readiness**: flavor nvconfig, flavor drift, live
+`LAG_RESOURCE_ALLOCATION`/`esw_multiport`/pair-flow probes). Every failure prints
+its exact fix. `--check` = preflight only (exit 0/1); `--dry-run` = preflight + the
+full plan with zero mutations. A normal run refuses to start on blockers.
+
 ```
-Step 1   Preflight: kubectl, BMC Redfish, cert-manager, Kamaji, ArgoCD
+Step 1   Prerequisite components (cert-manager, Kamaji, ArgoCD, NFD, DPF operator)
 Step 2   Start python3 HTTP server to serve BFB file (port 9090 → PVC)
 Step 3   Clean up stale Kamaji etcd-defrag jobs
 Step 4   Create BFB PVC (30Gi local-path storage for BFB + bfcfg)
 Step 5   Create DPFOperatorConfig (bootstraps bfb-registry, provisioning controller)
 Step 6   Wait for Kamaji + DPF controller + bfb-registry (5 min timeout)
 Step 7   Create BFB CR → wait for BFB download into PVC (10 min timeout)
-Step 8   Create DPUFlavor (hugepages, OVS raw mode for BF3)
+Step 8   Create DPUFlavor (hugepages, nvconfig incl. LAG_RESOURCE_ALLOCATION=1, OVS raw mode)
+         ⚠ a CHANGED flavor = destructive (DPU delete + reflash) — the script FAILS
+         FAST unless you pass --allow-reflash (preflight reports the same verdict)
 Step 9   Create DPUCluster (Kamaji TenantControlPlane)
 Step 10  Create DPUNode + DPUDevice + DPU → triggers Redfish OS flash
 Step 10b [--rshim-install only] flash via x86 rshim, wait for BF3 to join
 Step 11  Wait for DPU phase: Ready (30 min timeout)
+Step 11b Firmware nvconfig READ-BACK on the BF3 (the Redfish-404/rshim path skips
+         flavor nvconfig — never trust the flash alone; mismatch → ACTION REQUIRED)
+HBN-1..3 [--hbn] hostPath dirs → doca-hbn DaemonSet → BF3-side hardening + passive
+         datapath validation (multiport, pair flows + boot guard, REST 0.0.0.0
+         baseline, 35s wire-vs-container RX check per uplink)
 ```
 
 Each step checks current state first — safe to re-run at any point.

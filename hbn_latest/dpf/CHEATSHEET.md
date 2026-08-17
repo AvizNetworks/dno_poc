@@ -102,6 +102,22 @@ sudo ./dpf/scripts/setup_host_vfs.sh                         # (re)create + rena
 ./dpf/scripts/dump_cluster.sh                                # → ~/dpf_summary/cluster-dump.html
 ```
 
+## 9 · Datapath firmware gates (on the BF3 — the p1-uplink killers)
+```bash
+# firmware LAG gate — the *Current* column must be PRE_ALLOCATION(1) on BOTH PFs.
+# plain 'mlxconfig q' shows only Next-Boot — do NOT trust it.
+sudo mlxconfig -d 0000:03:00.0 -e q LAG_RESOURCE_ALLOCATION
+sudo mlxconfig -d 0000:03:00.1 -e q LAG_RESOURCE_ALLOCATION
+# runtime multiport (requires the LAG gate; false = p1 cannot reach the PF0 SFs)
+sudo devlink dev param show pci/0000:03:00.0 name esw_multiport
+# pair flows (24 on a full 12-port box; 0 after reboot = dead datapath)
+sudo ovs-ofctl dump-flows br-hbn | grep -c priority=500
+```
+Fix order: `mlxconfig set LAG_RESOURCE_ALLOCATION=1` (both PFs) → **TRUE cold power
+cycle of the x86 host** (`ipmitool chassis power cycle`; ARM reboot does NOT commit
+it) → `bringup_dpf.sh --hbn` re-run (enables multiport + re-derives flows).
+`bringup_dpf.sh --check --worker <w>` reports all three gates read-only.
+
 ---
 
 ## Gotchas

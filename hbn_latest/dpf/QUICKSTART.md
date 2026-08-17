@@ -31,14 +31,34 @@ scp bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb dpu-vm@<DPF_VM>:/opt/bfb
 scp bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb <x86_user>@<X86_HOST>:~/
 ```
 
-### 2. Run the bringup (installs prereqs + flashes the BF3)
+### 2. Preflight first (read-only), then run the bringup
 ```bash
 cd ~/hbn
+# validate EVERYTHING read-only — tools, config, cluster, ports, BFB, BMC creds,
+# firmware gates. Exit 0 = ready; every failure prints its exact fix.
+./dpf/scripts/bringup_dpf.sh --check --worker worker1
+
+# optional: preview every step against live state without changing anything
+./dpf/scripts/bringup_dpf.sh --dry-run --worker worker1 --rshim-install --hbn
+
+# the real run (re-runs preflight itself and refuses to start on blockers)
 ./dpf/scripts/bringup_dpf.sh --worker worker1 --rshim-install --hbn
 ```
 Everything else (BMC/OOB IPs, serial, x86 host + creds, apiserver port) comes from the
 config files. CLI flags still override if needed. The BF3's **first boot does a firmware
 update (25–40 min)** and may time out the wait — that's expected; continue to step 3.
+
+> **Guardrails you get for free:**
+> - A **changed DPUFlavor fails fast** instead of silently deleting the DPU and
+>   reflashing the BF3 — that destructive path now requires an explicit
+>   `--allow-reflash` (use only in a maintenance window).
+> - After provisioning, **step 11b reads the firmware back** (`LAG_RESOURCE_ALLOCATION`)
+>   — if the flash path skipped nvconfig you get an ACTION-REQUIRED block with the
+>   exact fix (stage via mlxconfig + TRUE cold power cycle of the x86 host).
+> - `--hbn` ends with **BF3-side hardening + a passive datapath validation**:
+>   eswitch multiport enabled, br-hbn pair flows re-derived + a boot-time guard
+>   installed, NVUE REST kept on 0.0.0.0 across config cleanups, then 35s of
+>   wire-vs-container RX counters per uplink to prove delivery actually works.
 
 > **Cross-subnet only** (DPF VM on `10.4.5.x`, BF3 on `10.20.13.x`): once the script prints
 > `DPUCluster ... created`, run in another terminal:

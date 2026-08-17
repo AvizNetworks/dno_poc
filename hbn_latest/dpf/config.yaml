@@ -6,8 +6,9 @@
 # CLI flags (--bmc-ip, --oob-ip, ...) still override anything set here.
 
 operator:                # the VM this script runs on (DPF Operator VM)
-  name: s5
-  ip: 10.4.5.136
+  name: s6               # 10.20.13.227 — SAME SUBNET as the BF3s: no tunnel needed
+  ip: 10.20.13.227       # (previous operator: s5 = 10.4.5.136, cross-subnet — s2/s8
+                         #  are still managed there until migrated)
 
 bfb:
   file: /opt/bfb/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb
@@ -19,40 +20,47 @@ workers:
     bmc_ip: 10.20.13.250     # BF3 BMC (Redfish endpoint)
     oob_ip: 10.20.13.249     # BF3 OOB management IP
     serial: MT2437600HGY     # from: sudo dmidecode -t system | grep Serial (on the BF3)
-    apiserver_port: 6443     # Kamaji TenantControlPlane NodePort on the DPF VM —
-                             # MUST BE UNIQUE per worker (every TCP defaults to 6443;
-                             # two workers on one port = "port is already allocated")
+    apiserver_port: 6446     # Kamaji TenantControlPlane NodePort on the DPF VM.
+                             # MUST BE UNIQUE per worker AND NEVER the management
+                             # apiserver port (6443 on k3s): a NodePort there makes
+                             # kube-proxy blackhole the operator's own apiserver
+                             # whenever the TCP has no endpoints (this is what broke
+                             # S6 in June). Preflight enforces both rules.
     x86_host_ip: 10.20.13.226  # x86 host with rshim access (for --rshim-install)
     rshim: rshim0
     x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"  # BFB path on x86 host
 
   - name: worker2
     server: s2
-    bmc_ip: 10.20.13.212
+    operator: s5             # still managed by the legacy S5 operator (10.4.5.136) —
+                             # fleet_status on S6 skips it; remove this line when migrated
+    bmc_ip: 10.20.13.145     # re-addressed Aug 2026 (was .212) — verified via Redfish serial
     oob_ip: 10.20.13.228
     serial: 53FV46T002X
-    apiserver_port: 6444     # unique — worker1 owns 6443
+    apiserver_port: 6444     # unique per worker, never the mgmt apiserver port
     x86_host_ip: 10.20.13.12
     rshim: rshim0            # NOTE: S2 host has TWO DPUs — rshim0=BF3 (c1:00), rshim1=BF2
     x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 
   - name: worker3
     server: s8               # ASUS ESC4000A-E10; BF3 900-9D3B6 (400GbE/NDR, 32GB)
+    operator: s5             # still managed by the legacy S5 operator — see worker2 note
     bmc_ip: 10.20.13.234     # BF3 BMC (OpenBMC "dpu-bmc"; ARM-MAC+1)
     oob_ip: 10.20.13.156     # BF3 OOB (DHCP; can flip .156↔.242 across reboots)
     serial: MT2416XZ03VT
-    apiserver_port: 6445     # unique — worker1=6443, worker2=6444
-    x86_host_ip: 10.20.13.11 # admin/Aviz@AIF123 (also runs a Kafka/Confluent workload)
+    apiserver_port: 6445     # unique per worker, never the mgmt apiserver port
+    x86_host_ip: 10.20.13.11 # user: admin (password in config.local.yaml; also runs a Kafka/Confluent workload)
     rshim: rshim0
     x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 
   - name: worker4
     server: s7               # ASUS ESC4000A-E10 (SN LAS0MD000185); BF3 900-9D3B6, BF3 at PCI c3:00
+    operator: none           # NOT provisioned via DPF yet (BF3 ran standalone HBN)
     bmc_ip: 10.20.13.235     # BF3 BMC (OpenBMC "dpu-bmc"; base MAC e0:9d:73:e6:23:b8, BMC=+0x25)
     oob_ip: 10.20.13.157     # BF3 OOB (ARM MAC ...dc = base +0x24)
     serial: MT2503XZ0D8X
-    apiserver_port: 6446     # unique — worker1=6443, worker2=6444, worker3=6445
-    x86_host_ip: 10.20.13.10 # admin/Aviz@AIF123
+    apiserver_port: 6447     # was 6446 — moved when worker1 (s4) took 6446 on S6
+    x86_host_ip: 10.20.13.10 # user: admin (password in config.local.yaml)
     rshim: rshim0
     x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"
 

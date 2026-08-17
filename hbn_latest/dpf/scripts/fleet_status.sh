@@ -20,7 +20,7 @@ if [[ -n "${KUBECONFIG:-}" ]]; then :;
 elif [[ -r /etc/rancher/k3s/k3s.yaml ]]; then export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 else export KUBECONFIG="${HOME}/.kube/config"; fi
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✓${NC} $*"; }
 bad()  { echo -e "${RED}✗${NC} $*"; }
 hdr()  { echo -e "\n${BOLD}${CYAN}══ $* ══${NC}"; }
@@ -40,21 +40,34 @@ done
 [[ -f "${CONFIG_FILE}" ]] || { echo "config.yaml not found at ${CONFIG_FILE}"; exit 1; }
 python3 -c 'import yaml' 2>/dev/null || { echo "python3-yaml required (apt install python3-yaml)"; exit 1; }
 
-# name<TAB>server<TAB>oob_ip<TAB>port per worker
-WORKERS=$(python3 - "${CONFIG_FILE}" <<'PY'
+# name<TAB>server<TAB>oob_ip<TAB>port<TAB>operator per worker (+ local operator on line 1)
+WORKERS_RAW=$(python3 - "${CONFIG_FILE}" <<'PY'
 import sys, yaml
 c = yaml.safe_load(open(sys.argv[1])) or {}
+me = (c.get("operator") or {}).get("name", "")
+print(me)
 for w in c.get("workers") or []:
-    print(f'{w.get("name","?")}\t{w.get("server","?")}\t{w.get("oob_ip","?")}\t{w.get("apiserver_port",6443)}')
+    print(f'{w.get("name","?")}\t{w.get("server","?")}\t{w.get("oob_ip","?")}\t{w.get("apiserver_port",6443)}\t{w.get("operator") or me}')
 PY
 )
+LOCAL_OPERATOR=$(head -1 <<< "${WORKERS_RAW}")
+WORKERS=$(tail -n +2 <<< "${WORKERS_RAW}")
 [[ -n "${WORKERS}" ]] || { echo "no workers in config.yaml"; exit 1; }
 
 hdr "Operator view (${DPF_NAMESPACE})"
 kubectl get dpu -n "${DPF_NAMESPACE}" 2>/dev/null || bad "cannot reach operator cluster"
 
-while IFS=$'\t' read -r NAME SERVER OOB PORT; do
+while IFS=$'\t' read -r NAME SERVER OOB PORT WOP; do
   [[ -n "${ONLY_WORKER}" && "${ONLY_WORKER}" != "${NAME}" && "${ONLY_WORKER}" != "${SERVER}" ]] && continue
+
+  # Workers owned by another operator (config.yaml `operator:` field) are not queryable
+  # from this VM — show a one-line note instead of false ✗ failures.
+  if [[ -n "${WOP}" && "${WOP}" != "${LOCAL_OPERATOR}" ]]; then
+    hdr "${NAME} (${SERVER}) — managed by '${WOP}', not this operator (${LOCAL_OPERATOR:-unknown})"
+    [[ "${WOP}" == "none" ]] && echo "  not provisioned via DPF yet" \
+      || echo "  run fleet_status.sh on the '${WOP}' operator VM to see it"
+    continue
+  fi
 
   hdr "${NAME} (${SERVER}) — OOB ${OOB} · apiserver :${PORT}"
 

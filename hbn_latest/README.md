@@ -36,14 +36,18 @@ x86 Host   ←──── pf0hpf_if / pf1hpf_if  (configure routing here)
 
 | Server | BF3 ARM (OOB) | x86 Host | Notes |
 |---|---|---|---|
-| S1 | `10.20.13.247` | `10.20.13.13` | **standalone** (this page) — ⚠ 8 VF ports unwired (see dpf/README Known Issue #15) |
-| S2 | `10.20.13.228` | `10.20.13.12` | **DPF-managed since 2026-07-06** (worker2, :6444) — old standalone config backed up in `dpf/docs/` |
+| S1 | `10.20.13.128` | `10.20.13.13` | **standalone** (this page) — reference box; hardened bringup validated here |
+| S2 | `10.20.13.228` | `10.20.13.12` | **DPF-managed** (worker2, :6444, BMC `.145`) via S5 operator VM |
 | S3 | `10.4.5.165` | — | different credentials |
-| S4 | `10.20.13.249` | `10.20.13.226` | **DPF-managed** (worker1, :6443) — host is a VM, no host VFs possible |
+| S4 | `10.20.13.158` | `10.20.13.226` | **DPF-managed** (worker1) via S6 operator VM — host is a VM, no host VFs possible |
+| S7 | `10.20.13.157` | `10.20.13.10` | **standalone** with `--vfs 8` (HGX fabric h00, BGP to leaf) |
+| S8 | `10.20.13.156` | `10.20.13.11` | **DPF-managed** (worker3, :6445, HGX fabric h01) via S5 |
+
+(IPs re-addressed Aug 2026 — several moved; BMC of S2 is now `.145`.)
 
 **ToR Switch:** `10.20.13.214` — shared across S1 and S2.
 
-VSCode tasks (`.vscode/tasks.json`) auto-open SSH terminals to all 4 servers on folder open.
+VSCode tasks (`.vscode/tasks.json`) auto-open SSH terminals to the servers on folder open.
 
 ---
 
@@ -59,7 +63,27 @@ cd ~/hbn
 
 The repo must be present in full — `scripts/bringup_hbn_bf3.sh` deploys configs from `mellanox/` and `doca_hbn_v3.3.0/` at the repo root.
 
-### Step 2 — Run bringup on BF3
+### Step 2 — Preflight (read-only; run until it says READY)
+
+```bash
+sudo ./scripts/bringup_hbn_bf3.sh --check
+```
+
+Validates **every** prerequisite without changing anything — platform, repo files,
+link type (IB vs ETH), switchdev mode, **eswitch multiport firmware
+(`LAG_RESOURCE_ALLOCATION` — see note below)**, sfc payload, udev namers, runtime
+units, container image (offline-first), hugepages, VF eswitch reps (with `--vfs`) —
+and prints the exact fix for each failure. Exit 0 = ready. Optionally preview the
+full 15-step plan with `--dry-run`. A normal run refuses to start while blockers exist.
+
+> **Multiport note (important for p1):** all HBN SubFunctions live on PF0, so
+> traffic on the **p1** uplink requires eswitch multiport, gated on firmware
+> `LAG_RESOURCE_ALLOCATION=1`. That nvconfig only truly applies on a **cold power
+> cycle of the x86 host** (`sudo ipmitool chassis power cycle`) — an ARM reboot is
+> NOT enough, and a live-set value showing `1` can be cosmetic. The preflight
+> checks the real *Current* value and tells you exactly what to do.
+
+### Step 3 — Run bringup on BF3
 
 ```bash
 sudo ./scripts/bringup_hbn_bf3.sh
@@ -70,19 +94,22 @@ With BGP enabled and a custom REST API password:
 sudo ./scripts/bringup_hbn_bf3.sh --enable-bgp --rest-pass MyPass123
 ```
 
-### Step 3 — Check status
+Fully offline — no internet access is needed (use `--skip-dns-fix` to leave
+resolv.conf untouched on air-gapped sites). Idempotent — safe to re-run anytime.
+
+### Step 4 — Check status
 
 ```bash
 sudo ./scripts/status_hbn.sh
 ```
 
-### Step 4 — View interface reference
+### Step 5 — View interface reference
 
 ```bash
 sudo ./scripts/topology_hbn.sh
 ```
 
-### Step 5 — Start configuring FRR
+### Step 6 — Start configuring FRR
 
 ```bash
 CONT=$(sudo crictl ps | grep doca-hbn | grep -v init | awk '{print $1}')
@@ -109,25 +136,32 @@ hbn/
 
 **Run on BF3 with sudo. Idempotent — safe to re-run.**
 
-Automates all bringup steps:
-1. Verify eswitch switchdev mode
-2. Fix DNS (adds 8.8.8.8 if needed for image pull)
+**Preflight-first**: every prerequisite is validated read-only (with an exact fix
+printed per failure) before anything is changed; a run refuses to start on blockers.
+Then 15 idempotent steps (0–14):
+
+0. Host prep, fully offline (register sfc.service, patch udev SF namers, CNI conflist — `install.sh` is deliberately NOT run)
+1. Verify eswitch switchdev mode + **enable eswitch multiport** (mlnx-bf.conf + devlink runtime — required for the p1 uplink)
+2. Fix DNS (optional, `--skip-dns-fix` for air-gapped sites)
 3. Create required hostPath directories
 4. Generate `hbn.conf`, `sfc.conf`, `mlnx-sf.conf` dynamically (VF-aware)
 5. Allocate hugepages (1600×2MB) and create persistent service
-6. Provision SubFunctions (sfnum 2, 3, 1514, 1515 + VF sfnums if `--vfs` set)
-7. OVS health check — clean stale VF entries, rename VF representors
+6. Provision SubFunctions (sfnum 2, 3, 1514, 1515 + VF sfnums 1001+/1257+ if `--vfs` set)
+7. OVS health check — stale-ofport recovery (clean br-hbn rebuild, never per-port edits)
 8. Validate OVS ports on `br-hbn`
-9. Pull `doca_hbn` container image
-10. Wait for `doca-hbn` pod to be Running
-11. Move VF SF function netdevs into container, bring up all interfaces
+9. Verify `doca_hbn` container image (offline-first; import instructions if missing)
+10. Wait for `doca-hbn` pod Running (init-sfs deadlock auto-recovery)
+11. Bring up all interfaces inside the container
 12. Enable BGP in FRR (optional)
-13. Configure REST API password and external access
+13. Configure REST API — password persisted across container restarts, listen on 0.0.0.0
+14. **Passive datapath validation** — wire-RX vs container-RX counters per uplink (catches the eswitch-multiport unicast blackhole that config-plane checks cannot see)
 
 **Options:**
 
 | Flag | Default | Description |
 |---|---|---|
+| `--check` | — | Preflight only, read-only; exit 0 = ready. Nothing is changed |
+| `--dry-run` | — | Preflight + print the full step plan; nothing is changed |
 | `--enable-bgp` | off | Enable bgpd in FRR daemons |
 | `--rest-user <user>` | `nvidia` | REST API username |
 | `--rest-pass <pass>` | `nvidia` | REST API password |
@@ -288,6 +322,8 @@ curl -k -u nvidia:nvidia https://<BF3-OOB-IP>:8765/nvue_v1/interface
 | REST API returns 401 | Default credentials not set up | Run `hbn-dpu-setup.sh -u nvidia -p nvidia -e` from its source dir |
 | bgpd not running | Disabled by default | `--enable-bgp` flag or edit `/var/lib/hbn/etc/frr/daemons` |
 | Interfaces DOWN after pod start | Netns move leaves them DOWN | `ip link set p0_if up` inside container |
+| BGP on **p1** stuck `Active`/`Connect`, ping fails, links all UP | Eswitch multiport off — firmware `LAG_RESOURCE_ALLOCATION` ≠ 1 (p1 can't reach the PF0-hosted SFs) | `--check` gates this; stage `mlxconfig -d 0000:03:00.0 set LAG_RESOURCE_ALLOCATION=1` (both PFs), then **cold power cycle the x86 host** (`ipmitool chassis power cycle`). ARM reboot is NOT enough |
+| REST API works, then breaks after container restart / power cycle (401) | REST user was created live but never persisted | Re-run bringup — step 13 persists it via `hbn-users` (survives restarts) |
 
 ---
 

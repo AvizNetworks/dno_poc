@@ -1,9 +1,21 @@
 # HBN BF3 — Script Quick Reference
 
-**Setup:** ToR `10.20.13.214` · BF3 `10.20.13.228` · Host `10.20.13.12`
-
 Scripts that run on BF3 require `sudo`.
-Scripts that SSH across devices (`validate_routing.sh`, `test_static_routing_rest.sh`) run from any machine and need `sshpass` (`sudo apt install sshpass`).
+Scripts that SSH across devices run from any machine and need `sshpass` (`sudo apt install sshpass`).
+
+---
+
+## bringup_hbn_bf3.sh
+
+The main bringup — **preflight first**: `--check` validates every prerequisite
+read-only (exit 0 = ready, exact fix printed per failure), `--dry-run` previews
+the 15-step plan, and a normal run refuses to start while blockers exist.
+Fully offline and idempotent. See the root `README.md` for the full flow.
+
+```bash
+sudo ./bringup_hbn_bf3.sh --check     # validate everything, change nothing
+sudo ./bringup_hbn_bf3.sh             # core bringup (add --vfs 8 for SR-IOV VFs)
+```
 
 ---
 

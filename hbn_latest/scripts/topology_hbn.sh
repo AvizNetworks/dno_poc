@@ -10,7 +10,7 @@ OUT_FILE="$LOG_DIR/topology-${TIMESTAMP}.txt"
 
 HOST_IP=""
 HOST_USER="admin"
-HOST_PASS="Aviz@AIF123"
+HOST_PASS=""      # required with --host-ip (pass via --host-pass; never hardcode)
 HOST_PCI_BUS=""   # manual override: PCIe bus on host (e.g. "41" or "c2")
 
 [[ $EUID -ne 0 ]] && { echo "Run as root: sudo $0"; exit 1; }
@@ -29,14 +29,14 @@ Usage: sudo $0 [OPTIONS]
 Options:
   --host-ip      <IP>   SSH to host and auto-discover BF3 NIC interface names
   --host-user    <user> Host SSH username (default: admin)
-  --host-pass    <pass> Host SSH password (default: Aviz@AIF123)
+  --host-pass    <pass> Host SSH password (required with --host-ip)
   --host-pci-bus <bus>  Manual PCIe bus override on host (e.g. 41 or c2)
                         Use when auto-discovery fails (multiple BF3s, no rshim)
 
 Examples:
   sudo $0
   sudo $0 --host-ip 10.20.13.13
-  sudo $0 --host-ip 10.20.13.13 --host-user admin --host-pass Aviz@AIF123
+  sudo $0 --host-ip 10.20.13.13 --host-user admin --host-pass <password>
   sudo $0 --host-ip 10.20.13.13 --host-pci-bus 41
 EOF
       exit 0 ;;
@@ -203,6 +203,10 @@ HOST_PF0_NIC="run with --host-ip to discover"
 HOST_PF1_NIC="run with --host-ip to discover"
 HOST_STATUS=""
 
+if [[ -n "$HOST_IP" && -z "$HOST_PASS" ]]; then
+  echo "NOTE: --host-ip given without --host-pass — skipping host NIC discovery" >&2
+  HOST_IP=""
+fi
 if [[ -n "$HOST_IP" ]]; then
   echo "Discovering host NIC interfaces via SSH to ${HOST_IP}..." >&2
   IFS='|' read -r HOST_PF0_NIC HOST_PF1_NIC <<< "$(discover_host_nics "$HOST_IP" "$HOST_USER" "$HOST_PASS" "$OOB_MAC" "$HOST_PCI_BUS")"
