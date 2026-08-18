@@ -26,7 +26,7 @@ workers:
                              # kube-proxy blackhole the operator's own apiserver
                              # whenever the TCP has no endpoints (this is what broke
                              # S6 in June). Preflight enforces both rules.
-    x86_host_ip: 10.20.13.226  # x86 host with rshim access (for --rshim-install)
+    x86_host_ip: 10.20.13.136  # x86 VM with rshim access (re-addressed Aug 2026, was .226; VMware VM — cannot cold-cycle the BF3)
     rshim: rshim0
     x86_bfb: "~/bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb"  # BFB path on x86 host
 
