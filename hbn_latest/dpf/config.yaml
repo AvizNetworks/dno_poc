@@ -17,8 +17,8 @@ bfb:
 workers:
   - name: worker1
     server: s4               # k8s resource prefix → s4-dpu, s4-node, s4-bf3, s4-dpu-cluster
-    bmc_ip: 10.20.13.250     # BF3 BMC (Redfish endpoint)
-    oob_ip: 10.20.13.249     # BF3 OOB management IP
+    bmc_ip: 10.20.13.137     # BF3 BMC (Redfish; re-addressed Aug 2026, was .250 — serial-verified)
+    oob_ip: 10.20.13.158     # BF3 OOB (re-addressed Aug 2026, was .249)
     serial: MT2437600HGY     # from: sudo dmidecode -t system | grep Serial (on the BF3)
     apiserver_port: 6446     # Kamaji TenantControlPlane NodePort on the DPF VM.
                              # MUST BE UNIQUE per worker AND NEVER the management
