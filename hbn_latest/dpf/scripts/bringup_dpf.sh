@@ -516,9 +516,13 @@ render_flavor() {  # $1 = output file
 }
 
 # SSH to the BF3 ARM (ubuntu@OOB). Needs arm_password from config.local.yaml.
+# Hard-bounded by BF3_SSH_TIMEOUT (default 45s — covers the BF3 "slow sudo"
+# hostname-resolution stall, ~25s per sudo when /etc/hosts lacks the DPU
+# hostname) so a wedged box degrades to empty probe output instead of hanging.
 bf3_ssh() {
-  sshpass -p "${ARM_PASSWORD}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=6 \
-    -o LogLevel=ERROR "ubuntu@${BF3_OOB_IP}" "$@" 2>/dev/null
+  timeout "${BF3_SSH_TIMEOUT:-45}" \
+    sshpass -p "${ARM_PASSWORD}" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=6 \
+      -o LogLevel=ERROR "ubuntu@${BF3_OOB_IP}" "$@" 2>/dev/null
 }
 bf3_reachable() {  # BF3 SSH possible right now?
   [[ -n "${ARM_PASSWORD}" && -n "${BF3_OOB_IP}" ]] && command -v sshpass &>/dev/null \
@@ -880,6 +884,8 @@ preflight() {
 
   # Live firmware state on the BF3 (read-only SSH; skipped gracefully pre-flash).
   if bf3_reachable; then
+    echo "  ...... probing BF3 firmware state over SSH (4 probes; up to ~2 min if the"
+    echo "         DPU has the slow-sudo issue — fix: echo '127.0.0.1 <dpu-hostname>' >> /etc/hosts on the BF3)"
     local lag0 lag1 mp pfl dpu_phase
     dpu_phase=$(kube get dpu "${SERVER_NAME}-dpu" -n "${DPF_NAMESPACE}" \
       -o jsonpath='{.status.phase}' 2>/dev/null || true)
@@ -2168,7 +2174,7 @@ exit $RC
 EOF_POST
       if sshpass -p "${ARM_PASSWORD}" scp -o StrictHostKeyChecking=no -o LogLevel=ERROR \
            "${_postsh}" "ubuntu@${BF3_OOB_IP}:/tmp/hbn_postcheck.sh" 2>/dev/null \
-         && bf3_ssh "sudo bash /tmp/hbn_postcheck.sh"; then
+         && BF3_SSH_TIMEOUT=420 bf3_ssh "sudo bash /tmp/hbn_postcheck.sh"; then
         ok "BF3 datapath/REST hardening + validation passed"
       else
         warn "BF3 post-check reported issues (ERROR lines above) — the DPU is provisioned"
