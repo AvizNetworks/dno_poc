@@ -53,6 +53,43 @@ VSCode tasks (`.vscode/tasks.json`) auto-open SSH terminals to the servers on fo
 
 ## Quick Start
 
+### Step 0 — Flash the BF3 with the validated BFB (skip if already running it)
+
+Check what the BF3 is running: `ssh ubuntu@<BF3-OOB-IP> cat /etc/mlnx-release`.
+If it already shows `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod`, skip to Step 1.
+
+> **The BFB is NOT included in this package** — it is NVIDIA software, downloaded
+> under your own DOCA license (NVIDIA DOCA downloads → BlueField BFB bundles).
+> This release is validated against exactly this build — verify the checksum:
+> ```
+> file:   bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb   (~1.5 GB)
+> sha256: f74e8a5cf8a1628094b5e77a6d9a7eae47fe15b11e5a9e64e125c7369906d8af
+> ```
+
+Flash from the **x86 host** the BF3 is installed in, over the PCIe rshim interface:
+
+```bash
+# on the x86 host
+sudo apt install rshim                 # if not already installed
+ls /dev/rshim0/boot                    # rshim device must be present
+sha256sum bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb   # must match above
+
+sudo bfb-install --bfb bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb --rshim rshim0
+# (equivalent low-level form: sudo bash -c 'cat <file>.bfb > /dev/rshim0/boot')
+```
+
+The flash takes ~10–15 minutes and the BF3 reboots itself when done. Notes:
+
+- **Push stalls / "Connection timed out"** → the BF3's own BMC may be running a
+  competing rshim — on the BMC: `systemctl stop rshim`. Also bump the timeout:
+  `echo "BOOT_TIMEOUT 1200" | sudo tee /dev/rshim0/misc`.
+- **First login** — connect to the BF3 console (`sudo minicom -D /dev/rshim0/console`
+  or via the BMC) and set the `ubuntu` user password when prompted.
+- **After the flash, reboot the x86 host** if its BF3 PF netdevs don't reappear —
+  reflashing under a running host can stale the host's PCIe link to the DPU.
+- SSH says `REMOTE HOST IDENTIFICATION HAS CHANGED` afterwards → expected (new
+  host key): `ssh-keygen -R <BF3-OOB-IP>`.
+
 ### Step 1 — Clone the repo to the BF3
 
 ```bash
