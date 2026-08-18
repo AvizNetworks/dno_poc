@@ -4,6 +4,7 @@ Automated scripts to bring up NVIDIA HBN (Host-Based Networking) on a BlueField-
 
 **Validated on:** `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`
 
+<!-- lab-internal:start -->
 > **Two independent toolsets in this repo:**
 > - **`dpf/`** — **DPF (DOCA Platform Framework): the current, recommended path.**
 >   Kubernetes-native BF3 provisioning + HBN from one operator VM — **multi-DPU
@@ -15,6 +16,7 @@ Automated scripts to bring up NVIDIA HBN (Host-Based Networking) on a BlueField-
 > - **`scripts/`** (this page) — standalone bringup, run directly on the BF3.
 >   No Kubernetes. Still valid for single-box setups (S1 runs this today).
 
+<!-- lab-internal:end -->
 ---
 
 ## What is HBN?
@@ -32,6 +34,7 @@ x86 Host   ←──── pf0hpf_if / pf1hpf_if  (configure routing here)
 
 ---
 
+<!-- lab-internal:start -->
 ## Lab Servers
 
 | Server | BF3 ARM (OOB) | x86 Host | Notes |
@@ -51,6 +54,7 @@ VSCode tasks (`.vscode/tasks.json`) auto-open SSH terminals to the servers on fo
 
 ---
 
+<!-- lab-internal:end -->
 ## Quick Start
 
 ### Step 0 — Flash the BF3 with the validated BFB (skip if already running it)
@@ -263,11 +267,12 @@ Runs a full health check across all HBN components and reports `[OK]` / `[WARN]`
 Prints all access methods for the BF3. Accepts `--bf3-ip <IP>` to override the default IP.
 
 ```bash
-./access_hbn.sh --bf3-ip 10.20.13.228
+./access_hbn.sh --bf3-ip <BF3-OOB-IP>
 ```
 
 ---
 
+<!-- lab-internal:start -->
 ### `scripts/test_static_routing_rest.sh` / `scripts/test/test_static_routing_rest1.sh`
 
 **Run from any machine. Requires `sshpass`.**
@@ -286,6 +291,7 @@ Configures interface IPs and static routes via the NVUE REST API, then runs end-
 
 ---
 
+<!-- lab-internal:end -->
 ### `scripts/mirror_to_dpu.sh`
 
 **Run on the x86 host with sudo.**
