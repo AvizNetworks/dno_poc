@@ -23,16 +23,16 @@ HBN scripts validated on `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`.
 | S2 | `10.20.13.228` ubuntu/Aviz@AIF12345 | `10.20.13.212` root/Aviz@AIF12345 | `10.20.13.12` admin/Aviz@AIF123 |
 | S3 | `10.4.5.165` ubuntu/H3lLoW0rLd12! | `10.4.5.166` root/MaiBF3@94538 | — |
 | S4 | `10.20.13.249` ubuntu/Aviz@AIF12345 | `10.20.13.250` root/Aviz@AIF12345 | `10.20.13.226` aviz/aviz@123 |
-| S8 | `10.20.13.156` ubuntu/Aviz@AIF12345 | `10.20.13.234` root/Aviz@AIF12345 | `10.20.13.11` admin/Aviz@AIF123 |
+| S8 | `10.20.13.132` ubuntu/Aviz@AIF12345 | `10.20.13.142` root/Aviz@AIF12345 | `10.20.13.11` admin/Aviz@AIF123 |
 
-S8 = ASUS ESC4000A-E10, BF3 900-9D3B6 (400GbE/NDR, 32GB, SN MT2416XZ03VT). BF3 ARM OOB is DHCP and flips `10.20.13.156`↔`10.20.13.242` across reboots — rediscover via BMC ARP if unreachable (BMC MAC = ARM MAC +1). S8 provisioned via DPF (`worker3`, apiserver_port `6445`) + HBN with 8 VFs.
+S8 = ASUS ESC4000A-E10, BF3 900-9D3B6 (400GbE/NDR, 32GB, SN MT2416XZ03VT). BF3 ARM OOB is DHCP (MAC `9c:63:c0:65:85:32`) and has moved `.156`→`.242`→`.132` — if unreachable, ping-sweep the /24 from the BMC (`ssh root@10.20.13.142`) and `grep 9c:63:c0:65:85:32 /proc/net/arp` (BusyBox BMC has no `ip neigh`; BMC MAC = ARM MAC +1). As of 2026-10-20 S8 is **free** (no longer in DPF / team use): reflashed to `bf-bundle-3.4.1-12_26.04`, kubelet up, no HBN pod. Earlier it was DPF `worker3` (apiserver_port `6445`) + HBN with 8 VFs.
 S7 = sister ASUS `10.20.13.10` admin/Aviz@AIF123 — BF3 still in InfiniBand mode, not yet provisioned (no MFT installed there).
 
 **ToR Switch:** `10.20.13.214` (admin / Aviz@123) — shared across S1 and S2.
 
 **DPF Operator VMs (two during migration):**
 - **S6 = `10.20.13.227`** aviz/aviz@123 — **the new primary operator** (same subnet as the BF3s → no tunnel/iptables relay needed). Fresh k3s + DPF v25.10.1; repo at `~/hbn/dpf`; manages **S4**. RULE: DPUCluster `apiserver_port` must be unique AND never 6443 (an endpointless NodePort on the mgmt apiserver port blackholes the operator's own apiserver — this is what "broke" S6 in June).
-- **S5 = `10.4.5.136`** dpu-vm/**Dno@123** (not "admin") — legacy cross-subnet operator; still manages **S2 + S8** until migrated. Its DPF/kamaji controllers crash-loop on leader-election loss (data plane unaffected); its provisioning/kamaji webhooks were set to `failurePolicy: Ignore` during the S4 detach. `kubectl` there needs sudo.
+- **S5 = `10.4.5.136`** dpu-vm/**Dno@123** (not "admin") — legacy cross-subnet operator; still manages **S2** (S8 detached, Oct 2026) until migrated. Its DPF/kamaji controllers crash-loop on leader-election loss (data plane unaffected); its provisioning/kamaji webhooks were set to `failurePolicy: Ignore` during the S4 detach. `kubectl` there needs sudo.
 
 VSCode tasks (`.vscode/tasks.json`) auto-open SSH sessions to all servers on folder open.
 
@@ -41,6 +41,15 @@ VSCode tasks (`.vscode/tasks.json`) auto-open SSH sessions to all servers on fol
 ## Common Commands
 
 All scripts require `sudo` and run on the BF3 unless noted.
+
+**Inventory an unfamiliar BF3 FIRST (read-only, customer boxes):**
+```bash
+sudo ./scripts/inventory_bf3.sh [--quick] [--no-check]   # → /tmp/bf3-inventory-<host>-<ts>.txt
+```
+Capability report + 3-line verdict (can HBN run / p0 vs p0+p1 + VF capacity / what a bringup
+would take over). Also runs `bringup_hbn_bf3.sh --check`. Catches what `--check` misses:
+bundle ≠ 3.3.0, NIC mode, kubelet `staticPodPath` ≠ `/etc/kubelet.d` (DPF/NICo-joined BF3s use
+`/etc/kubernetes/manifests` → HBN pod never starts), external cluster membership, LLDP neighbors.
 
 **Bringup (idempotent, safe to re-run):**
 ```bash
@@ -51,6 +60,16 @@ sudo ./scripts/bringup_hbn_bf3.sh --enable-bgp --rest-pass <password>
 sudo ./scripts/bringup_hbn_bf3.sh --vfs 8            # 4 VFs per PF
 sudo ./scripts/bringup_hbn_bf3.sh --p0-vfs 4 --p1-vfs 4
 ```
+
+**Single-port BF3 (e.g. B3140H 900-9D3D4 SuperNIC — one PCI function, no p1/pf1hpf):**
+```bash
+sudo ./scripts/bringup_hbn_bf3_single_port.sh [--check] [--vfs N]   # p0 + pf0hpf only
+```
+Separate script so the dual-port one stays untouched: core SFs 2+1514 only, no PF1/LAG/multiport,
+hbn.conf/sfc.conf always generated (repo copies are dual-port). Refuses to run if p1 or 03:00.1 exists.
+`inventory_bf3.sh` auto-detects single-port and runs this script's `--check`. SuperNICs ship in
+**NIC mode**: Redfish PATCH `Bios/Settings {"NicMode":"DpuMode"}` → reboot ARM (UEFI applies it) →
+cold power cycle the host. (`/Bios` NicMode reads stale until UEFI re-syncs — trust BootProgress/devlink.)
 
 **Health check:**
 ```bash
@@ -120,6 +139,16 @@ pf1vf3_if       pf1vf3_if_r       pf1vf3                 1260       enp195s0f1v3
 ./scripts/test/test_static_routing_rest1.sh --setup
 ```
 
+**DPU netboot — PXE/install the x86 host from its own BF3 (no controller, no site DHCP):**
+```bash
+sudo ./scripts/dpu_netboot_server.sh                      # on the BF3: DHCP+TFTP+HTTP on pf0hpf, ISO auto-downloaded
+sudo NB_HOSTNAME=n1 NB_PASSWORD='...' LAN_MAC=.. LAN_IP=../24 LAN_GW=.. ./scripts/dpu_netboot_server.sh --regen-autoinstall
+sudo ./scripts/dpu_netboot_server.sh --status | --remove
+# host: sudo efibootmgr -v | grep -i nvidia; sudo efibootmgr -n <id>; reboot   (NOT `bootdev pxe` — picks the onboard NIC)
+```
+Customer doc: `docs/NETBOOT.md`; packet `dpu-netboot-<date>.tar.gz` from `make_packages.sh` (ships the
+script as `netboot.sh`). Refuses to run if `pf0hpf` is in an OVS bridge (HBN owns it). Validated on S8 2026-10-21.
+
 **Get a shell inside doca-hbn container:**
 ```bash
 CONT=$(sudo crictl ps | grep doca-hbn | grep -v init | awk '{print $1}')
@@ -131,7 +160,7 @@ sudo crictl exec -it $CONT nv      # NVUE CLI
 
 ## DPF Commands
 
-All DPF scripts run from the **DPF Operator VM** (S6 `10.20.13.227` for S4; legacy S5 `10.4.5.136` for S2/S8). No sudo required on S6.
+All DPF scripts run from the **DPF Operator VM** (S6 `10.20.13.227` for S4; legacy S5 `10.4.5.136` for S2). No sudo required on S6.
 The DPF stack is completely separate from the HBN scripts above.
 
 **Customer-facing preflight:** `bringup_dpf.sh --check` validates EVERY prerequisite

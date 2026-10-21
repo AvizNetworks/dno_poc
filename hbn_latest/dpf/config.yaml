@@ -55,8 +55,8 @@ workers:
 
   - name: worker4
     server: s7               # ASUS ESC4000A-E10 (SN LAS0MD000185); BF3 900-9D3B6, BF3 at PCI c3:00
-    operator: none           # NOT provisioned via DPF yet (BF3 ran standalone HBN)
-    bmc_ip: 10.20.13.235     # BF3 BMC (OpenBMC "dpu-bmc"; base MAC e0:9d:73:e6:23:b8, BMC=+0x25)
+    operator: s5             # DPF on legacy S5 (:6446) since 2026-09-09; being released for NICo (Oct 2026)
+    bmc_ip: 10.20.13.155     # BF3 BMC (MAC e0:9d:73:e6:23:dd; was .235 — verified Oct 2026 via ipmitool lan print on ARM)
     oob_ip: 10.20.13.157     # BF3 OOB (ARM MAC ...dc = base +0x24)
     serial: MT2503XZ0D8X
     apiserver_port: 6447     # was 6446 — moved when worker1 (s4) took 6446 on S6

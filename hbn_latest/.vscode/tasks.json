@@ -74,9 +74,9 @@
 
     // ─── Server 4 BF3 ────────────────────────────────────────────────────────
     {
-      "label": "S4: BF3 BMC (root@10.20.13.250)",
+      "label": "S4: BF3 BMC (root@10.20.13.137)",
       "type": "shell",
-      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no root@10.20.13.250",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no root@10.20.13.137",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server4" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
@@ -90,6 +90,7 @@
       "problemMatcher": []
     },
     {
+      // S4 and S6 are in same ESXI given by Kasi and team
       "label": "S4: Host (admin@10.20.13.136)",
       "type": "shell",
       "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.136",
@@ -114,17 +115,19 @@
       "problemMatcher": []
     },
     {
-      "label": "S6: DPF operator1(aviz@10.20.13.227)",
+      // S4 and S6 are in same ESXI given by Kasi and team
+      "label": "S6: DPF operator1(aviz@10.20.13.248)",
       "type": "shell",
-      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.227",
+      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.248",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server6" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
     },
     {
-      "label": "S6: DPF operator2(aviz@10.20.13.227)",
+      // S4 and S6 are in same ESXI given by Kasi and team
+      "label": "S6: DPF operator2(aviz@10.20.13.248)",
       "type": "shell",
-      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.227",
+      "command": "sshpass -p 'aviz@123' ssh -o StrictHostKeyChecking=no aviz@10.20.13.248",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server6" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
@@ -162,17 +165,17 @@
       "problemMatcher": []
     },
     {
-      "label": "S8: ARM CPU (ubuntu@10.20.13.156)",
+      "label": "S8: ARM CPU (ubuntu@10.20.13.132)",
       "type": "shell",
-      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no ubuntu@10.20.13.156",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no ubuntu@10.20.13.132",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server8" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
     },
       {
-      "label": "S8: BF3 BMC (root@10.20.13.234)",
+      "label": "S8: BF3 BMC (root@10.20.13.142)",
       "type": "shell",
-      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no root@10.20.13.234",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no root@10.20.13.142",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server8" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []

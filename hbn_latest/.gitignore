@@ -9,3 +9,5 @@ nvidia_ra1_architecture.html
 # NVIDIA vendor drops (reference only, not our deliverable)
 dpf-poc-*/
 dpf-setup-py-*/
+# doca_hbn image exports (make_packages.sh --with-image, ~750MB) — ship out-of-band
+packages/*/doca_hbn_*.tar

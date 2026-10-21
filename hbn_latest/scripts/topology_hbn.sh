@@ -5,6 +5,7 @@
 set -euo pipefail
 
 LOG_DIR="/var/log/doca/hbn"
+SFC_CONF="/etc/mellanox/sfc.conf"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 OUT_FILE="$LOG_DIR/topology-${TIMESTAMP}.txt"
 
@@ -48,6 +49,33 @@ done
 mkdir -p "$LOG_DIR"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+# HBN port layout = sfc.conf MAPPINGS (written by the bringup, read by init-sfs):
+# field 4 is the container netdev. Covers dual-port, single-port and --no-pf;
+# falls back to the classic dual-port layout when sfc.conf is missing.
+load_layout() {
+  HBN_IFACES=()
+  local _br _port _rep iface _rest
+  while IFS='~' read -r _br _port _rep iface _rest; do
+    [[ -n "$iface" ]] && HBN_IFACES+=("$iface")
+  done < <(grep -v '^[[:space:]]*#' "$SFC_CONF" 2>/dev/null | grep -oE '"br-hbn~[^"]+"' | tr -d '"' || true)
+  if [[ ${#HBN_IFACES[@]} -eq 0 ]]; then
+    HBN_IFACES=(p0_if p1_if pf0hpf_if pf1hpf_if)
+    LAYOUT_SRC="default dual-port layout (${SFC_CONF} not found)"
+  else
+    LAYOUT_SRC="${SFC_CONF}"
+  fi
+}
+
+# container netdev -> sfnum (core map + authoritative VF ranges 1001+N / 1257+N)
+sfnum_of() {
+  local n
+  case "$1" in
+    p0_if) echo 2 ;; p1_if) echo 3 ;; pf0hpf_if) echo 1514 ;; pf1hpf_if) echo 1515 ;;
+    pf0vf*_if) n="${1#pf0vf}"; echo $((1001 + ${n%_if})) ;;
+    pf1vf*_if) n="${1#pf1vf}"; echo $((1257 + ${n%_if})) ;;
+  esac
+}
+
 get_iface_info() {
   local iface="$1"
   local ip state mac
@@ -177,26 +205,22 @@ if [[ -z "$CONT_PID" ]]; then
 fi
 
 # ─── Gather BF3 interface data ───────────────────────────────────────────────
+load_layout
+# + VF netdevs present in the container but not in sfc.conf (older boxes wired VFs
+#   outside sfc.conf — e.g. S1)
+for _PFX in pf0vf pf1vf; do
+  for ((_N=0; _N<128; _N++)); do
+    _VIF="${_PFX}${_N}_if"
+    nsenter -t "$CONT_PID" -n -- ip link show "$_VIF" &>/dev/null || break
+    [[ " ${HBN_IFACES[*]} " == *" $_VIF "* ]] || HBN_IFACES+=("$_VIF")
+  done
+done
+
 BF3_OS=$(cat /etc/mlnx-release 2>/dev/null \
   || grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' \
   || echo "unknown")
 OOB_IP=$(ip addr show oob_net0 2>/dev/null | grep "inet " | awk '{print $2}' | head -1 || echo "unknown")
 OOB_MAC=$(ip link show oob_net0 2>/dev/null | grep "link/ether" | awk '{print $2}' | head -1 || echo "unknown")
-
-IFS='|' read -r P0_IF_IP P0_IF_STATE P0_IF_MAC <<< "$(get_iface_info p0_if)"
-IFS='|' read -r P1_IF_IP P1_IF_STATE P1_IF_MAC <<< "$(get_iface_info p1_if)"
-IFS='|' read -r PF0_IP  PF0_STATE  PF0_MAC     <<< "$(get_iface_info pf0hpf_if)"
-IFS='|' read -r PF1_IP  PF1_STATE  PF1_MAC     <<< "$(get_iface_info pf1hpf_if)"
-
-# Discover VF interfaces dynamically
-VF_IFACES=()
-for _PFX in pf0vf pf1vf; do
-  for _N in 0 1 2 3 4 5 6 7; do
-    _VIF="${_PFX}${_N}_if"
-    nsenter -t "$CONT_PID" -n -- ip link show "$_VIF" &>/dev/null 2>&1 && \
-      VF_IFACES+=("$_VIF") || break
-  done
-done
 
 # ─── Discover host NIC names ─────────────────────────────────────────────────
 HOST_PF0_NIC="run with --host-ip to discover"
@@ -237,69 +261,47 @@ cat <<EOF
 
 ============================================================
   Configurable Interfaces  (use these in FRR / NVUE)
+  Layout from: ${LAYOUT_SRC}
 ============================================================
-
-  [1] ToR Uplink 0        → connects to Top-of-Rack switch port 0
-      FRR Interface : p0_if
-      MAC           : $P0_IF_MAC
-      IP Address    : $P0_IF_IP
-      Link State    : $P0_IF_STATE
-
-  [2] ToR Uplink 1        → connects to Top-of-Rack switch port 1
-      FRR Interface : p1_if
-      MAC           : $P1_IF_MAC
-      IP Address    : $P1_IF_IP
-      Link State    : $P1_IF_STATE
-
-  [3] Host Facing 0       → connects to x86 host via PCIe (SF sfnum 1514)
-      FRR Interface : pf0hpf_if
-      MAC           : $PF0_MAC
-      IP Address    : $PF0_IP
-      Link State    : $PF0_STATE
-      Host NIC      : $HOST_PF0_NIC${HOST_STATUS}
-
-  [4] Host Facing 1       → connects to x86 host via PCIe (SF sfnum 1515)
-      FRR Interface : pf1hpf_if
-      MAC           : $PF1_MAC
-      IP Address    : $PF1_IP
-      Link State    : $PF1_STATE
-      Host NIC      : $HOST_PF1_NIC${HOST_STATUS}
 EOF
 
-# VF interfaces (dynamically discovered)
-if [[ ${#VF_IFACES[@]} -gt 0 ]]; then
-  _IDX=5
-  for _VIF in "${VF_IFACES[@]}"; do
-    IFS='|' read -r _VIF_IP _VIF_STATE _VIF_MAC <<< "$(get_iface_info "$_VIF")"
-    # Derive host VF name from PF NIC + VF index:
-    # pf0vf0_if → enp65s0f0np0v0,  pf1vf2_if → enp65s0f1np1v2
-    # VF naming: strip npX suffix from PF name, add vN
-    # e.g. enp65s0f0np0 → enp65s0f0v0,  enp65s0f1np1 → enp65s0f1v0
-    if [[ "$_VIF" == pf0vf*_if ]]; then
-      _VF_N="${_VIF#pf0vf}"; _VF_N="${_VF_N%_if}"
-      _PF_BASE="${HOST_PF0_NIC:-unknown}"; _PF_BASE="${_PF_BASE%np*}"
+# One card per interface HBN actually owns (sfc.conf MAPPINGS order)
+_IDX=1
+for _IF in "${HBN_IFACES[@]}"; do
+  IFS='|' read -r _IP _STATE _MAC <<< "$(get_iface_info "$_IF")"
+  _SFN=$(sfnum_of "$_IF")
+  _EXTRA=""
+  case "$_IF" in
+    p[01]_if)
+      _TITLE="ToR Uplink ${_IF:1:1}        → connects to Top-of-Rack switch (p${_IF:1:1})" ;;
+    pf[01]hpf_if)
+      _N="${_IF:2:1}"; _HOSTVAR="HOST_PF${_N}_NIC"
+      _TITLE="Host Facing ${_N}       → connects to x86 host PF via PCIe (SF sfnum ${_SFN})"
+      _EXTRA="      Host NIC      : ${!_HOSTVAR}${HOST_STATUS}" ;;
+    pf[01]vf*_if)
+      # Host VF name = PF NIC minus its npX suffix + vN (enp65s0f0np0 → enp65s0f0v0)
+      _N="${_IF:2:1}"; _HOSTVAR="HOST_PF${_N}_NIC"
+      _VF_N="${_IF#pf${_N}vf}"; _VF_N="${_VF_N%_if}"
+      _PF_BASE="${!_HOSTVAR:-unknown}"; _PF_BASE="${_PF_BASE%np*}"
       _VF_HOST="${_PF_BASE}v${_VF_N}"
-    elif [[ "$_VIF" == pf1vf*_if ]]; then
-      _VF_N="${_VIF#pf1vf}"; _VF_N="${_VF_N%_if}"
-      _PF_BASE="${HOST_PF1_NIC:-unknown}"; _PF_BASE="${_PF_BASE%np*}"
-      _VF_HOST="${_PF_BASE}v${_VF_N}"
-    else
-      _VF_HOST="unknown"
-    fi
-    [[ "$HOST_PF0_NIC" == "run with --host-ip"* || -z "$HOST_IP" ]] && \
-      _VF_HOST="(run with --host-ip to discover)"
-    cat <<EOF
+      [[ "$HOST_PF0_NIC" == "run with --host-ip"* || -z "$HOST_IP" ]] && \
+        _VF_HOST="(run with --host-ip to discover)"
+      _TITLE="VF Interface         → ${_IF}"
+      _EXTRA="      Host VF       : ${_VF_HOST}" ;;
+    *)
+      _TITLE="Interface            → ${_IF}" ;;
+  esac
+  cat <<EOF
 
-  [${_IDX}] VF Interface         → ${_VIF}
-      FRR Interface : ${_VIF}
-      MAC           : ${_VIF_MAC}
-      IP Address    : ${_VIF_IP}
-      Link State    : ${_VIF_STATE}
-      Host VF       : ${_VF_HOST}
+  [${_IDX}] ${_TITLE}
+      FRR Interface : ${_IF}
+      MAC           : ${_MAC}
+      IP Address    : ${_IP}
+      Link State    : ${_STATE}
 EOF
-    _IDX=$((_IDX+1))
-  done
-fi
+  [[ -n "$_EXTRA" ]] && echo "$_EXTRA"
+  _IDX=$((_IDX+1))
+done
 
 cat <<EOF
 

@@ -5,6 +5,24 @@ Scripts that SSH across devices run from any machine and need `sshpass` (`sudo a
 
 ---
 
+## inventory_bf3.sh — run this FIRST on an unfamiliar BF3
+
+Read-only capability report (changes nothing). Answers: can HBN run here, what can
+it do (p0 only vs p0+p1, VF capacity, uplink link/LLDP neighbor), and what would a
+bringup take over (existing OVS bridges, IPs, netplan, external k8s cluster, pods).
+Ends by running `bringup_hbn_bf3.sh --check` and prints a 3-line verdict.
+
+```bash
+sudo ./scripts/inventory_bf3.sh            # full (~1 min, includes 35s LLDP listen)
+sudo ./scripts/inventory_bf3.sh --quick    # skip LLDP listen
+# report saved to /tmp/bf3-inventory-<host>-<ts>.txt — send it back to Aviz
+# exit 0 = no blockers, 1 = blockers
+```
+
+Catches things `--check` does not: BFB/DOCA version vs the validated 3.3.0, NIC vs
+DPU mode, kubelet `staticPodPath` ≠ `/etc/kubelet.d` (HBN pod would never start),
+BF3 joined to an external DPF/NICo cluster, and anything a bringup would disrupt.
+
 ## bringup_hbn_bf3.sh
 
 The main bringup — **preflight first**: `--check` validates every prerequisite
@@ -16,6 +34,24 @@ Fully offline and idempotent. See the root `README.md` for the full flow.
 sudo ./bringup_hbn_bf3.sh --check     # validate everything, change nothing
 sudo ./bringup_hbn_bf3.sh             # core bringup (add --vfs 8 for SR-IOV VFs)
 ```
+
+---
+
+## bringup_hbn_bf3_single_port.sh — single-port BF3 (e.g. B3140H SuperNIC)
+
+Same flow and preflight as `bringup_hbn_bf3.sh`, for cards with ONE uplink (no
+`p1`, one PCI function). `inventory_bf3.sh` detects the layout and tells you which
+script to use. Refuses to run on a dual-port card.
+
+```bash
+sudo ./bringup_hbn_bf3_single_port.sh --check            # validate, change nothing
+sudo ./bringup_hbn_bf3_single_port.sh --vfs 4            # p0 + host PF + 4 host VFs
+sudo ./bringup_hbn_bf3_single_port.sh --vfs 4 --no-pf    # p0 + 4 host VFs (host PF left out of HBN)
+```
+
+`--no-pf` keeps the host PF (`pf0hpf`) outside HBN — use it when the host only uses
+VFs. Leave it off when the host must reach the network through its PF (e.g. PXE boot
+via the uplink). Create the host VFs FIRST (`setup_host_vfs_standalone.sh` on the x86 host).
 
 ---
 
@@ -34,9 +70,10 @@ sudo ./status_hbn.sh
 
 ## topology_hbn.sh
 
-Prints a live reference card of all HBN interfaces (`p0_if`, `p1_if`, `pf0hpf_if`,
-`pf1hpf_if`) with current IP, MAC, and link state. Use this before configuring
-FRR or NVUE to get the correct interface names and addresses.
+Prints a live reference card of every HBN interface (`p0_if`, `p1_if`, `pf0hpf_if`,
+`pf1hpf_if`, `pfNvfM_if` — whatever this BF3's layout has, read from
+`/etc/mellanox/sfc.conf`) with current IP, MAC, and link state. Use this before
+configuring FRR or NVUE to get the correct interface names and addresses.
 
 ```bash
 ssh ubuntu@10.20.13.228

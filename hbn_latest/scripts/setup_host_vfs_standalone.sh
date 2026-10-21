@@ -31,4 +31,8 @@ ExecStart=/bin/bash -c 'for pf in ${PFS[*]}; do [ -e /sys/class/net/\$pf/device/
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload && systemctl enable bf3-host-vfs.service
-echo "Persisted via bf3-host-vfs.service. Now run 'bringup_hbn_bf3.sh --vfs $((VFS_PER_PF*2))' on the BF3."
+if [[ ${#PFS[@]} -eq 1 ]]; then   # single-port BF3 (one PF)
+  echo "Persisted via bf3-host-vfs.service. Now run 'bringup_hbn_bf3_single_port.sh --vfs ${VFS_PER_PF}' on the BF3."
+else
+  echo "Persisted via bf3-host-vfs.service. Now run 'bringup_hbn_bf3.sh --vfs $((VFS_PER_PF*2))' on the BF3."
+fi
