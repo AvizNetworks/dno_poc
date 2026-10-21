@@ -44,7 +44,8 @@ mkdir -p "${OUT}" "${STAGE}/hbn-standalone/scripts" "${STAGE}/hbn-dpf/dpf" "${ST
 # ── Standalone packet ─────────────────────────────────────────────────────────
 cp -r "${REPO}/mellanox" "${REPO}/doca_hbn_v3.3.0" "${REPO}/docs" "${STAGE}/hbn-standalone/"
 rm -f "${STAGE}/hbn-standalone/docs/NETBOOT.md"     # belongs to the dpu-netboot packet
-for f in inventory_bf3.sh bringup_hbn_bf3.sh bringup_hbn_bf3_single_port.sh status_hbn.sh topology_hbn.sh access_hbn.sh \
+for f in hbn_quickstart.sh hbn_quickstart.env.sample inventory_bf3.sh bringup_hbn_bf3.sh bringup_hbn_bf3_single_port.sh \
+         status_hbn.sh topology_hbn.sh access_hbn.sh \
          setup_host_vfs_standalone.sh setup_host_vfs.sh mirror_to_dpu.sh; do
   cp "${REPO}/scripts/${f}" "${STAGE}/hbn-standalone/scripts/"
 done

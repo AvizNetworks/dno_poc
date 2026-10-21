@@ -61,6 +61,12 @@ sudo ./scripts/bringup_hbn_bf3.sh --vfs 8            # 4 VFs per PF
 sudo ./scripts/bringup_hbn_bf3.sh --p0-vfs 4 --p1-vfs 4
 ```
 
+**One-command path (x86 host): `sudo ./scripts/hbn_quickstart.sh [--check] [--config FILE]`** —
+orchestrates mode switch → flash (bf.cfg presets ubuntu password + SSH key) → clock/OOB →
+package+image push over rshim/tmfifo → host VFs → bring-up → `/var/lib/hbn-quickstart/ones-handover.{txt,json}`.
+Calls the per-step scripts UNCHANGED (they must keep working by hand). Re-run until DONE; exit 3 =
+cold power cycle needed. Settings: `scripts/hbn_quickstart.env.sample`. Refuses kubelet-joined BF3s.
+
 **Single-port BF3 (e.g. B3140H 900-9D3D4 SuperNIC — one PCI function, no p1/pf1hpf):**
 ```bash
 sudo ./scripts/bringup_hbn_bf3_single_port.sh [--check] [--vfs N]   # p0 + pf0hpf only

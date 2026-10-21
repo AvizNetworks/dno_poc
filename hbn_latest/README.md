@@ -4,6 +4,10 @@ Automated scripts to bring up NVIDIA HBN (Host-Based Networking) on a BlueField-
 
 **Validated on:** `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb`
 
+> **New BF3 to prepare for ONES?** Follow [`docs/BF3_HBN_ONES_GUIDE.md`](docs/BF3_HBN_ONES_GUIDE.md)
+> end to end — DPU mode, OS flash, offline HBN image, host VFs, single- or dual-port
+> bring-up, verification and the hand-over list for ONES.
+
 <!-- lab-internal:start -->
 > **Two independent toolsets in this repo:**
 > - **`dpf/`** — **DPF (DOCA Platform Framework): the current, recommended path.**
