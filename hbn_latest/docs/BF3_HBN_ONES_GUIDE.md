@@ -43,8 +43,13 @@ sudo ./scripts/hbn_quickstart.sh                            # run it — repeat 
 - The OS image goes onto the BF3 with `bfb-install` (rshim boot stream). The HBN container
   image is not part of it: it is copied afterwards over the rshim network link (tmfifo) and
   the script prints the transfer time.
+- It flashes the BF3 only when needed (new card, unknown password, other software
+  version). `--reflash` wipes and flashes a card that is already set up; it applies
+  **once per bring-up**: re-running the same command after a stop continues without
+  flashing again.
 - At the end it writes the hand-over for ONES (Step 9) to
-  `/var/lib/hbn-quickstart/ones-handover.txt` and `.json`.
+  `/var/lib/hbn-quickstart/ones-handover.txt` and `.json`. **Send Aviz the `.json` and the
+  run's log**, `/var/lib/hbn-quickstart/quickstart-<date>.log` (the DONE line prints both paths).
 
 If anything stops it, the steps below are the same procedure by hand — continue there.
 
@@ -418,6 +423,7 @@ the next hop / gateway side for that VF.
 
 | Symptom | Fix |
 |---|---|
+| `hbn_quickstart.sh` ends with **NOT DONE — the server's traffic does not reach the card** (traffic test FAILED) | Everything is configured, but the PCIe slot does not pass the card's traffic (seen on an Intel S2600BP: the card in Riser 2 failed, Riser 1 Slot 1 works). Power off, move the card to another slot, power on, re-run the same command (no `--reflash`). Send Aviz the `.json` and the log |
 | BF3 console stops in UEFI; `BootProgress` = `UEFI` | NIC mode — Step 1 |
 | Mode still NIC after the power cycle | The Arm did not boot after the Redfish PATCH. Do Step 1 in order: PATCH → Arm reset → confirm `Settings` is `{}` → cold power cycle |
 | `/Bios` still shows `NicMode` but the OS boots | Stale field — trust `BootProgress: OsIsRunning` |

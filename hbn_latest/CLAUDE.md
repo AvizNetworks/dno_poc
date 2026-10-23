@@ -73,6 +73,13 @@ drifted Next Boot (bp5 had EXT_HOST_PF staged after a Redfish-only switch → wo
 HBN image is NOT in the BFB: pushed over tmfifo after the flash (logs MB/s). `bf3-host-vfs.service` runs
 `/usr/local/sbin/bf3-host-vfs.sh N` (finds PFs by PCI id — bp5's PF renamed enp94→enp59 on a slot move
 and the old name-based unit silently created 0 VFs); quickstart rewrites old-style units.
+End-of-run traffic test: pings host PF→pf0hpf_if and VF0→pf0vf0_if on temporary 169.254.250.x/30s (skips
+interfaces with an address/master — never touches ONES config), restores state; FAIL → "NOT DONE" + PCIe-slot
+explanation, exit 1 (bp5: card at 5e = Riser 2 dropped host traffic, 3b = Riser 1 works; bp6/bp7 cards are at 5e).
+`--reflash` is once per bring-up (`flash-done` marker until DONE) so re-runs after a stop never re-flash.
+Partner packet (`make_packages.sh` → hbn-standalone-<date>.tar.gz) = EXPLICIT list: README.md (= docs/PARTNER_README.md,
+the only doc — edit that), 8 scripts the quickstart uses, mellanox/, doca_hbn_v3.3.0/. NO docs/ (an internal design doc
+once leaked via `cp -r docs`). Build aborts on docs/ or lab/partner IPs/MACs anywhere in it; examples use 192.0.2.0/24.
 Calls the per-step scripts UNCHANGED (they must keep working by hand). Re-run until DONE; exit 3 =
 cold power cycle needed. Settings: `scripts/hbn_quickstart.env.sample`. Refuses kubelet-joined BF3s.
 

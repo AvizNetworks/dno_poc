@@ -10,18 +10,19 @@
 #
 # Stages in a temp dir, then writes ONLY the deliverables into the output dir
 # (commit that dir to give the team the packets):
-#   hbn-standalone-<date>.tar.gz  — run ON the BF3 (scripts/, mellanox/, doca_hbn_v3.3.0/, docs/)
+#   hbn-standalone-<date>.tar.gz  — partners/customers: README.md (= docs/PARTNER_README.md),
+#                                   scripts/ (hbn_quickstart.sh + what it runs), mellanox/, doca_hbn_v3.3.0/
 #   hbn-dpf-<date>.tar.gz         — run from the DPF Operator VM (dpf/)
 #   dpu-netboot-<date>.tar.gz     — run ON the BF3: netboot.sh (= scripts/dpu_netboot_server.sh) + README
 #                                   (docs/NETBOOT.md); x86 host PXE/install from its own DPU, no controller
 #   SHA256SUMS
 #
-# The packet README is GENERATED from the repo README.md by stripping every
-# <!-- lab-internal:start --> ... <!-- lab-internal:end --> block (DPF cross-refs,
-# lab server tables, lab-only test scripts). Maintain ONLY the repo README —
-# never hand-edit the packet copy.
+# The standalone packet README is docs/PARTNER_README.md (run instructions only, written
+# for host/devops readers). Edit that file, never the packet copy.
 #
 # Excluded from packets by design:
+#   - docs/                    (internal: design notes, lab guides) — only PARTNER_README ships
+#   - scripts/mirror_to_dpu.sh, access_hbn.sh, setup_host_vfs.sh (lab/DPF tools)
 #   - scripts/test/            (lab test scripts with embedded lab credentials)
 #   - dpf/config.local.yaml    (real secrets — customers copy the .sample)
 #   - dpf/docs/                (internal slide deck)
@@ -41,28 +42,24 @@ trap 'rm -rf "${STAGE}"' EXIT
 echo "== staging in ${STAGE} (deliverables -> ${OUT})"
 mkdir -p "${OUT}" "${STAGE}/hbn-standalone/scripts" "${STAGE}/hbn-dpf/dpf" "${STAGE}/dpu-netboot"
 
-# ── Standalone packet ─────────────────────────────────────────────────────────
-cp -r "${REPO}/mellanox" "${REPO}/doca_hbn_v3.3.0" "${REPO}/docs" "${STAGE}/hbn-standalone/"
-rm -f "${STAGE}/hbn-standalone/docs/NETBOOT.md"     # belongs to the dpu-netboot packet
-for f in hbn_quickstart.sh hbn_quickstart.env.sample inventory_bf3.sh bringup_hbn_bf3.sh bringup_hbn_bf3_single_port.sh \
-         status_hbn.sh topology_hbn.sh access_hbn.sh \
-         setup_host_vfs_standalone.sh setup_host_vfs.sh mirror_to_dpu.sh; do
+# ── Standalone packet (partners/customers) ───────────────────────────────────
+# EXPLICIT list only — never copy a whole folder: docs/ once swept an internal design doc
+# into this packet. One doc (README.md = docs/PARTNER_README.md); the rest is what
+# hbn_quickstart.sh runs or pushes to the BF3 (scripts/, mellanox/, doca_hbn_v3.3.0/).
+cp -r "${REPO}/mellanox" "${REPO}/doca_hbn_v3.3.0" "${STAGE}/hbn-standalone/"
+for f in hbn_quickstart.sh hbn_quickstart.env.sample setup_host_vfs_standalone.sh \
+         inventory_bf3.sh bringup_hbn_bf3.sh bringup_hbn_bf3_single_port.sh status_hbn.sh topology_hbn.sh; do
   cp "${REPO}/scripts/${f}" "${STAGE}/hbn-standalone/scripts/"
 done
+cp "${REPO}/docs/PARTNER_README.md" "${STAGE}/hbn-standalone/README.md"
+echo "  standalone packet: README.md + $(ls "${STAGE}/hbn-standalone/scripts" | wc -l) scripts + mellanox/ + doca_hbn_v3.3.0/"
 
-# Generate the customer README: strip lab-internal blocks
-python3 - "${REPO}/README.md" "${STAGE}/hbn-standalone/README.md" <<'PY'
-import sys, re
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-s = re.sub(r'<!-- lab-internal:start -->\n.*?<!-- lab-internal:end -->\n',
-           '', s, flags=re.S)
-assert 'lab-internal' not in s, 'unbalanced lab-internal markers in README.md'
-assert 'dpf' not in s.lower(), 'DPF still mentioned in packet README — wrap it in lab-internal markers'
-assert '10.20.13.' not in s and '10.4.5.' not in s, 'lab IP leaked into packet README'
-open(dst, 'w').write(s)
-print("  packet README generated (%d lines)" % len(s.splitlines()))
-PY
+# Leak check over the WHOLE standalone packet (ABORTS): no docs folder, no internal docs,
+# no lab or partner-site addresses/MACs (examples use 192.0.2.0/24, the documentation range).
+LEAK='10\.20\.13\.|10\.4\.5\.|185\.55\.29\.|10\.0\.1\.|d4:5d:64|9c:63:c0|c4:70:bd:41|BRAINSTORM|CLAUDE\.md'
+if [[ -e "${STAGE}/hbn-standalone/docs" ]] || grep -rnE "${LEAK}" "${STAGE}/hbn-standalone"; then
+  echo "!! internal or site-specific content in the standalone packet — build aborted"; exit 1
+fi
 
 # ── DPF packet ────────────────────────────────────────────────────────────────
 for f in README.md QUICKSTART.md CHEATSHEET.md MULTI-DPU-DESIGN.md \

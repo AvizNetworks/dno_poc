@@ -36,9 +36,9 @@ Options:
 
 Examples:
   sudo $0
-  sudo $0 --host-ip 10.20.13.13
-  sudo $0 --host-ip 10.20.13.13 --host-user admin --host-pass <password>
-  sudo $0 --host-ip 10.20.13.13 --host-pci-bus 41
+  sudo $0 --host-ip 192.0.2.13
+  sudo $0 --host-ip 192.0.2.13 --host-user admin --host-pass <password>
+  sudo $0 --host-ip 192.0.2.13 --host-pci-bus 41
 EOF
       exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;

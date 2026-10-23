@@ -42,7 +42,7 @@ HOST_PF_IN_HBN=yes       # no = --no-pf (single-port only): host PF stays outsid
 ENABLE_BGP=yes
 REST_PASSWORD=""         # NVUE REST user 'nvidia'; generated + saved if empty
 BF3_PASSWORD=""          # BF3 'ubuntu' password; generated if empty (flash) — set it to adopt an existing install
-OOB_ADDRESS=""           # BF3 management port, CIDR (e.g. 10.0.1.105/24); empty = leave as is
+OOB_ADDRESS=""           # BF3 management port, CIDR (e.g. 192.0.2.10/24); empty = leave as is
 OOB_GATEWAY=""
 OOB_DNS="8.8.8.8"
 BFB_FILE=""              # local .bfb; empty = look next to the package, then download
@@ -67,7 +67,9 @@ Options:
   --check         read-only: detect state and print the plan; change nothing
   --yes           do not ask before destructive steps (BF3 flash, VF re-create, mode switch)
   --power-cycle   run 'ipmitool chassis power cycle' itself when one is needed
-  --reflash       flash the BF3 even if it already runs bf-bundle ${VALIDATED_BUNDLE}
+  --reflash       wipe and flash the BF3 even if it already runs bf-bundle ${VALIDATED_BUNDLE}.
+                  Once per bring-up: re-running the same command after a stop continues, it
+                  does not flash again (until the run reaches DONE)
   --force         proceed although the BF3 looks managed by something else
   -h, --help      this help
 
@@ -295,7 +297,7 @@ else
                 https://<BF3-BMC>/redfish/v1/Systems/Bluefield/Oem/Nvidia
            curl -sk -u root:<pw> -X PATCH -H 'Content-Type: application/json' -d '{\"BmcRShim\":{\"BmcRShimEnabled\":false}}' \\
                 https://<BF3-BMC>/redfish/v1/Managers/Bluefield_BMC/Oem/Nvidia
-         Or follow docs/BF3_HBN_ONES_GUIDE.md by hand over the BF3 network instead."
+         Then re-run this script (see README.md)."
   # the NIC→DPU switch (phase 2) works without it; phase 3 onwards needs it
   warn "no BF3 rshim function (15b3:c2d5) visible yet — required from phase 3 on"
 fi
@@ -446,6 +448,15 @@ elif $CHECK && ! $TMFIFO_READY; then
   exit 0
 fi
 
+# --reflash means "flash once in this bring-up": after the flash, a re-run (power cycle, host
+# reboot) given the same command must continue, not flash again. The marker lives until DONE.
+FLASH_MARKER="${STATE_DIR}/flash-done"
+if $REFLASH && [[ -f "${FLASH_MARKER}" ]]; then
+  ok "--reflash: already flashed in this bring-up ($(cat "${FLASH_MARKER}")) — not flashing again, continuing"
+  info "to flash once more anyway: sudo rm ${FLASH_MARKER}  (then re-run with --reflash)"
+  REFLASH=false
+fi
+
 DO_FLASH=false
 if $REFLASH; then DO_FLASH=true; REASON="--reflash given"
 elif $BF3_LOGIN && [[ "${BF3_BUNDLE}" == *"bf-bundle-${VALIDATED_BUNDLE}-"* ]]; then
@@ -501,6 +512,7 @@ EOF
   for i in $(seq 1 100); do bf3_ssh true 2>/dev/null && break; sleep 15; done
   bf3_ssh true 2>/dev/null || die "BF3 not reachable over rshim 25 min after the flash — check the console (BMC: ssh -p 2200 root@<BF3-BMC>)"
   BF3_BUNDLE=$(bf3_ssh "head -1 /etc/mlnx-release" 2>/dev/null)
+  date -u '+%Y-%m-%d %H:%M UTC' > "${FLASH_MARKER}"
   ok "BF3 is up: ${BF3_BUNDLE} — login: ubuntu / password in ${SECRETS}"
 fi
 
@@ -783,6 +795,49 @@ else
   info "REST password unchanged from the earlier bring-up — set REST_PASSWORD in the config to record it in the hand-over"
 fi
 
+# ─── Datapath test: host → card, through HBN ─────────────────────────────────
+# Every status check can be green while the host's traffic never reaches the card: on bp5 the
+# card's PCIe slot carried configuration but no traffic, until the card moved to another slot.
+# So ping each host path for real, on temporary link-local /30s, and remove them afterwards.
+# Interfaces already in use (an address, or enslaved to a bridge/VRF — e.g. configured by ONES)
+# are skipped, never touched.
+hbn_ns() {  # $1 = shell snippet, run as root inside the doca-hbn container's network namespace
+  bf3_sudo "pid=\$(crictl inspect \$(crictl ps --name doca-hbn -q | head -1) | python3 -c 'import sys,json; print(json.load(sys.stdin)[\"info\"][\"pid\"])') && nsenter -t \$pid -n sh -c $(printf '%q' "$1")"
+}
+datapath_test() {  # $1 host netdev  $2 HBN interface  $3 card IP  $4 host IP → prints ok | fail | skip:<why>
+  local h="$1" c="$2" cip="$3" hip="$4" was_up=false passed=false
+  [[ -n "${h}" && -e "/sys/class/net/${h}" ]] || { echo "skip:no host interface"; return; }
+  ip -o link show dev "${h}" | grep -q ' master ' && { echo "skip:${h} is in a bond/bridge"; return; }
+  [[ -n "$(hbn_ns "ip -o link show dev ${c} | grep ' master '; ip -4 -o addr show dev ${c}" 2>/dev/null)" ]] \
+    && { echo "skip:${c} already configured"; return; }
+  ip -o link show dev "${h}" | grep -qE '[<,]UP[,>]' && was_up=true
+  hbn_ns "ip link set ${c} up; ip addr add ${cip}/30 dev ${c}" >/dev/null 2>&1
+  ip link set "${h}" up; ip addr add "${hip}/30" dev "${h}" 2>/dev/null
+  for _ in 1 2 3 4; do ping -c 3 -W 1 -I "${h}" "${cip}" >/dev/null 2>&1 && { passed=true; break; }; sleep 2; done
+  ip addr del "${hip}/30" dev "${h}" 2>/dev/null; $was_up || ip link set "${h}" down
+  hbn_ns "ip addr del ${cip}/30 dev ${c}" >/dev/null 2>&1
+  $passed && echo ok || echo fail
+}
+DATAPATH="passed"; DP_FAILED=""; DP_OK=0
+VF0_NETDEV=$(ls "/sys/bus/pci/devices/${HOST_PF0}/virtfn0/net" 2>/dev/null | head -1)
+DP_TESTS=()
+[[ "${HOST_PF_IN_HBN}" == yes ]] && DP_TESTS+=("host PF|${HOST_PF0_NETDEV}|pf0hpf_if|pf0hpf|169.254.250.1|169.254.250.2")
+[[ ${VFS_PER_PF} -gt 0 ]] && DP_TESTS+=("host VF0|${VF0_NETDEV}|pf0vf0_if|pf0vf0|169.254.250.5|169.254.250.6")
+for t in "${DP_TESTS[@]}"; do
+  IFS='|' read -r label hdev cif rep cip hip <<<"${t}"
+  r=$(datapath_test "${hdev}" "${cif}" "${cip}" "${hip}")
+  case "${r}" in
+    ok)     ok "traffic test ${label}: ${hdev} → ${cif} on the card passes"; DP_OK=$((DP_OK + 1)) ;;
+    skip:*) info "traffic test ${label}: not run (${r#skip:})" ;;
+    *)      warn "traffic test ${label}: ${hdev} → ${cif} on the card does NOT pass"
+            # for Aviz: frames reach the card's switch (vport_rx) but not the interface (rx)?
+            info "card counters for ${rep}: $(bf3_sudo "ethtool -S ${rep} 2>/dev/null | grep -E '^ +(rx_packets|vport_rx_packets):' | xargs" 2>/dev/null)"
+            DP_FAILED+="${label} " ;;
+  esac
+done
+if [[ -n "${DP_FAILED}" ]]; then DATAPATH="FAILED (${DP_FAILED% })"
+elif [[ ${DP_OK} -eq 0 ]]; then DATAPATH="not tested"; fi
+
 # ─── Hand-over for ONES ──────────────────────────────────────────────────────
 OOB_NOW=$(bf3_ssh "ip -4 -br addr show oob_net0" 2>/dev/null | awk '{print $3}'); OOB_NOW="${OOB_NOW%/*}"
 SERIAL=$(bf3_sudo "dmidecode -s system-serial-number" 2>/dev/null | tail -1)
@@ -796,13 +851,15 @@ done
 HO_JSON="${STATE_DIR}/ones-handover.json"; HO_TXT="${STATE_DIR}/ones-handover.txt"
 HOSTNAME_="$(hostname)" BUNDLE="${BF3_BUNDLE}" SERIAL="${SERIAL}" LAYOUT="${LAYOUT}" OOB="${OOB_NOW}" \
 REST_PW="${REST_PASSWORD}" REST_STATE="${REST_STATE}" PFIN="${HOST_PF_IN_HBN}" PFDEV="${HOST_PF0_NETDEV}" VFMAP="${VF_MAP}" \
+DP="${DATAPATH}" PCI="${HOST_PF0}" \
 python3 - "${HO_JSON}" <<'PY'
 import json, os, sys
 e = os.environ
 oob = e["OOB"] or None
 vfs = [dict(zip(("host_vf", "hbn_interface"), x.split("="))) for x in e["VFMAP"].split()]
 doc = {
-  "host": {"hostname": e["HOSTNAME_"], "bf3_pf_netdev": e["PFDEV"], "vfs": vfs},
+  "host": {"hostname": e["HOSTNAME_"], "bf3_pci": e["PCI"], "bf3_pf_netdev": e["PFDEV"], "vfs": vfs,
+           "traffic_test": e["DP"]},
   "bf3": {"serial": e["SERIAL"], "os": e["BUNDLE"], "port_layout": e["LAYOUT"],
           "management_ip": oob, "ssh_user": "ubuntu"},
   "hbn": {"rest_api": f"https://{oob}:8765/nvue_v1/" if oob else None,
@@ -823,6 +880,7 @@ chmod 600 "${HO_JSON}"
   echo "  Host VF → HBN interface (ONES assigns IPs on the host VFs):"
   for m in ${VF_MAP}; do printf '    %-18s → %s\n' "${m%%=*}" "${m#*=}"; done
   echo "  Uplink(s)      : p0_if$([[ ${LAYOUT} == dual ]] && echo ' p1_if')"
+  echo "  Traffic test   : ${DATAPATH}   (host → card, card at PCI ${HOST_PF0})"
   echo "  BF3 login      : ssh over rshim from this host: ubuntu@${BF3_TMFIFO_IP} (key ${SSH_KEY}); password = BF3_PASSWORD (your config, or ${SECRETS} if generated)"
   echo "  NOTE (DOCA 3.3.0): NVUE REST revisions stay 'pending' — apply inside the container:"
   echo "        sudo crictl exec \$(sudo crictl ps --name doca-hbn -q) nv config apply --assume-yes"
@@ -830,5 +888,19 @@ chmod 600 "${HO_JSON}"
 chmod 600 "${HO_TXT}"
 echo; cat "${HO_TXT}"
 echo
+if [[ -n "${DP_FAILED}" ]]; then
+  echo -e "  ${RED}${BOLD}NOT DONE — the server's traffic does not reach the card (${DP_FAILED% }).${NC}"
+  echo "  Everything on the card is set up, but traffic from this server does not get through to it."
+  echo "  We have seen exactly this on another server of this model: the PCIe slot the card sat in"
+  echo "  passed the card's configuration but not its traffic. Moving the card to another PCIe slot"
+  echo "  fixed it (Intel S2600BP: from Riser 2 to Riser 1, Slot 1). This card is at PCI ${HOST_PF0}."
+  echo "  What to do: power the server off, move the card to another slot, power on, and run this same"
+  echo "  command again (no --reflash needed). The card's interface names on the host may change; the"
+  echo "  script handles that."
+  echo "  Send to Aviz: ${HO_JSON} and ${LOG}"
+  exit 1
+fi
+rm -f "${FLASH_MARKER}"   # bring-up complete: a later --reflash flashes again
 echo -e "${GREEN}${BOLD}DONE${NC} — hand-over: ${HO_TXT} / ${HO_JSON}   log: ${LOG}"
+echo "  Send to Aviz: ${HO_JSON} and ${LOG}"
 exit 0
