@@ -50,8 +50,9 @@ sudo ./bringup_hbn_bf3_single_port.sh --vfs 4 --no-pf    # p0 + 4 host VFs (host
 ```
 
 `--no-pf` keeps the host PF (`pf0hpf`) outside HBN — use it when the host only uses
-VFs. Leave it off when the host must reach the network through its PF (e.g. PXE boot
-via the uplink). Create the host VFs FIRST (`setup_host_vfs_standalone.sh` on the x86 host).
+VFs; the PF then has no network path at all (HBN's OVS-DOCA drops traffic of ports not
+in `br-hbn`). Leave it off when the host must reach the network through its PF (e.g. PXE
+boot via the uplink). DPU netboot (`dpu-netboot`) must run BEFORE HBN, in either mode. Create the host VFs FIRST (`setup_host_vfs_standalone.sh` on the x86 host).
 
 ---
 

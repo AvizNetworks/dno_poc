@@ -31,6 +31,10 @@ IMAGE_TAR_NAME="doca_hbn_${HBN_IMAGE##*:}.tar"
 HOST_TMFIFO_IP="192.168.100.1"
 BF3_TMFIFO_IP="192.168.100.2"        # BFB default on the BF3 side of tmfifo
 BF3_PKG_DIR="hbn-standalone"         # under /home/ubuntu on the BF3
+# DPU mode = the Arm owns the card. NVIDIA's NIC→DPU nvconfig set (host mstconfig, in NIC mode):
+DPU_MODE_KEYS="INTERNAL_CPU_MODEL=1 INTERNAL_CPU_PAGE_SUPPLIER=0 INTERNAL_CPU_ESWITCH_MANAGER=0 INTERNAL_CPU_IB_VPORT0=0 INTERNAL_CPU_OFFLOAD_ENGINE=0"
+# …and what a healthy DPU-mode card reads on the BF3 (S1 / bp5 after the fix), current AND next boot:
+DPU_OWNER_KEYS="${DPU_MODE_KEYS} ECPF_ESWITCH_MANAGER=1 ECPF_PAGE_SUPPLIER=1"
 
 # ─── Site settings (override in --config FILE; see hbn_quickstart.env.sample) ─
 VFS_PER_PF=4             # host VFs per BF3 PF (0 = no VFs)
@@ -154,7 +158,9 @@ need_power_cycle() {  # $1 = why
 
 # SSH to the BF3 over tmfifo. Host keys change on every flash → never pinned.
 bf3_ssh() {
-  local o=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
+  # keepalives: a dead rshim link fails the step in ~2 min instead of hanging
+  local o=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8
+           -o ServerAliveInterval=15 -o ServerAliveCountMax=8)
   if [[ "${BF3_AUTH}" == pass ]]; then
     SSHPASS="${BF3_PASSWORD}" sshpass -e ssh "${o[@]}" -o PubkeyAuthentication=no "ubuntu@${BF3_TMFIFO_IP}" "$@"
   else
@@ -172,10 +178,86 @@ bf3_sudo() {
     "f=\$(mktemp); echo ${b64} | base64 -d > \$f; sudo -k -S -p '' bash \$f; rc=\$?; rm -f \$f; exit \$rc"
 }
 
+# LAG_RESOURCE_ALLOCATION on both BF3 PFs → active | staged | "<cur>/<next> …".
+# -e q is required: plain 'q' shows only the Next-Boot value, which can look applied.
+lag_state() {
+  local out cur nxt all_cur=true all_nxt=true raw=""
+  out=$(bf3_sudo "mst start >/dev/null 2>&1
+    for d in 03:00.0 03:00.1; do mlxconfig -d \$d -e q LAG_RESOURCE_ALLOCATION 2>/dev/null \
+      | awk '/LAG_RESOURCE_ALLOCATION/{print \$(NF-1), \$NF}'; done" 2>/dev/null)
+  [[ $(echo "${out}" | grep -c .) -eq 2 ]] || { echo "unknown"; return; }
+  while read -r cur nxt; do
+    [[ "${cur}" == *"(1)"* ]] || all_cur=false
+    [[ "${nxt}" == *"(1)"* ]] || all_nxt=false
+    raw+="${cur}/${nxt} "
+  done <<<"${out}"
+  if $all_cur; then echo active; elif $all_nxt; then echo staged; else echo "${raw% }"; fi
+}
+
+# Dual-port BF3 whose 2nd PF is hidden from the host (NUM_OF_PF=1 / HIDE_PORT2_PF=True, the
+# DPF/NICo multiport layout): the standalone dual-port bring-up needs both host PFs (pf1hpf,
+# pf1vfN), so stop with the fix instead of failing mid-run. Returns 0 = hidden.
+check_hidden_pf2() {
+  [[ ${#HOST_PFS[@]} -ge 2 ]] && bf3_ssh "test -e /sys/class/net/pf1hpf" 2>/dev/null && return 1
+  HIDDEN_PF2_MSG="dual-port BF3, but its 2nd PF is hidden from the host (host sees ${#HOST_PFS[@]} PF; typical
+         after DPF/NICo provisioning: NUM_OF_PF=1, HIDE_PORT2_PF=True). The standalone dual-port bring-up needs
+         both PFs. Only if nothing else manages this card — on the BF3:
+           sudo mlxconfig -d 03:00.0 -y set NUM_OF_PF=2 HIDE_PORT2_PF=0
+         then a COLD power cycle of the host, then re-run."
+  return 0
+}
+
+# DPU-mode ownership keys as the BF3 Arm sees them (-e q: Current AND Next Boot). Sets
+# OWNER_BAD_CUR / OWNER_BAD_NXT to "KEY=want ..." lists; returns 1 if they cannot be read.
+# Next Boot drifting back to the host (EXT_HOST_PF) silently re-enters NIC mode on the next
+# power cycle — seen on bp5 after a Redfish-only switch.
+owner_state() {
+  local out kv k want line
+  OWNER_BAD_CUR=""; OWNER_BAD_NXT=""
+  out=$(bf3_sudo "mst start >/dev/null 2>&1; mlxconfig -d 03:00.0 -e q $(for kv in ${DPU_OWNER_KEYS}; do printf '%s ' "${kv%=*}"; done) 2>/dev/null")
+  for kv in ${DPU_OWNER_KEYS}; do
+    k="${kv%=*}"; want="(${kv#*=})"
+    line=$(echo "${out}" | grep -E "^[ *RO]*${k} " | head -1)
+    [[ -n "${line}" ]] || return 1
+    [[ "$(echo "${line}" | awk '{print $(NF-1)}')" == *"${want}" ]] || OWNER_BAD_CUR+="${kv} "
+    [[ "$(echo "${line}" | awk '{print $NF}')" == *"${want}" ]] || OWNER_BAD_NXT+="${kv} "
+  done
+  return 0
+}
+
 redfish() {  # $1=method $2=path [$3=json]
   curl -sk --max-time 30 -u "${BF3_BMC_USER}:${BF3_BMC_PASSWORD}" -X "$1" \
        ${3:+-H 'Content-Type: application/json' -d "$3"} "https://${BF3_BMC}$2"
 }
+
+# ═══ Host prerequisites ══════════════════════════════════════════════════════
+# rshim (host driver + bfb-install), sshpass (adopt with BF3_PASSWORD), ipmitool (power cycle),
+# mstflint (NIC→DPU mode switch from the host) are required, plus a few basics. Ubuntu 22.04/24.04: all in the main/universe archive.
+echo; echo -e "${CYAN}${BOLD}[0/8] Host prerequisites${NC}"
+declare -A PREREQ=([rshim]=rshim [bfb-install]=rshim [sshpass]=sshpass [ipmitool]=ipmitool
+                   [ssh]=openssh-client [ssh-keygen]=openssh-client [openssl]=openssl [curl]=curl
+                   [python3]=python3 [devlink]=iproute2 [gzip]=gzip [wget]=wget [mstconfig]=mstflint)
+MISSING_PKGS=$(for c in "${!PREREQ[@]}"; do command -v "$c" >/dev/null || echo "${PREREQ[$c]}"; done | sort -u | xargs)
+if [[ -z "${MISSING_PKGS}" ]]; then
+  ok "rshim, bfb-install, sshpass, ipmitool and basics installed"
+elif $CHECK; then
+  plan "would install: ${MISSING_PKGS}"
+else
+  if command -v apt-get >/dev/null; then PKG_CMD="apt-get install -y"; PKG_PRE="apt-get update -qq"
+  elif command -v dnf >/dev/null; then PKG_CMD="dnf install -y"; PKG_PRE=true   # rshim/sshpass: EPEL
+  else die "missing packages: ${MISSING_PKGS} — install them, then re-run"; fi
+  confirm "Install missing host packages: ${MISSING_PKGS}?" || die "aborted — install: ${MISSING_PKGS}"
+  { ${PKG_PRE} && ${PKG_CMD} ${MISSING_PKGS}; } >/dev/null 2>&1 \
+    || die "could not install ${MISSING_PKGS}. Offline host: on a machine with the same OS release run
+         'apt-get download ${MISSING_PKGS}', copy the .deb files here, 'sudo apt-get install ./*.deb', re-run"
+  ok "installed: ${MISSING_PKGS}"
+fi
+# in-band IPMI (for --power-cycle): the kernel device needs the ipmi drivers
+if command -v ipmitool >/dev/null && ! [[ -e /dev/ipmi0 || -e /dev/ipmi/0 || -e /dev/ipmidev/0 ]]; then
+  $CHECK || modprobe -q ipmi_devintf 2>/dev/null; $CHECK || modprobe -q ipmi_si 2>/dev/null
+  [[ -e /dev/ipmi0 || -e /dev/ipmi/0 || -e /dev/ipmidev/0 ]] \
+    || warn "no local IPMI device — --power-cycle unavailable; power-cycle through the host BMC when asked"
+fi
 
 # ═══ Phase 1: find the BF3 on this host ══════════════════════════════════════
 phase "Find the BF3 on this host"
@@ -200,8 +282,23 @@ RSHIM_BDF=$(for d in /sys/bus/pci/devices/${_SLOT}.*; do
   [[ "$(cat "$d/device" 2>/dev/null)" == "0xc2d5" ]] && basename "$d"; done | head -1)
 HOST_PF0_NETDEV=$(ls "/sys/bus/pci/devices/${HOST_PF0}/net" 2>/dev/null | head -1)
 ok "BF3 at ${HOST_PF0} — host PF(s): ${HOST_PFS[*]}${HOST_PF0_NETDEV:+ (PF0 netdev ${HOST_PF0_NETDEV})}"
-[[ -n "${RSHIM_BDF}" ]] && ok "BF3 management (rshim) function: ${RSHIM_BDF}" \
-  || warn "rshim PCI function not visible (expected while the BF3 Arm is down)"
+if [[ -n "${RSHIM_BDF}" ]]; then
+  ok "BF3 management (rshim) function: ${RSHIM_BDF}"
+else
+  # This script reaches the BF3 only through host rshim. A missing PCI function is a
+  # configuration choice (BMC-owned rshim keeps the function visible), not a stopped service.
+  RSHIM_HINT="the host has no BF3 rshim PCI function (15b3:c2d5) — this script needs it to reach the BF3.
+         Usually the BF3 BMC has host rshim disabled (\"HostRshim\": \"Disabled\" — DPF/NICo-provisioned cards). Check:
+           curl -sk -u root:<pw> https://<BF3-BMC>/redfish/v1/Systems/Bluefield/Oem/Nvidia | grep -i rshim
+         Only if nothing else manages this card: enable it and release the BMC's own rshim, then reboot the host:
+           curl -sk -u root:<pw> -X PATCH -H 'Content-Type: application/json' -d '{\"HostRshim\":\"Enabled\"}' \\
+                https://<BF3-BMC>/redfish/v1/Systems/Bluefield/Oem/Nvidia
+           curl -sk -u root:<pw> -X PATCH -H 'Content-Type: application/json' -d '{\"BmcRShim\":{\"BmcRShimEnabled\":false}}' \\
+                https://<BF3-BMC>/redfish/v1/Managers/Bluefield_BMC/Oem/Nvidia
+         Or follow docs/BF3_HBN_ONES_GUIDE.md by hand over the BF3 network instead."
+  # the NIC→DPU switch (phase 2) works without it; phase 3 onwards needs it
+  warn "no BF3 rshim function (15b3:c2d5) visible yet — required from phase 3 on"
+fi
 [[ -n "${HOST_PF0_NETDEV}" ]] || warn "PF0 has no netdev — if the BF3 was just flashed, reboot this host"
 
 # ═══ Phase 2: DPU mode ═══════════════════════════════════════════════════════
@@ -220,13 +317,42 @@ elif echo "${ESW}" | grep -qE "mode (legacy|switchdev)"; then
     need_power_cycle "DPU mode is staged and waits for it"
   fi
   [[ -f "${MARKER}" ]] && warn "DPU mode was staged before the last boot but did not apply — that boot was probably a WARM reboot"
-  if [[ -n "${BF3_BMC}" && -n "${BF3_BMC_PASSWORD}" ]]; then METHOD=redfish
-  elif command -v mstconfig >/dev/null; then METHOD=mstconfig
-  else die "cannot switch the mode: set BF3_BMC + BF3_BMC_PASSWORD (Redfish, recommended) or install mstflint (apt install mstflint)"
+  # Primary: host mstconfig — in NIC mode the host owns the card's nvconfig, so no BMC is needed.
+  # Fallback: BF3 BMC Redfish (UEFI NicMode attribute) if mstconfig is missing or refused.
+  if command -v mstconfig >/dev/null; then METHOD=mstconfig
+  elif [[ -n "${BF3_BMC}" && -n "${BF3_BMC_PASSWORD}" ]]; then METHOD=redfish
+  else die "cannot switch the mode: install mstflint (apt install mstflint), or set BF3_BMC + BF3_BMC_PASSWORD (Redfish)"
   fi
-  if $CHECK; then plan "switch to DPU mode via ${METHOD}, then a cold power cycle"; exit 0; fi
-  confirm "Switch the BF3 to DPU mode (via ${METHOD}; needs a cold power cycle)?" || die "aborted"
+  _extra=""; [[ ${#HOST_PFS[@]} -ge 2 ]] && _extra=" + LAG_RESOURCE_ALLOCATION=1 (dual-port, same cycle)"
+  if $CHECK; then plan "switch to DPU mode via ${METHOD}${_extra}, then ONE cold power cycle"; exit 0; fi
+  confirm "Switch the BF3 to DPU mode permanently (via ${METHOD}; needs a cold power cycle)?" || die "aborted"
+  if [[ "${METHOD}" == mstconfig ]]; then
+    # NVIDIA's documented NIC→DPU set — ALL ownership keys together. Changing only
+    # INTERNAL_CPU_OFFLOAD_ENGINE (or only the UEFI NicMode attribute) left bp5 half-switched.
+    if mstconfig -d "${HOST_PF0}" -y set ${DPU_MODE_KEYS} >/dev/null 2>&1; then
+      ok "DPU mode staged: ${DPU_MODE_KEYS}"
+      # dual-port: stage eswitch multiport too, so the same cold cycle commits it
+      if [[ ${#HOST_PFS[@]} -ge 2 ]]; then
+        for pf in "${HOST_PFS[@]}"; do mstconfig -d "${pf}" -y set LAG_RESOURCE_ALLOCATION=1 >/dev/null 2>&1 \
+          || warn "${pf}: could not stage LAG_RESOURCE_ALLOCATION=1 — the BF3-side check stages it later"; done
+        ok "LAG_RESOURCE_ALLOCATION=1 staged on ${HOST_PFS[*]}"
+      fi
+      mstconfig -d "${HOST_PF0}" q INTERNAL_CPU_OFFLOAD_ENGINE 2>/dev/null | grep -q 'ENABLED(0)' \
+        || die "mstconfig accepted the change but INTERNAL_CPU_OFFLOAD_ENGINE does not read back ENABLED(0)"
+      # keep the BF3 UEFI attribute in agreement when the BMC is configured (optional)
+      if [[ -n "${BF3_BMC}" && -n "${BF3_BMC_PASSWORD}" ]]; then
+        redfish PATCH /redfish/v1/Systems/Bluefield/Bios/Settings '{"Attributes":{"NicMode":"DpuMode"}}' >/dev/null \
+          && ok "BF3 UEFI NicMode attribute set to DpuMode too (Redfish)" \
+          || warn "Redfish PATCH failed (BF3_BMC/BF3_BMC_PASSWORD?) — not required, continuing"
+      fi
+    elif [[ -n "${BF3_BMC}" && -n "${BF3_BMC_PASSWORD}" ]]; then
+      warn "mstconfig refused the change — falling back to Redfish"; METHOD=redfish
+    else
+      die "mstconfig could not change the mode (card refuses host nvconfig writes?) — set BF3_BMC + BF3_BMC_PASSWORD for the Redfish path and re-run"
+    fi
+  fi
   if [[ "${METHOD}" == redfish ]]; then
+    [[ -n "${RSHIM_BDF}" ]] || die "the Redfish path resets the Arm over host rshim, and none is visible. ${RSHIM_HINT}"
     # validated path: stage in UEFI settings → Arm reset so UEFI applies it → cold cycle
     redfish PATCH /redfish/v1/Systems/Bluefield/Bios/Settings '{"Attributes":{"NicMode":"DpuMode"}}' >/dev/null \
       || die "Redfish PATCH to ${BF3_BMC} failed (check BF3_BMC / BF3_BMC_PASSWORD)"
@@ -243,11 +369,6 @@ elif echo "${ESW}" | grep -qE "mode (legacy|switchdev)"; then
     done
     redfish GET /redfish/v1/Systems/Bluefield/Bios/Settings | grep -q '"NicMode"' \
       && warn "setting still pending after 5 min — power-cycling anyway; re-run reports if it did not apply"
-  else
-    # NVIDIA-documented host-side path (NIC mode lets the host change nvconfig)
-    mstconfig -d "${HOST_PF0}" -y set INTERNAL_CPU_OFFLOAD_ENGINE=0 \
-      || die "mstconfig failed — use the Redfish path (BF3_BMC + BF3_BMC_PASSWORD)"
-    ok "INTERNAL_CPU_OFFLOAD_ENGINE=0 (DPU mode) staged"
   fi
   boot_id > "${MARKER}"
   need_power_cycle "to switch the BF3 to DPU mode"
@@ -257,6 +378,10 @@ fi
 
 # ═══ Phase 3: BF3 OS (bf-bundle 3.3.0) ═══════════════════════════════════════
 phase "BF3 operating system (bf-bundle ${VALIDATED_BUNDLE})"
+if [[ -z "${RSHIM_BDF}" ]]; then
+  $CHECK && { echo -e "  ${RED}[BLOCK]${NC} ${RSHIM_HINT}"; exit 1; }
+  die "${RSHIM_HINT}"
+fi
 RSH=""
 for _ in 1 2 3; do
   RSH=$(grep -l "${RSHIM_BDF:-none}" /dev/rshim*/misc 2>/dev/null | head -1)
@@ -337,7 +462,7 @@ if $DO_FLASH; then
     [[ -z "${BFB}" && -f "$c" ]] && BFB="$c"
   done
   if $CHECK; then
-    plan "flash ${BFB_NAME} over ${RSHIM_DEV:-rshim} (ERASES the BF3 OS)${BFB:+ from ${BFB}}${BFB:- — would download it first}"
+    plan "flash ${BFB_NAME} over ${RSHIM_DEV:-rshim} (ERASES the BF3 OS)$([[ -n "${BFB}" ]] && echo " from ${BFB}" || echo " — would download it first")"
     plan "then: BF3 base config, package + image push, host VFs, HBN bring-up, hand-over"
     exit 0
   fi
@@ -391,7 +516,20 @@ if $CHECK; then
   bf3_ssh "test -e /sys/bus/pci/devices/0000:03:00.1 || test -e /sys/class/net/p1" 2>/dev/null \
     && _lay=dual || _lay=single
   ok "layout: ${_lay}-port"
+  if $_have_sudo && owner_state; then
+    [[ -z "${OWNER_BAD_CUR}${OWNER_BAD_NXT}" ]] && ok "DPU mode permanent (ownership current = next boot = Arm)"
+    [[ -n "${OWNER_BAD_NXT}" ]] && plan "re-stage next-boot ownership: ${OWNER_BAD_NXT}"
+    [[ -n "${OWNER_BAD_CUR}" ]] && plan "activate ownership settings with a cold power cycle: ${OWNER_BAD_CUR}"
+  fi
+  [[ "${_lay}" == dual ]] && check_hidden_pf2 && { echo -e "  ${RED}[BLOCK]${NC} ${HIDDEN_PF2_MSG}"; exit 1; }
   [[ "${HOST_PF_IN_HBN}" == no && "${_lay}" == dual ]] && die "HOST_PF_IN_HBN=no is only supported on single-port cards"
+  if [[ "${_lay}" == dual ]] && $_have_sudo; then
+    case "$(lag_state)" in
+      active) ok "LAG_RESOURCE_ALLOCATION=1 active (p1 multiport ready)" ;;
+      staged) plan "LAG_RESOURCE_ALLOCATION=1 staged — needs a cold power cycle" ;;
+      *)      plan "set LAG_RESOURCE_ALLOCATION=1 on both PFs + cold power cycle (p1 multiport)" ;;
+    esac
+  fi
   _vf=true; for pf in "${HOST_PFS[@]}"; do
     [[ "$(cat "/sys/bus/pci/devices/${pf}/sriov_numvfs" 2>/dev/null)" == "${VFS_PER_PF}" ]] || _vf=false; done
   $_vf && ok "host VFs: ${VFS_PER_PF} per PF" || plan "create ${VFS_PER_PF} host VFs per PF (setup_host_vfs_standalone.sh)"
@@ -420,6 +558,28 @@ fi
   echo -e "  ${YELLOW}► HOST REBOOT NEEDED:${NC} the BF3 PF netdev vanished after the flash — run: sudo reboot ; then re-run"; exit 3; }
 ok "NIC firmware ${FW% *} active; host PF netdev present"
 
+# DPU mode must be PERMANENT: every ownership key on the Arm, current AND next boot. A wrong
+# Next Boot value is re-staged here (no cycle needed); a wrong Current value needs one cycle.
+OWNER_MARKER="${STATE_DIR}/owner-fix-staged"
+if owner_state; then
+  if [[ -n "${OWNER_BAD_NXT}" ]]; then
+    warn "next boot would leave DPU mode — re-staging: ${OWNER_BAD_NXT}"
+    bf3_sudo "mlxconfig -d 03:00.0 -y set ${OWNER_BAD_NXT} >/dev/null" || die "mlxconfig could not re-stage ${OWNER_BAD_NXT}"
+    owner_state && [[ -z "${OWNER_BAD_NXT}" ]] || die "next-boot ownership still wrong after re-staging: ${OWNER_BAD_NXT}"
+    ok "next-boot ownership settings re-staged to the Arm (ECPF)"
+  fi
+  if [[ -n "${OWNER_BAD_CUR}" ]]; then
+    [[ -f "${OWNER_MARKER}" && "$(cat "${OWNER_MARKER}")" != "$(boot_id)" ]] \
+      && die "ownership settings still not active after a power cycle (${OWNER_BAD_CUR}) — was it a WARM reboot? If it was a cold cycle, send ${LOG} to Aviz"
+    boot_id > "${OWNER_MARKER}"
+    need_power_cycle "to activate the DPU ownership settings (${OWNER_BAD_CUR})"
+  fi
+  rm -f "${OWNER_MARKER}"
+  ok "DPU mode is permanent: ownership settings current = next boot = Arm"
+else
+  warn "could not read the DPU ownership settings on the BF3 (mlxconfig) — permanence not verified"
+fi
+
 # ═══ Phase 4: BF3 base config ════════════════════════════════════════════════
 phase "BF3 base configuration (clock, management IP, SF capacity)"
 SKEW=$(( $(date +%s) - $(bf3_ssh 'date +%s' 2>/dev/null || date +%s) ))
@@ -428,20 +588,34 @@ if [[ ${SKEW#-} -gt 30 ]]; then
 else ok "BF3 clock in sync"; fi
 
 if [[ -n "${OOB_ADDRESS}" ]]; then
-  if bf3_ssh "ip -4 addr show oob_net0" 2>/dev/null | grep -q "inet ${OOB_ADDRESS%/*}/"; then
-    ok "management port oob_net0 = ${OOB_ADDRESS}"
-  else
-    bf3_sudo "cat > /etc/netplan/60-oob.yaml <<'EOF'
-network:
+  # routes line built separately: a '}' inside ${VAR:+...} would end the expansion early.
+  # metric 50: the stock BFB also runs DHCP on its in-band SF enp3s0f0s0 (60-mlnx-0.yaml); when
+  # p0 is cabled to a DHCP network that adds a 2nd default route at metric 100, and forwarded
+  # traffic (the REST hostPort DNAT replies) followed it — REST timed out from routed clients.
+  ROUTES=""; [[ -n "${OOB_GATEWAY}" ]] && ROUTES="      routes: [{to: default, via: ${OOB_GATEWAY}, metric: 50}]"
+  OOB_YAML="network:
   version: 2
   ethernets:
     oob_net0:
       dhcp4: false
       addresses: [${OOB_ADDRESS}]
-${OOB_GATEWAY:+      routes: [{to: default, via: ${OOB_GATEWAY}}]}
-      nameservers: {addresses: [${OOB_DNS}]}
-EOF
-chmod 600 /etc/netplan/60-oob.yaml && netplan apply" && ok "management port oob_net0 set to ${OOB_ADDRESS}${OOB_GATEWAY:+ via ${OOB_GATEWAY}}"
+${ROUTES}
+      nameservers: {addresses: [${OOB_DNS}]}"
+  # compare the whole file, so a re-run also upgrades files written by older versions
+  if [[ "$(bf3_sudo "cat /etc/netplan/60-oob.yaml 2>/dev/null")" == "${OOB_YAML}" ]] \
+     && bf3_ssh "ip -4 addr show oob_net0" 2>/dev/null | grep -q "inet ${OOB_ADDRESS%/*}/"; then
+    ok "management port oob_net0 = ${OOB_ADDRESS}"
+  else
+    # validate with 'netplan generate' before applying; an invalid file is removed again, so
+    # a bad setting can never break the BF3's networking (tmfifo included) at the next boot
+    bf3_sudo "echo $(printf '%s\n' "${OOB_YAML}" | base64 -w0) | base64 -d > /etc/netplan/60-oob.yaml
+chmod 600 /etc/netplan/60-oob.yaml
+netplan generate || { rm -f /etc/netplan/60-oob.yaml; exit 1; }
+netplan apply" \
+      || die "could not set oob_net0 (netplan rejected the settings — check OOB_ADDRESS/OOB_GATEWAY/OOB_DNS)"
+    bf3_ssh "ip -4 addr show oob_net0" 2>/dev/null | grep -q "inet ${OOB_ADDRESS%/*}/" \
+      || die "oob_net0 does not have ${OOB_ADDRESS} after netplan apply"
+    ok "management port oob_net0 set to ${OOB_ADDRESS}${OOB_GATEWAY:+ via ${OOB_GATEWAY}}"
   fi
 else
   info "OOB_ADDRESS not set — management port left as is ($(bf3_ssh "ip -4 -br addr show oob_net0" 2>/dev/null | awk '{print $3}'))"
@@ -471,9 +645,13 @@ else
     [[ -z "${TAR}" && -f "$c" ]] && TAR="$c"
   done
   if [[ -n "${TAR}" ]]; then
-    info "pushing ${TAR##*/} over rshim (~300 MB compressed — several minutes)..."
+    # The image is not part of the BFB: it goes over tmfifo (network over rshim) once the OS is up
+    info "pushing ${TAR##*/} ($(du -h "${TAR}" | cut -f1)) over rshim/tmfifo — several minutes..."
+    _t0=$(date +%s)
     if [[ "${TAR}" == *.gz ]]; then cat "${TAR}"; else gzip -1 -c "${TAR}"; fi \
       | bf3_ssh "cat > ~/hbn-image.tar.gz" || die "image copy failed"
+    _sz=$(bf3_ssh "stat -c %s ~/hbn-image.tar.gz" 2>/dev/null || echo 0); _dt=$(( $(date +%s) - _t0 ))
+    ok "copied $((_sz / 1048576)) MB in ${_dt}s (~$(( _sz / 1048576 / (_dt > 0 ? _dt : 1) )) MB/s)"
     bf3_sudo "gunzip -f /home/ubuntu/hbn-image.tar.gz && ctr -n k8s.io images import /home/ubuntu/hbn-image.tar >/dev/null; rc=\$?; rm -f /home/ubuntu/hbn-image.tar; exit \$rc" \
       || die "image import failed"
     ok "image imported from ${TAR##*/}"
@@ -501,8 +679,28 @@ else
   LAYOUT=single; BF3_PF_COUNT=1; BRINGUP=bringup_hbn_bf3_single_port.sh
 fi
 ok "layout: ${LAYOUT}-port → ${BRINGUP}"
+[[ "${LAYOUT}" == dual ]] && check_hidden_pf2 && die "${HIDDEN_PF2_MSG}"
 if [[ "${HOST_PF_IN_HBN}" == no && "${LAYOUT}" == dual ]]; then
   die "HOST_PF_IN_HBN=no is only supported on single-port cards — set it to yes"
+fi
+
+# Dual-port: p1 reaches the PF0-hosted HBN SFs only with eswitch multiport, which needs
+# LAG_RESOURCE_ALLOCATION=1 committed by a COLD power cycle (the bring-up preflight blocks
+# without it). Stage it here so the user only has to power-cycle and re-run.
+if [[ "${LAYOUT}" == dual ]]; then
+  LAG=$(lag_state)
+  if [[ "${LAG}" == active ]]; then
+    ok "LAG_RESOURCE_ALLOCATION=1 active on both PFs (p1 can reach HBN)"
+  elif [[ "${LAG}" == staged ]]; then
+    need_power_cycle "to commit LAG_RESOURCE_ALLOCATION=1 (multiport for the p1 uplink) — a warm reboot does not apply it"
+  else
+    warn "LAG_RESOURCE_ALLOCATION is not 1 (${LAG}) — the p1 uplink would blackhole unicast"
+    confirm "Set LAG_RESOURCE_ALLOCATION=1 on both BF3 PFs (needs a cold power cycle)?" || die "aborted"
+    bf3_sudo "mlxconfig -d 03:00.0 -y set LAG_RESOURCE_ALLOCATION=1 >/dev/null && mlxconfig -d 03:00.1 -y set LAG_RESOURCE_ALLOCATION=1 >/dev/null" \
+      || die "mlxconfig set LAG_RESOURCE_ALLOCATION failed"
+    ok "LAG_RESOURCE_ALLOCATION=1 staged on 03:00.0 and 03:00.1"
+    need_power_cycle "to commit LAG_RESOURCE_ALLOCATION=1 (multiport for the p1 uplink)"
+  fi
 fi
 
 # ═══ Phase 7: host VFs ═══════════════════════════════════════════════════════
@@ -516,13 +714,16 @@ else
     [[ ${TOT:-0} -ge ${VFS_PER_PF} ]] || die "${pf}: SR-IOV allows ${TOT:-0} VFs, need ${VFS_PER_PF} (VM without SR-IOV passthrough, or SR-IOV disabled in BIOS?)"
     [[ "$(cat "/sys/bus/pci/devices/${pf}/sriov_numvfs" 2>/dev/null)" == "${VFS_PER_PF}" ]] || VF_OK=false
   done
-  if $VF_OK && systemctl is-enabled --quiet bf3-host-vfs.service 2>/dev/null; then
+  # older bf3-host-vfs.service units named the PF netdev and break when the card changes slot;
+  # current ones call the PCI-id helper — rewrite old ones via setup_host_vfs_standalone.sh
+  if $VF_OK && systemctl is-enabled --quiet bf3-host-vfs.service 2>/dev/null \
+     && grep -q /usr/local/sbin/bf3-host-vfs.sh /etc/systemd/system/bf3-host-vfs.service 2>/dev/null; then
     ok "${VFS_PER_PF} VFs per PF present and persistent (bf3-host-vfs.service)"
   else
     if [[ "$(cat "/sys/bus/pci/devices/${HOST_PF0}/sriov_numvfs" 2>/dev/null)" != 0 ]]; then
       confirm "Re-create the host VFs (existing VFs on the BF3 PFs drop briefly)?" || die "aborted"
     fi
-    bash "${SCRIPT_DIR}/setup_host_vfs_standalone.sh" --vfs-per-pf "${VFS_PER_PF}" | sed 's/^/    /'
+    bash "${SCRIPT_DIR}/setup_host_vfs_standalone.sh" --vfs-per-pf "${VFS_PER_PF}" | sed -u 's/^/    /'
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "setup_host_vfs_standalone.sh failed"
     ok "host VFs created and persisted"
   fi
@@ -557,17 +758,17 @@ else
   # only now (the bring-up will apply it) may a REST password be generated
   if [[ -z "${REST_PASSWORD}" ]]; then REST_PASSWORD=$(gen_password); save_secret REST_PASSWORD "${REST_PASSWORD}"; fi
   info "preflight: ${BRINGUP} ${FLAGS} --check"
-  bf3_sudo "cd /home/ubuntu/${BF3_PKG_DIR} && ./scripts/${BRINGUP} ${FLAGS} --check" | sed 's/^/    │ /'
+  bf3_sudo "cd /home/ubuntu/${BF3_PKG_DIR} && ./scripts/${BRINGUP} ${FLAGS} --check" | sed -u 's/^/    │ /'
   [[ ${PIPESTATUS[0]} -eq 0 ]] || die "bring-up preflight reported blockers (above)"
   info "running: ${BRINGUP} ${FLAGS} --rest-pass ****  (3-6 min)"
-  bf3_sudo "cd /home/ubuntu/${BF3_PKG_DIR} && ./scripts/${BRINGUP} ${FLAGS} --rest-pass $(printf '%q' "${REST_PASSWORD}")" | sed 's/^/    │ /'
+  bf3_sudo "cd /home/ubuntu/${BF3_PKG_DIR} && ./scripts/${BRINGUP} ${FLAGS} --rest-pass $(printf '%q' "${REST_PASSWORD}")" | sed -u 's/^/    │ /'
   [[ ${PIPESTATUS[0]} -eq 0 ]] || die "bring-up failed (output above; log: ${LOG})"
   ok "bring-up finished"
 fi
 
 STATUS=$(bf3_sudo "/home/ubuntu/${BF3_PKG_DIR}/scripts/status_hbn.sh" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
 if echo "${STATUS}" | grep -q 'All checks passed'; then ok "status_hbn.sh: all checks passed"
-else warn "status_hbn.sh reports problems:"; echo "${STATUS}" | grep -E '^\[FAIL\]' | sed 's/^/    /'; fi
+else warn "status_hbn.sh reports problems:"; echo "${STATUS}" | grep -E '^\[FAIL\]' | sed -u 's/^/    /'; fi
 
 # Never hand ONES an untested credential: check the REST password against the live API
 # (pod IP — the OOB portmap is not reachable from the BF3 itself)

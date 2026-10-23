@@ -34,8 +34,15 @@ sudo ./scripts/hbn_quickstart.sh                            # run it — repeat 
 - When a **cold power cycle** is needed it stops with exit code 3 and says so:
   power-cycle the server (`sudo ipmitool chassis power cycle`, or `--power-cycle` to let
   the script do it), then run the same command again.
+- **Dual-port cards:** it also sets `LAG_RESOURCE_ALLOCATION=1` (needed for the second
+  uplink `p1`) and asks for the power cycle that applies it.
 - A BF3 that already runs bf-bundle 3.3.0 is **not** re-flashed if you set its `ubuntu`
-  password as `BF3_PASSWORD` in `hbn_quickstart.env` (needs `sshpass` on the host).
+  password as `BF3_PASSWORD` in `hbn_quickstart.env`.
+- Step 0 checks the host packages (`rshim`, `sshpass`, `ipmitool`, …) and offers to install
+  any that are missing.
+- The OS image goes onto the BF3 with `bfb-install` (rshim boot stream). The HBN container
+  image is not part of it: it is copied afterwards over the rshim network link (tmfifo) and
+  the script prints the transfer time.
 - At the end it writes the hand-over for ONES (Step 9) to
   `/var/lib/hbn-quickstart/ones-handover.txt` and `.json`.
 
@@ -47,9 +54,9 @@ If anything stops it, the steps below are the same procedure by hand — continu
 
 | Item | Notes |
 |---|---|
-| x86 host with the BF3 installed | Ubuntu, root access, `rshim` package (`sudo apt install rshim`) |
+| x86 host with the BF3 installed | Ubuntu 22.04/24.04, root access, packages `rshim` (includes `bfb-install`), `sshpass`, `ipmitool`: `sudo apt install rshim sshpass ipmitool` (`hbn_quickstart.sh` installs them if missing; offline host: `apt-get download` them on a machine with the same release and `sudo apt-get install ./*.deb`) |
 | Host BMC access, or someone who can power-cycle the server | Needed for a **cold** power cycle (Steps 1–2) |
-| BF3 BMC IP + `root` password | The BF3's own BMC (OpenBMC), on the card's RJ45 management port |
+| BF3 BMC IP + `root` password (optional) | The BF3's own BMC (OpenBMC), on the card's RJ45 port. Not needed by `hbn_quickstart.sh` (it switches NIC→DPU mode from the host); useful for the console (`ssh -p 2200 root@<BMC>`) and recovery. Factory password `0penBmc` is expired — change it on first login |
 | An IP address for the BF3 management port (OOB) | Same subnet as the BF3 BMC — there is usually no DHCP on that network |
 | `bf-bundle-3.3.0-202_26.01_ubuntu-24.04_64k_prod.bfb` | BF3 OS image, ~1.5 GB (download link in Step 2) |
 | `hbn-standalone-<date>.tar.gz` | The scripts (this package) |
@@ -96,6 +103,31 @@ HBN runs on the BF3's Arm cores, which only happens in **DPU mode**. SuperNIC mo
 (for example the single-port B3140H) are shipped in **NIC mode**: the Arm stops in
 UEFI and never boots Linux.
 
+**Check from the x86 host** (no BMC needed):
+
+```bash
+sudo devlink dev eswitch show pci/<BF3-PCI>   # "Operation not supported" = DPU mode; "mode legacy/switchdev" = NIC mode
+```
+
+**Switch, option A — from the x86 host with mstconfig (recommended, no BMC needed).**
+In NIC mode the host owns the card's settings. Set the whole DPU-mode group at once
+(changing only one of them leaves the card half-switched):
+
+```bash
+sudo apt install mstflint
+sudo mstconfig -d <BF3-PCI> -y set INTERNAL_CPU_MODEL=1 INTERNAL_CPU_PAGE_SUPPLIER=0 \
+     INTERNAL_CPU_ESWITCH_MANAGER=0 INTERNAL_CPU_IB_VPORT0=0 INTERNAL_CPU_OFFLOAD_ENGINE=0
+sudo ipmitool chassis power cycle    # COLD power cycle (or via the host BMC)
+```
+
+Dual-port cards: in the same go, also run
+`sudo mstconfig -d <PCI of each BF3 PF> -y set LAG_RESOURCE_ALLOCATION=1` (needed by Step 7),
+so the one power cycle applies both.
+
+**Switch, option B — Redfish on the BF3 BMC.** Use this if the card refuses option A.
+A new BF3 BMC's factory password (`root` / `0penBmc`) is expired: log in once
+(`ssh root@<BMC>`) and change it first.
+
 **Check** (from any machine that reaches the BF3 BMC):
 
 ```bash
@@ -130,6 +162,17 @@ sudo ipmitool chassis power cycle    # on the x86 host, or via the host BMC
 
 A warm reboot, `reboot` on the Arm, or a BMC "chassis reset" does **not** apply the
 mode change — it must be a real power cycle of the server.
+
+**Confirm it is permanent** (once the BF3 runs Linux, on the BF3): Current **and** Next
+Boot must both show the Arm owning the card, otherwise the next power cycle silently
+returns it to NIC mode:
+
+```bash
+sudo mlxconfig -d 03:00.0 -e q INTERNAL_CPU_MODEL INTERNAL_CPU_PAGE_SUPPLIER INTERNAL_CPU_ESWITCH_MANAGER \
+     INTERNAL_CPU_IB_VPORT0 INTERNAL_CPU_OFFLOAD_ENGINE ECPF_ESWITCH_MANAGER ECPF_PAGE_SUPPLIER
+# expect in the last two columns: EMBEDDED_CPU(1), ECPF(0) ×3, ENABLED(0), ECPF(1) ×2
+# a wrong Next Boot value: sudo mlxconfig -d 03:00.0 -y set <KEY>=<value>   (hbn_quickstart.sh does this)
+```
 
 **Confirm** after the server is back: `BootProgress` → `OemLastState: "OsIsRunning"`,
 and on the x86 host `sudo devlink dev eswitch show pci/<BF3-PCI>` → `Operation not supported`
@@ -272,7 +315,8 @@ ip -br link | grep -E 'v[0-9]+ '                     # e.g. enp94s0f0v0 … enp9
 ```
 
 The script finds the BF3 automatically and installs `bf3-host-vfs.service` so the VFs
-come back after every host reboot. It prints the exact bring-up command for Step 7.
+come back after every host reboot. The service finds the BF3 by PCI ID at boot, so it keeps
+working if the card moves to another slot (which renames the host interface). It prints the exact bring-up command for Step 7.
 
 Check on the **BF3** that it sees them: `ls /sys/class/net | grep -E '^pf[01]vf'`
 → `pf0vf0 … pf0vf3`.
@@ -306,12 +350,14 @@ sudo ./scripts/bringup_hbn_bf3.sh --vfs 8 --enable-bgp --rest-pass '<api-passwor
 | `--no-pf` *(single-port script)* | Leave the host **PF** out of HBN — only the VFs are connected |
 
 **Should I use `--no-pf`?**
-- Use it when the host **only** uses VFs (the ONES case) and the host PF should stay
-  outside HBN — for example to install the host OS over the PF from a boot server
-  running on the BF3 itself.
+- Use it when the host **only** uses VFs (the ONES case). The host PF then has **no
+  network path at all** — once HBN runs, the BF3 drops PF traffic that is not part of HBN.
 - Do **not** use it when the host must reach the network **through its PF** — for
   example PXE-booting the host from a server that sits behind the BF3's uplink.
 - You can switch later: re-run the same command with or without `--no-pf`.
+- Installing the host OS **from the BF3 itself** (`dpu-netboot` packet) only works
+  **before** HBN is brought up — with HBN running, in either mode, the netboot server
+  on the BF3 cannot reach the host PF.
 
 The run takes 3–6 minutes. These messages are **expected**:
 
@@ -377,6 +423,8 @@ the next hop / gateway side for that VF.
 | `/Bios` still shows `NicMode` but the OS boots | Stale field — trust `BootProgress: OsIsRunning` |
 | Redfish returns 401 | Wrong password, or the account is locked after several failures (wait ~10 min) |
 | `/dev/rshim0` missing on the host | `sudo systemctl restart rshim`; make sure the BF3 BMC's rshim is stopped |
+| Host `lspci` shows no BF3 "SoC Management Interface" (rshim) at all | The BF3 BMC hides it: Redfish `Systems/Bluefield/Oem/Nvidia` → `"HostRshim": "Disabled"` (common on DPF/NICo-provisioned cards). Set `"HostRshim": "Enabled"` there, reboot the host |
+| Dual-port card but the host sees only one BF3 PF | `NUM_OF_PF=1` / `HIDE_PORT2_PF=True` (DPF/NICo multiport layout). Standalone HBN needs both: `mlxconfig -d 03:00.0 set NUM_OF_PF=2 HIDE_PORT2_PF=0` on the BF3, then a cold power cycle |
 | On the BMC: `microcom: can't open '/dev/rshim0/console'` | Use `ssh -p 2200 root@<BMC>` instead (does not need rshim) |
 | `bfb-install` stalls / `Connection timed out` | Stop the BMC's rshim; `echo "BOOT_TIMEOUT 1200" \| sudo tee /dev/rshim0/misc`; retry |
 | Host PF netdev gone after flashing | Reboot the x86 host |

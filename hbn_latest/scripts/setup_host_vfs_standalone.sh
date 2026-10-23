@@ -17,7 +17,22 @@ for pf in "${PFS[@]}"; do
   for v in /sys/class/net/${pf%np*}v*; do [[ -e "$v" ]] && ip link set dev "$(basename "$v")" up 2>/dev/null || true; done
   echo "  $pf -> $(cat /sys/class/net/$pf/device/sriov_numvfs) VFs"
 done
-# Persist across reboot (sriov_numvfs resets to 0 otherwise)
+# Persist across reboot (sriov_numvfs resets to 0 otherwise). The boot helper finds the PFs by
+# PCI id, not by interface name — the name changes when the card moves to another slot.
+cat > /usr/local/sbin/bf3-host-vfs.sh <<'HELPER'
+#!/bin/bash
+# bf3-host-vfs.sh N — create N SR-IOV VFs on every BF3 PF (15b3:a2dc). Written by setup_host_vfs_standalone.sh.
+N="${1:-4}"; rc=0; found=0
+for d in /sys/bus/pci/devices/*; do
+  [[ "$(cat "$d/vendor" 2>/dev/null)" == "0x15b3" && "$(cat "$d/device" 2>/dev/null)" == "0xa2dc" && -e "$d/sriov_numvfs" ]] || continue
+  found=1
+  [[ "$(cat "$d/sriov_numvfs")" == "$N" ]] || { echo 0 > "$d/sriov_numvfs"; echo "$N" > "$d/sriov_numvfs" || rc=1; }
+  echo "$(basename "$d") $(ls "$d/net" 2>/dev/null): $(cat "$d/sriov_numvfs") VFs"
+done
+[[ $found -eq 1 ]] || { echo "no BF3 PF (15b3:a2dc) with SR-IOV found"; exit 1; }
+exit $rc
+HELPER
+chmod 755 /usr/local/sbin/bf3-host-vfs.sh
 cat > /etc/systemd/system/bf3-host-vfs.service <<UNIT
 [Unit]
 Description=Create SR-IOV VFs on BF3 host PFs
@@ -26,7 +41,7 @@ Wants=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'for pf in ${PFS[*]}; do [ -e /sys/class/net/\$pf/device/sriov_numvfs ] && echo ${VFS_PER_PF} > /sys/class/net/\$pf/device/sriov_numvfs; done'
+ExecStart=/usr/local/sbin/bf3-host-vfs.sh ${VFS_PER_PF}
 [Install]
 WantedBy=multi-user.target
 UNIT

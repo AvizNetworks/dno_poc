@@ -127,7 +127,7 @@ mkdir -p "$HTTP_ROOT" "$TFTP_ROOT"
 if [ ! -s "$HTTP_ROOT/snponly.efi" ]; then
   if [ -s /usr/lib/ipxe/snponly.efi ]; then cp /usr/lib/ipxe/snponly.efi "$HTTP_ROOT/"
   elif apt-get install -y -qq ipxe >/dev/null 2>&1 && [ -s /usr/lib/ipxe/snponly.efi ]; then cp /usr/lib/ipxe/snponly.efi "$HTTP_ROOT/"
-  else log "fetching snponly.efi from boot.ipxe.org"; curl -fsSL -o "$HTTP_ROOT/snponly.efi" https://boot.ipxe.org/snponly.efi; fi
+  else log "fetching snponly.efi from boot.ipxe.org"; curl -fsSL -o "$HTTP_ROOT/snponly.efi" https://boot.ipxe.org/x86_64-efi/snponly.efi; fi
 fi
 ln -sf "$HTTP_ROOT/snponly.efi" "$TFTP_ROOT/snponly.efi"
 

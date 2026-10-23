@@ -78,8 +78,9 @@ Options:
   --vfs <n>            VFs on PF0 (the only PF). Requires host SR-IOV VFs FIRST.
   --p0-vfs <n>         same as --vfs
   --no-pf              Leave the host PF (pf0hpf) OUT of HBN — only p0 + host VFs.
-                       Use when the host only uses VFs; keeps pf0hpf free (e.g. for
-                       dpu_netboot_server.sh). The host PF then has no HBN data path.
+                       Use when the host only uses VFs. The host PF then has NO data
+                       path at all: with HBN's OVS-DOCA owning the eswitch, a PF outside
+                       br-hbn is dropped both ways (so dpu_netboot_server.sh can't use it).
   -h, --help           Show this help
 
 Examples:
@@ -261,7 +262,7 @@ preflight() {
     pf_ok "single-port card: one PCI function (${BF3_PCI0}), no p1 — p0 + ${HOST_PF_PORTS:-VFs} only"
   fi
   if $NO_PF; then
-    pf_ok "--no-pf: host PF (pf0hpf) stays OUT of HBN — host PF has no HBN data path; pf0hpf stays free (netboot OK)"
+    pf_ok "--no-pf: host PF (pf0hpf) stays OUT of HBN — the host PF gets no data path at all (only the VFs work)"
   fi
 
   # 3. Link type: IB mode cannot be fixed from the ARM — needs a true cold power cycle
@@ -1401,7 +1402,12 @@ if [[ -d "$DOCA_SCRIPTS_DIR" ]]; then
     warn "encrypt_password.py failed — password will reset on container restart"
   fi
 
-  # Update startup.yaml to listen on 0.0.0.0 — must run from script dir (relative paths)
+  # Update startup.yaml to listen on 0.0.0.0 — must run from script dir (relative paths).
+  # NVIDIA's helper seeds an EMPTY startup.yaml but crashes on a MISSING one (fresh flash):
+  # seed it the same way first.
+  mkdir -p /var/lib/hbn/etc/nvue.d
+  [[ -f /var/lib/hbn/etc/nvue.d/startup.yaml ]] \
+    || cp "$DOCA_SCRIPTS_DIR/etc/nvue.d/enable-rest.yaml" /var/lib/hbn/etc/nvue.d/startup.yaml
   if (cd "$DOCA_SCRIPTS_DIR" && python3 enable-rest-api.py); then
     ok "NVUE startup.yaml updated for external REST access"
   else

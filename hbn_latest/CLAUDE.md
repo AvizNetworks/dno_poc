@@ -64,6 +64,15 @@ sudo ./scripts/bringup_hbn_bf3.sh --p0-vfs 4 --p1-vfs 4
 **One-command path (x86 host): `sudo ./scripts/hbn_quickstart.sh [--check] [--config FILE]`** —
 orchestrates mode switch → flash (bf.cfg presets ubuntu password + SSH key) → clock/OOB →
 package+image push over rshim/tmfifo → host VFs → bring-up → `/var/lib/hbn-quickstart/ones-handover.{txt,json}`.
+Dual-port: stages LAG_RESOURCE_ALLOCATION=1 on both PFs + asks for the cold cycle.
+Step 0 checks/installs host packages (rshim incl. bfb-install, sshpass, ipmitool, mstflint — Ubuntu universe).
+NIC→DPU: host `mstconfig` sets ALL 5 INTERNAL_CPU_* keys (+LAG_RESOURCE_ALLOCATION=1 on dual-port, same cycle) →
+ONE cold cycle; Redfish optional (UEFI NicMode kept in agreement / fallback). After login it verifies the 7
+ownership keys (5 + ECPF_ESWITCH_MANAGER/ECPF_PAGE_SUPPLIER=1) Current AND Next Boot on the Arm — re-stages a
+drifted Next Boot (bp5 had EXT_HOST_PF staged after a Redfish-only switch → would have reverted to NIC mode).
+HBN image is NOT in the BFB: pushed over tmfifo after the flash (logs MB/s). `bf3-host-vfs.service` runs
+`/usr/local/sbin/bf3-host-vfs.sh N` (finds PFs by PCI id — bp5's PF renamed enp94→enp59 on a slot move
+and the old name-based unit silently created 0 VFs); quickstart rewrites old-style units.
 Calls the per-step scripts UNCHANGED (they must keep working by hand). Re-run until DONE; exit 3 =
 cold power cycle needed. Settings: `scripts/hbn_quickstart.env.sample`. Refuses kubelet-joined BF3s.
 
@@ -154,6 +163,9 @@ sudo ./scripts/dpu_netboot_server.sh --status | --remove
 ```
 Customer doc: `docs/NETBOOT.md`; packet `dpu-netboot-<date>.tar.gz` from `make_packages.sh` (ships the
 script as `netboot.sh`). Refuses to run if `pf0hpf` is in an OVS bridge (HBN owns it). Validated on S8 2026-10-21.
+**Does NOT work while HBN runs — even with `--no-pf`** (bp5, 2026-10-22): OVS-DOCA (`doca-init=true`) owns the eswitch
+and drops traffic of vports not in br-hbn both ways (`ethtool -S pf0hpf`: vport_rx_packets climbs, rx_packets stays 0).
+Run netboot BEFORE the HBN bring-up, or build an HBN-integrated mode (DHCP/HTTP inside the doca-hbn netns on pf0hpf_if).
 
 **Get a shell inside doca-hbn container:**
 ```bash
@@ -482,6 +494,7 @@ sudo ./build.py        # reads config.json; build disabled, run enabled
 | kubelet pod not starting | Check `journalctl -u kubelet | grep hbn`; ensure `/var/lib/hbn/` dirs exist |
 | **Fresh flash:** init-sfs loops `Device "p0_if" does not exist`, host still shows `enp3s0f0s2` (SFs never renamed to `p0_if`) | A clean bf-bundle flash has `sfc-hbn` but not the full `hbn-runtime` prep (we skip `install.sh` — it hangs on mgmt-VRF/SSH). init-sfs waits for `p0_if` **on the host** then moves it into the pod; stock `/lib/udev/auxdev-sf-netdev-rename` only emits `enp<b>s<d>f<f>s<sfnum>`. **`bringup_hbn_bf3.sh` now fixes this**: installs `sfc-state-propagation` offline from `/var/hbn-repo-*` + patches the udev helper (`source /etc/mellanox/sfc.conf` + `SFMAP[2]=p0_if…`) + renames existing core SFs. Manual: patch the helper, then `ip link set enp3s0f0s2 down; ip link set enp3s0f0s2 name p0_if; ip link set p0_if up` (sfnum 2→p0_if, 3→p1_if, 1514→pf0hpf_if, 1515→pf1hpf_if). Do NOT run `install.sh`. |
 | **Fresh flash:** `status_hbn.sh` FAILs `p0_if_r not found` + OVS `p0_if_r: could not set configuration (No such device)`, host shows `en3f0pf0sf2` | Same gap on the **representor** namer `/lib/udev/sf-rep-netdev-rename` (stock emits `en<b>f<f>pf<x>sf<sfnum>`). Reps never get `p0_if_r` names → `br-hbn` ports can't bind → no dataplane offload. **`bringup_hbn_bf3.sh` now patches this too** (`SFRMAP[2]=p0_if_r…`) + renames existing reps (match `phys_port_name pf0sf<sfnum>`). Prefer re-running the bringup (lets `sfc.sh` own br-hbn); avoid hand `ovs-vsctl add-port` — see stale-br-hbn row below. `p0`/`p1` "Invalid argument" is a **separate benign** switchdev warning, not this. |
+| REST `https://<OOB>:8765` times out from routed clients (ping works; pod-IP curl = 200) | 2nd default route `via 192.168.x.1 dev enp3s0f0s0 proto dhcp metric 100` — stock BFB `60-mlnx-0.yaml` DHCPs the in-band SF0; when p0 is cabled to a DHCP net it wins for FORWARDED traffic (hostPort DNAT replies; `ip route get <client> from <podIP> iif br-mgmt`). Fix: OOB default `metric: 50` in `60-oob.yaml` (hbn_quickstart.sh writes this; bp5 2026-10-23) |
 | VFs: `--vfs 8` created SFs but FRR shows no `pf*vf*_if`; host SFs named `enp3s0f0s4`… (sfnum 4-11) | **Wrong VF sfnum scheme.** Authoritative (per `install.sh`): ECPF0 VFs = **sfnum 1001+N**, ECPF1 = **1257+N** — the udev namers only map those ranges → `pf0vfN_if`. The script now generates 1001+/1257+ and the whole VF path is config-driven (mlnx-sf.conf + sfc.conf `"br-hbn~pf0vfN~pf0vfN_if_r~pf0vfN_if~pf0vfN_if_r"` + hbn.conf) → reboot-persistent. If a box still has stale sfnum 4-11 SFs, delete them (`mlnx-sf --action delete --sfindex …`) and re-run `--vfs`. |
 | VFs: `sfc.service` fails, log `Port pf0vfN … ofport` / VF eswitch rep `pf0vfN` missing | `--vfs` requires the **host SR-IOV VFs created first** (they create the `pf0vfN` eswitch reps the BF3 bridges). `bringup_hbn_bf3.sh` now **preflights this**: with `--vfs` it checks the `pf0vfN`/`pf1vfN` reps exist on the BF3 and, if not, fails fast telling you to run `setup_host_vfs_standalone.sh` on the x86 host first (nothing is changed). |
 | **`sfc.service` fails on boot**, log `Error: Port: p0_if_r does not have ofport:[] the same as ofport_request:N` → nothing comes up | **Stale `br-hbn` OVS DB** — usually from hand-run `ovs-vsctl add/del-port` whose `ofport_request` persisted across reboot. Fix: `ovs-vsctl --if-exists del-br br-hbn; systemctl reset-failed sfc.service; systemctl start sfc.service` (sfc rebuilds br-hbn clean). **Never manage br-hbn ports by hand** — let `sfc.sh` own them (it uses `--may-exist`). |
