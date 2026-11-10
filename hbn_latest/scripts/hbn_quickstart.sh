@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Aviz Networks, Inc. All rights reserved.
+#
+# Licensed, not sold, under the Aviz Networks HBN Quickstart License (see LICENSE in
+# this package). Provided to Aviz partners and customers solely to bring up NVIDIA
+# BlueField-3 DPUs for use with Aviz ONES. Do not redistribute.
+#
 # hbn_quickstart.sh — ONE command on the x86 HOST: BF3 → DPU mode → bf-bundle 3.3.0 →
 # HBN with host VFs → hand-over facts for ONES.   Run it until it prints DONE.
 #
@@ -113,6 +119,8 @@ if [[ -n "${CONFIG}" ]]; then
   source "${CONFIG}"
 fi
 [[ "${VFS_PER_PF}" =~ ^[0-9]+$ ]] || die "VFS_PER_PF must be a number (got '${VFS_PER_PF}')"
+[[ -z "${OOB_ADDRESS}" || "${OOB_ADDRESS}" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]{1,2}$ ]] \
+  || die "OOB_ADDRESS needs the prefix length, e.g. ${OOB_ADDRESS%/*}/24 (got '${OOB_ADDRESS}')"
 
 if ! $CHECK; then
   mkdir -p "${STATE_DIR}" && chmod 700 "${STATE_DIR}"
@@ -359,9 +367,9 @@ elif echo "${ESW}" | grep -qE "mode (legacy|switchdev)"; then
     redfish PATCH /redfish/v1/Systems/Bluefield/Bios/Settings '{"Attributes":{"NicMode":"DpuMode"}}' >/dev/null \
       || die "Redfish PATCH to ${BF3_BMC} failed (check BF3_BMC / BF3_BMC_PASSWORD)"
     ok "DpuMode staged in the BF3 UEFI settings"
-    systemctl enable --now rshim >/dev/null 2>&1
-    sleep 5
-    RSH=$(grep -l "${RSHIM_BDF:-none}" /dev/rshim*/misc 2>/dev/null | head -1)
+    systemctl enable --now rshim >/dev/null 2>&1; systemctl restart rshim >/dev/null 2>&1
+    sleep 8
+    RSH=$(grep -l "${RSHIM_BDF#0000:}" /dev/rshim*/misc 2>/dev/null | head -1)
     [[ -n "${RSH}" ]] || die "no host rshim for the BF3 — on the BF3 BMC run 'systemctl stop rshim', then re-run"
     echo "SW_RESET 1" > "${RSH}"
     info "BF3 Arm reset so its UEFI applies the setting — waiting up to 5 min..."
@@ -385,15 +393,20 @@ if [[ -z "${RSHIM_BDF}" ]]; then
   die "${RSHIM_HINT}"
 fi
 RSH=""
-for _ in 1 2 3; do
-  RSH=$(grep -l "${RSHIM_BDF:-none}" /dev/rshim*/misc 2>/dev/null | head -1)
+for _try in 1 2 3; do
+  # DEV_NAME may or may not carry the PCI domain — match on bus:dev.fn
+  RSH=$(grep -l "${RSHIM_BDF#0000:}" /dev/rshim*/misc 2>/dev/null | head -1)
   [[ -n "${RSH}" ]] && break
   if $CHECK; then break; fi
-  systemctl enable --now rshim >/dev/null 2>&1; sleep 5
+  # a host rshim started while the BF3 BMC owned the device never re-probes it
+  # (bp7) — 'enable --now' is a no-op on a running daemon, so restart it
+  if [[ ${_try} -eq 1 ]]; then systemctl enable --now rshim >/dev/null 2>&1
+  else systemctl restart rshim >/dev/null 2>&1; fi
+  sleep 8
 done
 if [[ -z "${RSH}" ]]; then
   $CHECK && { plan "host rshim not running — would start it (systemctl enable --now rshim)"; } \
-         || die "no host rshim for ${RSHIM_BDF:-the BF3}. The BF3 BMC may own it: on the BMC 'systemctl stop rshim' (or Redfish BmcRShimEnabled=false), then re-run"
+         || die "no host rshim for ${RSHIM_BDF:-the BF3} (rshim restarted, still none). The BF3 BMC may own it: on the BMC 'systemctl stop rshim' (or Redfish BmcRShimEnabled=false), then on this host 'systemctl restart rshim' and re-run. Diagnose: ls /dev/rshim*; cat /dev/rshim*/misc; journalctl -u rshim -n 30"
 fi
 RSHIM_DEV=$(dirname "${RSH:-/dev/rshim0/misc}"); RSHIM_NAME=$(basename "${RSHIM_DEV}")
 TMFIFO="tmfifo_net${RSHIM_NAME#rshim}"

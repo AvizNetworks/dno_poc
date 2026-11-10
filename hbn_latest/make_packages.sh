@@ -60,6 +60,12 @@ LEAK='10\.20\.13\.|10\.4\.5\.|185\.55\.29\.|10\.0\.1\.|d4:5d:64|9c:63:c0|c4:70:b
 if [[ -e "${STAGE}/hbn-standalone/docs" ]] || grep -rnE "${LEAK}" "${STAGE}/hbn-standalone"; then
   echo "!! internal or site-specific content in the standalone packet — build aborted"; exit 1
 fi
+# Every Aviz-authored file must carry the Aviz copyright/license header (ABORTS)
+for f in "${STAGE}/hbn-standalone/scripts/"* "${STAGE}/hbn-standalone/README.md"; do
+  head -15 "${f}" | grep -q 'Copyright (c) 2026 Aviz Networks, Inc.' \
+    || grep -q '© 2026 Aviz Networks, Inc.' "${f}" \
+    || { echo "!! ${f#${STAGE}/} has no Aviz copyright header — build aborted"; exit 1; }
+done
 
 # ── DPF packet ────────────────────────────────────────────────────────────────
 for f in README.md QUICKSTART.md CHEATSHEET.md MULTI-DPU-DESIGN.md \

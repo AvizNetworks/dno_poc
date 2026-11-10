@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Aviz Networks, Inc. All rights reserved.
+#
+# Licensed, not sold, under the Aviz Networks HBN Quickstart License (see LICENSE in
+# this package). Provided to Aviz partners and customers solely to bring up NVIDIA
+# BlueField-3 DPUs for use with Aviz ONES. Do not redistribute.
+#
 # status_hbn.sh — HBN stack health check for BlueField-3 DPU
 # Run on BF3 with sudo: sudo ./status_hbn.sh
 set -uo pipefail

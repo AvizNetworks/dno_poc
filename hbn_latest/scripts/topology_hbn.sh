@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Aviz Networks, Inc. All rights reserved.
+#
+# Licensed, not sold, under the Aviz Networks HBN Quickstart License (see LICENSE in
+# this package). Provided to Aviz partners and customers solely to bring up NVIDIA
+# BlueField-3 DPUs for use with Aviz ONES. Do not redistribute.
+#
 # topology_hbn.sh — Show HBN interface reference for teams configuring FRR/NVUE
 # Run on BF3 with sudo: sudo ./topology_hbn.sh [--host-ip <IP>]
 # Output is shown live AND saved to /var/log/doca/hbn/topology-<timestamp>.txt

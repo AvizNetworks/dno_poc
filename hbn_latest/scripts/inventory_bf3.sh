@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Aviz Networks, Inc. All rights reserved.
+#
+# Licensed, not sold, under the Aviz Networks HBN Quickstart License (see LICENSE in
+# this package). Provided to Aviz partners and customers solely to bring up NVIDIA
+# BlueField-3 DPUs for use with Aviz ONES. Do not redistribute.
+#
 # inventory_bf3.sh — READ-ONLY capability inventory of a BlueField-3 (run on the BF3 ARM)
 # Run with sudo: sudo ./inventory_bf3.sh [--quick] [--no-check] [--out FILE]
 #

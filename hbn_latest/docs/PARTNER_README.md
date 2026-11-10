@@ -97,3 +97,10 @@ them. To change how many, edit `VFS_PER_PF` and run the script again.
 | Install missing host packages … | Answer `y` (needs internet), or install the listed packages first |
 
 Anything else: send Aviz the log file from step 4.
+
+---
+
+© 2026 Aviz Networks, Inc. All rights reserved. Licensed, not sold, under the Aviz Networks
+HBN Quickstart License (see `LICENSE` in this package). Provided to Aviz partners and
+customers solely to bring up NVIDIA BlueField-3 DPUs for use with Aviz ONES. Do not
+redistribute.

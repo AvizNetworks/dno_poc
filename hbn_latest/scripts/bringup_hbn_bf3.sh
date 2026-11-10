@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Aviz Networks, Inc. All rights reserved.
+#
+# Licensed, not sold, under the Aviz Networks HBN Quickstart License (see LICENSE in
+# this package). Provided to Aviz partners and customers solely to bring up NVIDIA
+# BlueField-3 DPUs for use with Aviz ONES. Do not redistribute.
+#
 # bringup_hbn_bf3.sh — Idempotent HBN bringup for BlueField-3 DPU (DOCA 3.3.0)
 # Run on BF3 with sudo: sudo ./bringup_hbn_bf3.sh [options]
 #

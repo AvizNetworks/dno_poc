@@ -12,9 +12,9 @@
       "problemMatcher": []
     },
     {
-      "label": "S1: BF3 ARM (ubuntu@10.20.13.128)",
+      "label": "S1: BF3 ARM (ubuntu@10.20.13.131)",
       "type": "shell",
-      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no ubuntu@10.20.13.128",
+      "command": "sshpass -p 'Aviz@AIF12345' ssh -o StrictHostKeyChecking=no ubuntu@10.20.13.131",
       "presentation": { "reveal": "always", "panel": "dedicated", "group": "server1" },
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
@@ -180,5 +180,87 @@
       "runOptions": { "runOn": "folderOpen" },
       "problemMatcher": []
     },
+    {
+      "label": "BP7: Host (ubuntu@185.55.29.77)",
+      "type": "shell",
+      "command": "sshpass -p 'jizT9o9Xf0f2P1Hs' ssh -o StrictHostKeyChecking=no ubuntu@185.55.29.77",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server9" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+        {
+      "label": "BP7_1: Host (ubuntu@185.55.29.77)",
+      "type": "shell",
+      "command": "sshpass -p 'jizT9o9Xf0f2P1Hs' ssh -o StrictHostKeyChecking=no ubuntu@185.55.29.77",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server9" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+        {
+      "label": "BP7_DPU: Arm (via BP7 host)",
+      "type": "shell",
+      "command": "sshpass -p 'jqGzjLK2SbIs' ssh -o StrictHostKeyChecking=no -o HostKeyAlias=bp7-dpu   -o ProxyCommand=\"sshpass -p 'jizT9o9Xf0f2P1Hs' ssh -o StrictHostKeyChecking=no -W %h:%p ubuntu@185.55.29.77\"   ubuntu@192.168.100.2",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server9" },
+      "problemMatcher": []
+    },
+    {
+      "label": "BP8: Host (ubuntu@185.55.29.78)",
+      "type": "shell",
+      "command": "sshpass -p '5KCmFtkOaMIGvrPQ' ssh -o StrictHostKeyChecking=no ubuntu@185.55.29.78",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server10" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "BP8_DPU: Arm (via BP8 host)",
+      "type": "shell",
+      "command": "sshpass -p 'jqGzjLK2SbIs' ssh -o StrictHostKeyChecking=no -o HostKeyAlias=bp8-dpu -o ProxyCommand=\"sshpass -p '5KCmFtkOaMIGvrPQ' ssh -o StrictHostKeyChecking=no -W %h:%p ubuntu@185.55.29.78\" ubuntu@192.168.100.2",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server10" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+     {
+      "label": "BP5: Host (ubuntu@185.55.29.75)",
+      "type": "shell",
+      "command": "sshpass -p 'rctdiA9TEMs9N6XQeIKG' ssh -o StrictHostKeyChecking=no hai@185.55.29.75",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server11" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "BP5_DPU: Arm (via BP5 host)",
+      "type": "shell",
+      "command": "sshpass -p 'jqGzjLK2SbIs' ssh -o StrictHostKeyChecking=no -o HostKeyAlias=bp5-dpu -o ProxyCommand=\"sshpass -p 'jqGzjLK2SbIs' ssh -o StrictHostKeyChecking=no -W %h:%p hai@185.55.29.75\" ubuntu@192.168.100.2",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server11" },
+      "problemMatcher": []
+    },
+    {
+      "label": "BP6: Host (ubuntu@185.55.29.76)",
+      "type": "shell",
+      "command": "sshpass -p 'Lj3sjfrSyvu2' ssh -o StrictHostKeyChecking=no ubuntu@185.55.29.76",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server12" },
+      "runOptions": { "runOn": "folderOpen" },
+      "problemMatcher": []
+    },
+    {
+      "label": "BP6_DPU: Arm (via BP6 host)",
+      "type": "shell",
+      "command": "sshpass -p 'e#1qZ5sVxfXJ+UwA' ssh -o StrictHostKeyChecking=no -o HostKeyAlias=bp6-dpu -o ProxyCommand=\"sshpass -p 'Lj3sjfrSyvu2' ssh -o StrictHostKeyChecking=no -W %h:%p ubuntu@185.55.29.76\" ubuntu@192.168.100.2",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server12" },
+      "problemMatcher": []
+    },
+        {
+      "label": "FS_SWITCH: Arm (via BP6 host)",
+      "type": "shell",
+      "command": "sshpass -p 'admin' ssh -o StrictHostKeyChecking=no -o ProxyCommand=\"sshpass -p 'Lj3sjfrSyvu2' ssh -o StrictHostKeyChecking=no -W %h:%p ubuntu@185.55.29.76\" admin@10.0.1.111",
+      "presentation": { "reveal": "always", "panel": "dedicated", "group": "server13" },
+      "problemMatcher": []
+    },
   ]
 }
+
+
+
+
+
+

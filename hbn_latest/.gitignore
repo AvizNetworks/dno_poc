@@ -11,3 +11,8 @@ dpf-poc-*/
 dpf-setup-py-*/
 # doca_hbn image exports (make_packages.sh --with-image, ~750MB) — ship out-of-band
 packages/*/doca_hbn_*.tar
+# lab credentials — never commit
+access.txt
+.vscode/access.txt
+# partner device config dumps (partner IPs) — keep local
+partner_configs/

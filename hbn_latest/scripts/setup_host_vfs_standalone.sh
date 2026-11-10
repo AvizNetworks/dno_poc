@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Aviz Networks, Inc. All rights reserved.
+#
+# Licensed, not sold, under the Aviz Networks HBN Quickstart License (see LICENSE in
+# this package). Provided to Aviz partners and customers solely to bring up NVIDIA
+# BlueField-3 DPUs for use with Aviz ONES. Do not redistribute.
+#
 # Create + persist SR-IOV VFs on the BF3 host PFs (x86 host, standalone HBN).
 # Run on the x86 host BEFORE 'bringup_hbn_bf3.sh --vfs' on the BF3.
 # Auto-detects the BF3 PFs by PCI id 15b3:a2dc. Default 4 VFs per PF (--vfs-per-pf N to change).

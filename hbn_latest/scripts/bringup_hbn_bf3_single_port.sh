@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Aviz Networks, Inc. All rights reserved.
+#
+# Licensed, not sold, under the Aviz Networks HBN Quickstart License (see LICENSE in
+# this package). Provided to Aviz partners and customers solely to bring up NVIDIA
+# BlueField-3 DPUs for use with Aviz ONES. Do not redistribute.
+#
 # bringup_hbn_bf3_single_port.sh — Idempotent HBN bringup for SINGLE-PORT BlueField-3
 # cards (DOCA 3.3.0), e.g. B3140H 900-9D3D4 SuperNIC switched to DPU mode.
 # Run on BF3 with sudo: sudo ./bringup_hbn_bf3_single_port.sh [options]
